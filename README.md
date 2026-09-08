@@ -1,0 +1,75 @@
+# 飞书 Echo · Kotlin
+
+本机运行的飞书机器人：首次通过官方链接选择已有 PersonalAgent 或创建机器人，随后回显授权用户的私聊及群聊 @ 文本。当前不接入 AI Agent。
+
+## 运行
+
+需要 JDK 11（可用 `java -version` 检查）和能访问 Maven Central、Gradle 下载服务、飞书的网络。首版支持 macOS/Linux。
+
+```bash
+./gradlew test installDist
+./build/install/agent-im-bridge-kt/bin/agent-im-bridge-kt
+```
+
+首次启动会打印授权链接并尝试打开默认浏览器。请在飞书官方页面登录，选择或创建机器人并完成授权。程序自动取得凭证、保存配置并建立长连接。看到 `Echo 已连接` 后，使用完成授权的账号测试：
+
+1. 私聊机器人发送 `你好`，应回复 `收到：你好`。
+2. 将机器人加入测试群，发送 `@机器人 你好`，应在原消息下回复 `收到：你好`。
+3. 不 @机器人、仅 @所有人、其他用户发送、图片/文件或空文本，不回复。
+
+即使群聊中其他人 @，也只有配置的授权用户能触发。`@所有人 + @机器人` 会触发，但回复是纯文本，不产生结构化 @ 通知。仅支持原始 `text` 消息，富文本 `post` 暂不处理。机器人 @ 标记被去除，其余正文内部空格与换行保留；其他人的提及仍以原始占位符回显。
+
+按 Ctrl-C 停止。后续使用同一命令启动，直接读取配置，无需重新绑定。开发时也可使用 `./gradlew run --console=plain`。
+
+只显示链接、不自动打开浏览器：
+
+```bash
+./build/install/agent-im-bridge-kt/bin/agent-im-bridge-kt --no-browser
+```
+
+## 配置
+
+配置位于 `~/.agent-im-bridge-kt/config.json`，目录权限 `700`、文件权限 `600`。内含 `appId`、`appSecret`、`allowedUserId`、`tenant`（`feishu` 或 `lark`）。凭证是本机明文文件，程序和 SDK 日志不打印密钥；不要上传此文件。
+
+默认使用授权结果中的用户 open_id。如果服务未返回该 ID，程序会在真实终端提示补充；也可通过环境变量提供回退值：
+
+```bash
+ECHO_ALLOWED_USER_ID=ou_your_open_id ./build/install/agent-im-bridge-kt/bin/agent-im-bridge-kt
+```
+
+缺少或格式错误的 open_id 会停止启动，不会开放给所有用户，也不会保存不完整配置。此环境变量只用于授权缺失用户 ID 的情况，不覆盖已有配置中的用户。
+
+需要重新绑定时，先停止程序，将配置文件移动为本机备份，再启动。损坏的配置不会被自动覆盖。首版使用 SDK 内存去重，进程重启不保留去重记录；同一机器人请只启动一个 Echo 实例。
+
+## 收不到消息或回复失败
+
+链接绑定采用官方 PersonalAgent 预设，不额外申请云文档权限。实际应用的能力与权限以授权页面和后台状态为准，连接成功不代表所有消息权限都已具备。
+
+在所选应用的飞书开放平台后台检查：
+
+1. 已开启机器人能力，应用已发布且授权用户处于可用范围。
+2. 事件订阅使用长连接，包含接收消息事件 `im.message.receive_v1`。
+3. 开通单聊接收 `im:message.p2p_msg:readonly`、群聊 @ 接收 `im:message.group_at_msg:readonly`、机器人发送 `im:message:send_as_bot`（或平台对应的包含这些能力的权限）。修改后按后台要求发布/生效。
+4. 群聊中已加入当前绑定的机器人，发送者是配置中的 `allowedUserId`，且实际选择了 @机器人，不是手写同名文本。
+
+常见状态：
+
+| 提示/现象 | 处理 |
+| --- | --- |
+| 授权链接过期或拒绝授权 | 重新运行生成新链接 |
+| 授权网络请求失败 | 检查飞书账号服务网络可达性后重试 |
+| 已连接，但没有接收日志 | 检查用户、消息类型、@、事件订阅和权限；消息可能被过滤 |
+| 有接收日志，但回复失败 | 检查发送权限、机器人所在群状态和网络 |
+| 连接中断 | SDK 自动重连；持续失败时检查网络后重启 |
+| 配置文件无效 | 在本机修复或备份后重新绑定 |
+
+日志只记录消息 ID、类型和处理状态，不记录正文、原始事件、授权响应或外部异常堆栈。发送失败不重新执行回显，避免重复发送；检查问题后发送一条新的测试消息。
+
+## 验证与参考
+
+`./gradlew test` 使用真实 SDK 归一化与安全流水线测试私聊、群聊 @、用户/机器人过滤、空文本、去重及不合并消息；同时测试配置权限、损坏配置、缺失授权身份和授权错误处理。真实链接授权及飞书收发需要用户完成官方页面授权后联调，自动化测试不代替该验证。
+
+- [参考项目初始化代码](https://github.com/KeepSilenceQP/lark-coding-agent-bridge/blob/c8aa2f4d9b6b3526b172ea407bad76cb208fff3c/src/bot/wizard.ts)
+- [飞书 Java Channel](https://github.com/larksuite/oapi-sdk-java/blob/v2_main/CHANNEL.md)
+- [Java SDK 2.7.3 发布包与源码](https://repo.maven.apache.org/maven2/com/larksuite/oapi/oapi-sdk/2.7.3/)
+- [前期调研](docs/kotlin-mvp-research.md)
