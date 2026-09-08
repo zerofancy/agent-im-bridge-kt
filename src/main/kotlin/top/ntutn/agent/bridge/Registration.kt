@@ -1,4 +1,4 @@
-package bridge.echo
+package top.ntutn.agent.bridge
 
 import com.lark.oapi.scene.registration.RegisterApp
 import com.lark.oapi.scene.registration.RegisterAppOptions
@@ -6,14 +6,14 @@ import com.lark.oapi.scene.registration.RegisterAppResult
 import java.awt.Desktop
 import java.net.URI
 
-fun registrationConfig(result: RegisterAppResult, fallbackUserId: () -> String?): EchoConfig {
+fun registrationConfig(result: RegisterAppResult, fallbackUserId: () -> String?): BridgeConfig {
     val userId = result.userInfo?.openId?.takeIf { it.isNotBlank() } ?: fallbackUserId()
         ?: throw IllegalArgumentException("授权未返回 open_id。请设置 ECHO_ALLOWED_USER_ID 后重新运行，或在终端输入 open_id。")
-    return EchoConfig(result.clientId.orEmpty(), result.clientSecret.orEmpty(), userId.trim(),
+    return BridgeConfig(result.clientId.orEmpty(), result.clientSecret.orEmpty(), userId.trim(),
         result.userInfo?.tenantBrand?.takeIf { it.isNotBlank() } ?: "feishu").also { it.validate() }
 }
 
-fun register(noBrowser: Boolean): EchoConfig {
+fun register(noBrowser: Boolean): BridgeConfig {
     println("尚未绑定机器人，正在申请飞书授权链接……")
     val result = RegisterApp.register(RegisterAppOptions.newBuilder()
         .source("agent-im-bridge-kt")
@@ -38,6 +38,6 @@ fun register(noBrowser: Boolean): EchoConfig {
         }.build())
     return registrationConfig(result) {
         System.getenv("ECHO_ALLOWED_USER_ID")?.takeIf { it.isNotBlank() }
-            ?: System.console()?.readLine("请输入允许使用 Echo 的用户 open_id（ou_ 开头）：")
+            ?: System.console()?.readLine("请输入允许使用机器人的用户 open_id（ou_ 开头）：")
     }
 }

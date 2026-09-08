@@ -1,4 +1,4 @@
-package bridge.echo
+package top.ntutn.agent.bridge
 
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
@@ -9,7 +9,7 @@ import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.PosixFilePermissions
 
-class EchoConfig(val appId: String, val appSecret: String, val allowedUserId: String, val tenant: String) {
+class BridgeConfig(val appId: String, val appSecret: String, val allowedUserId: String, val tenant: String) {
     fun validate() {
         require(appId.startsWith("cli_") && appSecret.isNotBlank()) { "应用配置不完整，请重新绑定。" }
         require(allowedUserId.startsWith("ou_") && allowedUserId.length > 3) { "需要有效的用户 open_id（ou_ 开头）。" }
@@ -22,20 +22,20 @@ class ConfigStore(val path: Path) {
     private val gson = GsonBuilder().setPrettyPrinting().create()
     private val filePermissions = PosixFilePermissions.fromString("rw-------")
 
-    fun load(): EchoConfig? {
+    fun load(): BridgeConfig? {
         if (!Files.exists(path, NOFOLLOW_LINKS)) return null
         require(Files.isRegularFile(path, NOFOLLOW_LINKS)) { "配置必须是普通文件，不能是符号链接。" }
         Files.setPosixFilePermissions(path, filePermissions)
         return try {
             val json = JsonParser.parseString(Files.readString(path)).asJsonObject
-            EchoConfig(json["appId"].asString, json["appSecret"].asString,
+            BridgeConfig(json["appId"].asString, json["appSecret"].asString,
                 json["allowedUserId"].asString, json["tenant"].asString).also { it.validate() }
         } catch (_: Exception) {
             throw IllegalArgumentException("配置文件无效，请检查 $path；不会自动覆盖已有配置。")
         }
     }
 
-    fun save(config: EchoConfig) {
+    fun save(config: BridgeConfig) {
         config.validate()
         val directory = path.toAbsolutePath().parent
         Files.createDirectories(directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))

@@ -1,4 +1,4 @@
-package bridge.echo
+package top.ntutn.agent.bridge
 
 import com.lark.oapi.scene.registration.RegisterAppException
 import com.lark.oapi.scene.registration.RegisterAppResult
@@ -15,7 +15,7 @@ class ConfigTest {
     @Test fun `config round trip is private and does not expose credentials`() {
         val store = ConfigStore(directory.resolve("state/config.json"))
         assertNull(store.load())
-        val config = EchoConfig("cli_test", "very-secret", "ou_owner", "feishu")
+        val config = BridgeConfig("cli_test", "very-secret", "ou_owner", "feishu")
         store.save(config)
         val loaded = assertNotNull(store.load())
         assertEquals("very-secret", loaded.appSecret)
@@ -38,8 +38,8 @@ class ConfigTest {
 
     @Test fun `invalid config cannot replace existing credentials`() {
         val store = ConfigStore(directory.resolve("config.json"))
-        store.save(EchoConfig("cli_old", "secret", "ou_owner", "feishu"))
-        assertFailsWith<IllegalArgumentException> { store.save(EchoConfig("cli_new", "secret", "", "feishu")) }
+        store.save(BridgeConfig("cli_old", "secret", "ou_owner", "feishu"))
+        assertFailsWith<IllegalArgumentException> { store.save(BridgeConfig("cli_new", "secret", "", "feishu")) }
         assertEquals("cli_old", store.load()?.appId)
     }
 

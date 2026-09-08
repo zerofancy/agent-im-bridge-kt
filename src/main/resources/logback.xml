@@ -4,5 +4,5 @@
     </appender>
     <!-- SDK diagnostics may contain request bodies or credential-bearing URLs. -->
     <root level="OFF"><appender-ref ref="CONSOLE"/></root>
-    <logger name="bridge.echo" level="INFO"/>
+    <logger name="top.ntutn.agent.bridge" level="INFO"/>
 </configuration>

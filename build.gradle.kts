@@ -15,6 +15,6 @@ dependencies {
 }
 
 kotlin { jvmToolchain(11) }
-application { mainClass.set("bridge.echo.MainKt") }
+application { mainClass.set("top.ntutn.agent.bridge.MainKt") }
 tasks.test { useJUnitPlatform() }
 tasks.named<JavaExec>("run") { standardInput = System.`in` }
