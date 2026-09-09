@@ -30,11 +30,10 @@ fun main(args: Array<String>) {
         println("""
             飞书 Codex 连续对话
             用法：agent-im-bridge-kt [--workspace <目录>] [--codex-bin <命令或路径>]
-                                  [--timeout-seconds <秒>] [--max-concurrent-runs <数量>] [--no-browser]
+                                  [--max-concurrent-runs <数量>] [--no-browser]
             --stop             停止本机旧实例并退出（单独使用）
             --workspace        默认启动时的当前目录
             --codex-bin        默认 codex
-            --timeout-seconds  默认 300，允许 1 至 86400
             --max-concurrent-runs 默认 10，同一聊天串行，超出请求在内存排队
             --no-browser       仅打印授权链接
             飞书绑定配置兼容 ~/.agent-im-bridge-kt/config.json。
@@ -58,7 +57,7 @@ fun main(args: Array<String>) {
         instance = InstanceLock.acquire(stateDirectory)
         val sessions = SessionStore(stateDirectory.resolve("sessions.json"))
         val codexHome = CodexRunner.defaultCodexHome()
-        runner = CodexRunner(options.binary, java.time.Duration.ofSeconds(options.timeoutSeconds), codexHome)
+        runner = CodexRunner(options.binary, codexHome)
         runner.checkAvailable()
         val store = ConfigStore(Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt", "config.json"))
         val config = store.load() ?: register(options.noBrowser).also {
@@ -72,10 +71,12 @@ fun main(args: Array<String>) {
         val activeChannel = channel
         val activeService = service
         val activeInstance = instance
+        val activeRunner = runner
         Runtime.getRuntime().addShutdownHook(Thread {
-            activeService.close()
-            try { activeChannel.disconnect().get(5, TimeUnit.SECONDS) } catch (_: Exception) { }
-            activeInstance.close()
+            closeBridgeResources(
+                { activeService.close() }, { activeRunner.close() },
+                { activeChannel.disconnect().get(5, TimeUnit.SECONDS) }, { activeInstance.close() }
+            )
             println("Codex Bridge 已停止。")
         })
         log.info("正在连接飞书……")
@@ -87,10 +88,22 @@ fun main(args: Array<String>) {
         if (e is IllegalArgumentException && e.stackTrace.firstOrNull()?.className?.startsWith("top.ntutn.agent.bridge") == true)
             log.error("{}", e.message)
         else log.error("{}", safeError(e))
-        service?.close()
-        runner?.close()
-        try { channel?.disconnect()?.get(5, TimeUnit.SECONDS) } catch (_: Exception) { }
-        instance?.close()
+        closeBridgeResources(
+            { service?.close() }, { runner?.close() },
+            { channel?.disconnect()?.get(5, TimeUnit.SECONDS) }, { instance?.close() }
+        )
         exitProcess(1)
     }
+}
+
+// Shutdown is best-effort for every resource, including after a JVM linkage error.
+internal fun closeBridgeResources(vararg actions: () -> Unit) {
+    fun closeAt(index: Int) {
+        if (index == actions.size) return
+        try { actions[index]() }
+        catch (error: Throwable) {
+            LoggerFactory.getLogger("top.ntutn.agent.bridge").warn("退出清理失败 type={}", error.javaClass.simpleName)
+        } finally { closeAt(index + 1) }
+    }
+    closeAt(0)
 }

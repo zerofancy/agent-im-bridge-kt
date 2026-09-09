@@ -3,102 +3,40 @@ package top.ntutn.agent.bridge
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
-import java.time.Duration
 import kotlin.test.*
+import kotlinx.coroutines.*
 
 class CodexRunnerTest {
     @TempDir lateinit var temp: Path
-
-    private fun fake(body: String): Path {
-        val binary = temp.resolve("fake codex")
-        Files.writeString(binary, "#!/bin/sh\n" + """
-            if [ "§1" = "--version" ]; then echo fake-codex; exit 0; fi
-            while [ "§#" -gt 0 ]; do
-              case "§1" in
-                --output-last-message) shift; answer="§1" ;;
-                -C) shift; workspace="§1" ;;
-              esac
-              shift
-            done
-            echo '{"type":"thread.started","thread_id":"11111111-1111-4111-8111-111111111111"}'
-            echo '{"type":"turn.started"}'
-        """.trimIndent().replace('§', '$') + "\n" + body.replace('§', '$') + "\nprintf '\\n{\"type\":\"turn.completed\"}\\n'\n")
-        binary.toFile().setExecutable(true)
-        return binary
-    }
-
-    private fun run(body: String, prompt: String = "hello", timeout: Duration = Duration.ofSeconds(10)): AgentResult {
-        val workspace = Files.createDirectories(temp.resolve("workspace with spaces")).toRealPath()
-        return CodexRunner(fake(body).toString(), timeout).use {
-            it.checkAvailable()
-            when (val result = it.run(prompt, workspace = workspace)) {
-                is AgentResult.Success -> result.copy(sessionId = null)
-                is AgentResult.Failure -> result.copy(sessionId = null)
-            }
+    @Test fun `unicode shell syntax and final output survive RPC`(): Unit = runBlocking {
+        CodexRunner(fakeAppServer(temp).toString()).use { runner ->
+            runner.checkAvailable()
+            val prompt = "你好\n\$(touch never) 'quoted'  spaces"
+            assertEquals(prompt, assertIs<AgentResult.Success>(runner.run(prompt)).text)
+            assertEquals("final only", assertIs<AgentResult.Success>(runner.run("progress")).text)
+            assertEquals("legacy", assertIs<AgentResult.Success>(runner.run("legacy")).text)
+            assertFalse(Files.exists(temp.resolve("never")))
+            assertEquals(1, requests(temp).count { it.string("method") == "initialize" })
         }
     }
-
-    @Test fun `stdin unicode shell syntax and workspace are preserved`() {
-        val prompt = "你好\n\$(touch never) 'quoted'  spaces"
-        val result = run("cat > \"§answer\"\n[ \"§workspace\" = \"§PWD\" ] || exit 12", prompt)
-        assertEquals(AgentResult.Success(prompt), result)
-        assertFalse(Files.exists(temp.resolve("workspace with spaces/never")))
+    @Test fun `failures empty answers and unexpected approval do not hang`(): Unit = runBlocking {
+        CodexRunner(fakeAppServer(temp).toString()).use { runner ->
+            for (prompt in listOf("failed", "reject")) assertEquals(AgentResult.Kind.EXECUTION,
+                assertIs<AgentResult.Failure>(runner.run(prompt)).kind)
+            assertEquals(AgentResult.Kind.EMPTY, assertIs<AgentResult.Failure>(runner.run("empty")).kind)
+            assertEquals("denied", assertIs<AgentResult.Success>(withTimeout(5000) { runner.run("approval") }).text)
+            assertTrue(requests(temp).any { it.string("id") == "approval-1" && it.has("error") })
+        }
     }
-
-    @Test fun `final output is independent from large progress streams`() {
-        val result = run("""
-            cat >/dev/null
-            head -c 262144 /dev/zero
-            head -c 262144 /dev/zero >&2
-            printf 'final only' > "§answer"
-        """.trimIndent())
-        assertEquals(AgentResult.Success("final only"), result)
-    }
-
-    @Test fun `nonzero and empty outputs are failures`() {
-        assertEquals(AgentResult.Failure(AgentResult.Kind.EXECUTION, 9), run("cat >/dev/null; echo partial > \"§answer\"; exit 9"))
-        assertEquals(AgentResult.Failure(AgentResult.Kind.EMPTY), run("cat >/dev/null; printf '  ' > \"§answer\""))
-    }
-
-    @Test fun `timeout kills descendant and releases runner`() {
-        val pidFile = temp.resolve("child.pid")
-        val body = "cat >/dev/null\nsleep 60 &\necho §! > '$pidFile'\nwait"
-        assertEquals(AgentResult.Failure(AgentResult.Kind.TIMEOUT), run(body, timeout = Duration.ofMillis(300)))
-        val pid = Files.readString(pidFile).trim().toLong()
-        val end = System.nanoTime() + Duration.ofSeconds(2).toNanos()
-        while (ProcessHandle.of(pid).map { it.isAlive }.orElse(false) && System.nanoTime() < end) Thread.sleep(20)
-        assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
-    }
-
-    @Test fun `missing binary and closed runner do not execute`() {
-        CodexRunner(temp.resolve("missing").toString(), Duration.ofSeconds(1)).use {
+    @Test fun `missing binary and closed runner do not execute`(): Unit = runBlocking {
+        CodexRunner(temp.resolve("missing").toString()).use {
             assertFailsWith<IllegalArgumentException> { it.checkAvailable() }
-            assertEquals(AgentResult.Failure(AgentResult.Kind.START), it.run("hello"))
+            assertEquals(AgentResult.Kind.START, assertIs<AgentResult.Failure>(it.run("hello")).kind)
         }
-        val runner = CodexRunner(fake("cat > \"§answer\"").toString(), Duration.ofSeconds(1))
-        runner.close()
-        assertEquals(AgentResult.Failure(AgentResult.Kind.START), runner.run("hello"))
+        val runner = CodexRunner(fakeAppServer(temp).toString()); runner.close()
+        assertEquals(AgentResult.Kind.START, assertIs<AgentResult.Failure>(runner.run("hello")).kind)
     }
-
-    @Test fun `closing runner stops an active process tree`() {
-        val pidFile = temp.resolve("closing-child.pid")
-        val binary = fake("cat >/dev/null\nsleep 60 &\necho §! > '$pidFile'\nwait")
-        val runner = CodexRunner(binary.toString(), Duration.ofSeconds(60))
-        val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
-        try {
-            val running = worker.submit<AgentResult> { runner.run("hello") }
-            val deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos()
-            while (!Files.exists(pidFile) && System.nanoTime() < deadline) Thread.sleep(20)
-            assertTrue(Files.exists(pidFile))
-            runner.close()
-            assertIs<AgentResult.Failure>(running.get(10, java.util.concurrent.TimeUnit.SECONDS))
-            val pid = Files.readString(pidFile).trim().toLong()
-            assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
-        } finally { runner.close(); worker.shutdownNow() }
-    }
-
-    @Test fun `runtime options validate paths and timeout`() {
-        assertEquals(300L, RunOptions.parse(emptyArray()).timeoutSeconds)
+    @Test fun `runtime options validate paths and removed timeout`() {
         assertEquals(10, RunOptions.parse(emptyArray()).maxConcurrentRuns)
         assertEquals(3, RunOptions.parse(arrayOf("--max-concurrent-runs", "3")).maxConcurrentRuns)
         assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--max-concurrent-runs", "0")) }
@@ -107,4 +45,10 @@ class CodexRunnerTest {
         assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--workspace")) }
         assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--workspace", temp.resolve("absent").toString())) }
     }
+    @Test fun `shutdown continues after linkage errors without leaking payloads`() {
+        val calls=mutableListOf<Int>()
+        closeBridgeResources({ calls.add(1); throw NoClassDefFoundError("test") }, { calls.add(2); throw IllegalStateException() }, { calls.add(3) })
+        assertEquals(listOf(1,2,3),calls)
+    }
+
 }

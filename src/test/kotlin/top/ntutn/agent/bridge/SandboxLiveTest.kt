@@ -5,16 +5,17 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import kotlin.test.*
+import kotlinx.coroutines.*
 
 @EnabledIfEnvironmentVariable(named = "CODEX_LIVE_TEST", matches = "1")
 class SandboxLiveTest {
-    @Test fun `new and resumed thread obey current sandbox mode`() {
+    @Test fun `new and resumed thread obey current sandbox mode`(): Unit = runBlocking {
         // Outside the OS temporary directories, which workspace-write may separately allow.
         val root = Files.createTempDirectory(Path.of(System.getProperty("user.home")), ".bridge-sandbox-test-")
         val workspace = Files.createDirectory(root.resolve("workspace"))
         val outside = Files.createDirectory(root.resolve("outside"))
         try {
-            CodexRunner("codex", Duration.ofSeconds(120)).use { runner ->
+            CodexRunner("codex").use { runner ->
                 var id: String? = null
                 for (mode in SandboxMode.entries) {
                     val insideFile = workspace.resolve(mode.cliValue + ".txt")

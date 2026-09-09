@@ -8,13 +8,14 @@ import java.util.UUID
 import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
+import kotlinx.coroutines.*
 
 class ChatServiceTest {
     @TempDir lateinit var temp: Path
     private val route = ReplyRoute("private", "om_test")
     private fun key(chat: String) = SessionKey("cli_test", chat, temp.toRealPath().toString(), temp.resolve("codex").toString())
-    private fun runner(block: (String, String?, (String) -> Unit) -> AgentResult) = object : AgentRunner {
-        override fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: (String) -> Unit) = block(prompt, sessionId, onSession)
+    private fun runner(block: suspend (String, String?, suspend (String) -> Unit) -> AgentResult) = object : AgentRunner {
+        override suspend fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: suspend (String) -> Unit) = withContext(Dispatchers.IO) { block(prompt, sessionId, onSession) }
         override fun close() {}
     }
     private fun service(runner: AgentRunner, limit: Int = 10, sender: ReplySender = ReplySender { _, _ -> CompletableFuture.completedFuture(Unit) }) =
@@ -110,7 +111,7 @@ class ChatServiceTest {
 
     @Test fun `ordinary failure preserves binding and does not retry`(): Unit = runBlocking {
         val id = UUID.randomUUID().toString(); val calls = AtomicInteger()
-        service(runner { _, _, callback -> callback(id); calls.incrementAndGet(); AgentResult.Failure(AgentResult.Kind.TIMEOUT,sessionId=id) }).use {
+        service(runner { _, _, callback -> callback(id); calls.incrementAndGet(); AgentResult.Failure(AgentResult.Kind.EXECUTION,sessionId=id) }).use {
             it.accept(route,"hello").get(5,TimeUnit.SECONDS)
         }
         assertEquals(1,calls.get()); assertEquals(id,SessionStore(temp.resolve("sessions.json")).get(key("private")))
@@ -149,7 +150,7 @@ class ChatServiceTest {
 
     @Test fun `close discards queue completes futures and prevents additional runs`(): Unit = runBlocking {
         val entered = CountDownLatch(1); val calls = AtomicInteger()
-        val svc = service(runner { _, _, _ -> calls.incrementAndGet(); entered.countDown(); CountDownLatch(1).await(); AgentResult.Success("never") },1)
+        val svc = service(runner { _, _, _ -> calls.incrementAndGet(); entered.countDown(); runInterruptible { CountDownLatch(1).await() }; AgentResult.Success("never") },1)
         val first = svc.accept(route,"first")
         assertTrue(entered.await(5,TimeUnit.SECONDS))
         val queued = svc.accept(route,"second")

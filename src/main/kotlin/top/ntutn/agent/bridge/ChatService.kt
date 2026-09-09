@@ -4,6 +4,7 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.CompletableFuture
 import kotlinx.coroutines.*
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.future.asDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
@@ -38,58 +39,157 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
     private val running = mutableMapOf<String, Work>()
     // A failed session write cannot be followed by another request with stale in-memory state.
     private val unavailable = mutableSetOf<String>()
+    private val switching = mutableSetOf<String>()
+    private enum class Stage(val label: String) {
+        PREPARING("准备执行"), EXECUTING("执行中"), REPLYING("发送回复中"), STOPPING("停止中")
+    }
     private class Work(val route: ReplyRoute, val prompt: String, var ready: Boolean = true,
-                       val completed: CompletableFuture<Unit> = CompletableFuture())
+                       val completed: CompletableFuture<Unit> = CompletableFuture()) {
+        var task: Job? = null
+        var notice: Job? = null
+        var stage = Stage.PREPARING
+        val handle = AgentRunHandle(route.messageId)
+        var stopNotice: Job? = null
+        var stopCancelled = 0
+        var stopBackendFailed = false
+    }
 
     fun accept(route: ReplyRoute, prompt: String): CompletableFuture<Unit> {
         val work = Work(route, prompt)
-        // Enter the mutex in call order, without blocking the SDK callback thread.
+        val command = BridgeCommand.parse(prompt)
         val admission = scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            mutex.withLock {
+            val control = mutex.withLock {
                 if (closed) {
                     work.completed.complete(Unit)
-                    return@withLock
+                    return@withLock null
                 }
-                val waiting = running.size >= limit || running.containsKey(route.chatId) || queue.isNotEmpty()
-                work.ready = !waiting
+                if (command != null) return@withLock prepareControl(work, command)
+                work.ready = running.size < limit && route.chatId !in running && route.chatId !in switching && queue.isEmpty()
                 queue.add(work)
-                if (waiting) {
+                if (!work.ready) {
                     log.info("请求排队 chatId={} messageId={}", route.chatId, route.messageId)
-                    scope.launch {
-                        try {
-                            send(route, "已加入队列，前面的请求处理完成后继续。")
-                        } catch (_: TimeoutCancellationException) {
-                            log.warn("排队提示发送超时 chatId={} messageId={}", route.chatId, route.messageId)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (_: Exception) {
-                            log.warn("排队提示发送失败 chatId={} messageId={}", route.chatId, route.messageId)
-                        } finally {
-                            withContext(NonCancellable) {
-                                mutex.withLock { work.ready = true; dispatch() }
-                            }
-                        }
+                    work.notice = scope.launch {
+                        try { send(route, "已加入队列，前面的请求处理完成后继续。") }
+                        catch (_: TimeoutCancellationException) { log.warn("排队提示发送超时 messageId={}", route.messageId) }
+                        catch (e: CancellationException) { throw e }
+                        catch (_: Exception) { log.warn("排队提示发送失败 messageId={}", route.messageId) }
+                        finally { withContext(NonCancellable) { mutex.withLock { work.ready = true; dispatch() } } }
                     }
                 }
                 dispatch()
+                null
+            }
+            if (control != null) {
+                try { control() }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { log.warn("控制命令回复失败 chatId={} messageId={}", route.chatId, route.messageId) }
+                finally { work.completed.complete(Unit) }
             }
         }
-        // Cancellation before admission must also finish the SDK-facing request object.
         admission.invokeOnCompletion { error -> if (error != null) work.completed.complete(Unit) }
         return work.completed
     }
 
-    // Select the oldest eligible chat head; an active chat never blocks unrelated chats.
+    // Called under the state mutex: reserve state or capture a snapshot before any suspension.
+    private fun prepareControl(work: Work, command: BridgeCommand): suspend () -> Unit {
+        val route = work.route
+        fun reply(text: String): suspend () -> Unit = { send(route, text) }
+        if (command.name != "/cd" && command.argument.isNotEmpty())
+            return reply("用法：${command.name}；查看 /help 获取帮助。")
+        return when (command.name) {
+            "/help" -> reply(BridgeCommand.help)
+            "/status" -> {
+                val state = running[route.chatId]?.stage?.label ?: if (route.chatId in switching) "切换目录中" else "空闲"
+                reply("正在执行：${running.size}/$limit\n正在排队：${queue.size}\n当前聊天：$state\n当前聊天排队：${queue.count { it.route.chatId == route.chatId }}")
+            }
+            "/pwd" -> { { send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}") } }
+            "/stop" -> {
+                val target = running[route.chatId]
+                val cancelled = if (target?.stage == Stage.STOPPING) emptyList() else queue.filter { it.route.chatId == route.chatId }
+                queue.removeAll(cancelled.toSet())
+                cancelled.forEach { it.notice?.cancel(); it.completed.complete(Unit) }
+                if (target != null) {
+                    val previousStage = target.stage
+                    if (previousStage != Stage.STOPPING) target.stopCancelled = cancelled.size
+                    target.stage = Stage.STOPPING
+                    target.handle.requestStop()
+                    if (previousStage == Stage.PREPARING || previousStage == Stage.REPLYING) target.task!!.cancel()
+                    if (target.stopNotice == null) target.stopNotice = scope.launch {
+                        if (withTimeoutOrNull(30_000) { target.completed.asDeferred().await(); true } != true) {
+                            try { send(route, "Codex 尚未确认停止，当前聊天保持停止中，可用本机 --stop 退出整个 Bridge。") }
+                            catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { log.warn("停止等待提示发送失败 messageId={}", route.messageId) }
+                        }
+                    }
+                    suspend {
+                        // Cancellation must happen even when the acknowledgement cannot be delivered.
+                        try { send(route, "正在停止…") }
+                        catch (e: CancellationException) { throw e }
+                        catch (_: Exception) { log.warn("停止提示发送失败 messageId={}", route.messageId) }
+                        target.completed.asDeferred().await()
+                        val failed = mutex.withLock { target.stopBackendFailed }
+                        send(route, if (failed) "Codex 后端异常，本次执行已结束；已取消 ${target.stopCancelled} 个排队请求，会话和目录保留，未自动重跑。"
+                            else "当前任务已停止，已取消 ${target.stopCancelled} 个排队请求；会话和目录保留。")
+                    }
+                } else {
+                    dispatch()
+                    reply(if (cancelled.isNotEmpty()) "已取消 ${cancelled.size} 个排队请求，当前没有运行任务。"
+                        else if (route.chatId in switching) "当前正在切换目录，没有运行中的模型任务。" else "当前聊天没有运行或排队任务。")
+                }
+            }
+            "/cd" -> {
+                if (command.argument.isEmpty()) reply("请使用 /cd <path>，查看 /help 获取帮助。")
+                else if (route.chatId in running || route.chatId in switching || queue.any { it.route.chatId == route.chatId })
+                    reply("当前聊天忙碌，请等待空闲，或先 /stop 停止任务后再切换目录。")
+                else {
+                    switching.add(route.chatId)
+                    suspend {
+                        try { changeDirectory(route, command.argument) }
+                        finally { withContext(NonCancellable) { mutex.withLock { switching.remove(route.chatId); dispatch() } } }
+                    }
+                }
+            }
+            else -> error("Unrecognized Bridge command")
+        }
+    }
+
+    private suspend fun changeDirectory(route: ReplyRoute, argument: String) {
+        val base = sessionKey(route.chatId)
+        val current = sessions.workspace(base)
+        val target = try { withContext(Dispatchers.IO) { resolveWorkspace(argument, current) } }
+        catch (_: IllegalArgumentException) {
+            send(route, "路径无效或目录不可读取，请检查 /cd 参数；原目录和会话未变。")
+            return
+        }
+        try { sessions.changeWorkspace(base, target) }
+        catch (_: SessionPersistenceException) {
+            send(route, "目录保存失败，原目录和会话未变，请检查本机存储。")
+            return
+        }
+        val result = if (target == current) "目录未变，会话保留。" else "下次请求将开始新会话。"
+        send(route, "当前目录：$target\n访问模式：${sandboxMode.cliValue}\n$result")
+    }
+
+    // ATOMIC ensures even a job cancelled immediately after registration runs its cleanup.
+    @OptIn(ExperimentalCoroutinesApi::class, DelicateCoroutinesApi::class)
     private fun dispatch() {
         if (closed) return
         while (running.size < limit) {
             val seenChats = mutableSetOf<String>()
             val next = queue.firstOrNull { work ->
-                seenChats.add(work.route.chatId) && work.ready && !running.containsKey(work.route.chatId)
+                seenChats.add(work.route.chatId) && work.ready && work.route.chatId !in running && work.route.chatId !in switching
             } ?: break
             queue.remove(next)
             running[next.route.chatId] = next
-            scope.launch { execute(next) }
+            next.task = scope.launch(start = CoroutineStart.ATOMIC) { execute(next) }
+        }
+    }
+
+    private suspend fun stage(work: Work, next: Stage) {
+        currentCoroutineContext().ensureActive()
+        mutex.withLock {
+            if (work.handle.stopRequested) throw CancellationException("Request stopped")
+            work.stage = next
         }
     }
 
@@ -100,33 +200,6 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             if (mutex.withLock { closed }) return
             val base = sessionKey(route.chatId)
             val current = sessions.workspace(base)
-            if (work.prompt.trim() == "/pwd") {
-                send(route, "当前目录：$current")
-                return
-            }
-            if (isCdCommand(work.prompt)) {
-                val argument = work.prompt.substring(3).trim()
-                if (argument.isEmpty()) {
-                    send(route, "当前目录：$current\n访问模式：${sandboxMode.cliValue}")
-                    return
-                }
-                val target = try { withContext(Dispatchers.IO) { resolveWorkspace(argument, current) } }
-                catch (_: IllegalArgumentException) {
-                    send(route, "路径无效或目录不可读取，请检查 /cd 参数；原目录和会话未变。")
-                    return
-                }
-                try { sessions.changeWorkspace(base, target) }
-                catch (_: SessionPersistenceException) {
-                    send(route, "目录保存失败，原目录和会话未变，请检查本机存储。")
-                    return
-                }
-                if (target == current) {
-                    send(route, "当前目录：$target\n访问模式：${sandboxMode.cliValue}\n目录未变，会话保留。")
-                } else {
-                    send(route, "已切换目录：$target\n访问模式：${sandboxMode.cliValue}\n下次请求将开始新会话。")
-                }
-                return
-            }
             val workspace = try { withContext(Dispatchers.IO) { checkedWorkspace(current) } }
             catch (_: IllegalArgumentException) {
                 send(route, "工作目录不存在或不可读取，请使用 /cd 指定有效目录。")
@@ -138,11 +211,10 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             suspend fun run(id: String?): AgentResult {
                 log.info("开始执行 chatId={} messageId={} sessionId={}", route.chatId, route.messageId, id)
                 return try {
-                    runInterruptible(Dispatchers.IO) { runner.run(work.prompt, id, workspace, sandboxMode) { observed ->
-                        // Synchronous CLI callback must persist before its JSON reader continues.
-                        runBlocking { sessions.set(key, observed) }
+                    runner.runControlled(work.handle, work.prompt, id, workspace, sandboxMode) { observed ->
+                        sessions.set(key, observed)
                         log.info("会话绑定 chatId={} messageId={} sessionId={}", route.chatId, route.messageId, observed)
-                    } }
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: SessionPersistenceException) {
@@ -152,7 +224,13 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 }
             }
             val previous = withContext(Dispatchers.IO) { sessions.get(key) }
+            stage(work, Stage.EXECUTING)
             var result = run(previous)
+            if (work.handle.stopRequested) {
+                mutex.withLock { work.stopBackendFailed = result is AgentResult.Failure && result.kind != AgentResult.Kind.STOPPED }
+                return
+            }
+            if (result is AgentResult.Failure && result.kind == AgentResult.Kind.STOPPED) return
             if (previous != null && result is AgentResult.Failure && result.kind == AgentResult.Kind.SESSION_MISSING) {
                 send(route, "原会话已不存在，旧上下文不可用，将创建新会话处理本次请求。")
                 withContext(Dispatchers.IO) { sessions.remove(key) }
@@ -167,9 +245,9 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                     log.warn("Codex 失败 chatId={} messageId={} sessionId={} kind={} exitCode={}",
                         route.chatId, route.messageId, result.sessionId, result.kind, result.exitCode)
                     when (result.kind) {
-                        AgentResult.Kind.START -> "无法启动 Codex，请检查本机 codex 命令。"
+                        AgentResult.Kind.START -> "无法连接 Codex app-server，请检查 CLI 版本、配置或重启 Bridge。"
+                        AgentResult.Kind.STOPPED -> "Codex 当前轮已中断，会话保留。"
                         AgentResult.Kind.EXECUTION -> "Codex 执行失败，已保留会话，请检查本机登录、网络及配置。"
-                        AgentResult.Kind.TIMEOUT -> "Codex 处理超时，任务已停止，已保留会话。"
                         AgentResult.Kind.EMPTY -> "Codex 未返回有效答案，已保留会话。"
                         AgentResult.Kind.PROTOCOL -> "Codex 会话协议异常，未自动重跑，请检查 CLI 版本。"
                         AgentResult.Kind.STORAGE -> "会话保存失败，当前聊天已暂停执行，请修复本机存储后重启。"
@@ -177,7 +255,11 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                     }
                 }
             }
-            for (chunk in splitAnswer(answer)) send(route, chunk)
+            stage(work, Stage.REPLYING)
+            for (chunk in splitAnswer(answer)) {
+                if (work.handle.stopRequested) return
+                send(route, chunk)
+            }
             log.info("回复完成 chatId={} messageId={} sessionId={} elapsedMs={}", route.chatId, route.messageId,
                 result.sessionId, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
         } catch (_: TimeoutCancellationException) {
@@ -191,8 +273,12 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             log.error("执行或发送失败 chatId={} messageId={}；未自动重跑。", route.chatId, route.messageId)
         } finally {
             withContext(NonCancellable) {
-                mutex.withLock { running.remove(route.chatId); dispatch() }
+                mutex.withLock {
+                    if (running[route.chatId] === work) running.remove(route.chatId)
+                    dispatch()
+                }
                 work.completed.complete(Unit)
+                work.stopNotice?.cancel()
             }
         }
     }
@@ -211,10 +297,11 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 closed = true
                 (queue + running.values).also { queue.clear() }
             }
-            job.cancel()
+            cancelled.forEach { it.handle.requestStop(); it.task?.cancel() }
             try {
                 withContext(Dispatchers.IO) { runner.close() }
             } finally {
+                job.cancel()
                 job.join()
                 cancelled.forEach { it.completed.complete(Unit) }
             }

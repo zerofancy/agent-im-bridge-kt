@@ -10,12 +10,13 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
+import kotlinx.coroutines.*
 
 class WorkspaceTest {
     @TempDir lateinit var temp: Path
     private fun key(chat: String) = SessionKey("cli_test", chat, temp.toRealPath().toString(), temp.resolve("codex").toString())
 
-    @Test fun `path syntax is literal and directories must exist`() {
+    @Test fun `path syntax is literal and directories must exist`(): Unit = runBlocking {
         val nested = Files.createDirectories(temp.resolve("dir with spaces"))
         assertEquals(nested.toRealPath(), resolveWorkspace("'dir with spaces'", temp))
         assertEquals(nested.toRealPath(), resolveWorkspace("\"$nested\"", temp))
@@ -66,14 +67,14 @@ class WorkspaceTest {
         assertEquals(Path.of(base.workspace), restored.workspace(base.copy(workspace = "/another-default")))
     }
 
-    @Test fun `cd shares FIFO switches fresh sessions and restores directory after restart`(): Unit = runBlocking {
+    @Test fun `cd rejects busy chat switches fresh sessions and restores directory after restart`(): Unit = runBlocking {
         val target = Files.createDirectory(temp.resolve("target")).toRealPath()
         val store = SessionStore(temp.resolve("sessions.json"))
         val calls = mutableListOf<Triple<String, Path, String?>>()
         val replies = mutableListOf<Pair<ReplyRoute, String>>()
         val started = CountDownLatch(1); val release = CountDownLatch(1)
         val runner = object : AgentRunner {
-            override fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: (String) -> Unit): AgentResult {
+            override suspend fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: suspend (String) -> Unit): AgentResult {
                 calls += Triple(prompt, workspace, sessionId)
                 assertEquals(SandboxMode.WORKSPACE_WRITE, sandboxMode)
                 val id = sessionId ?: UUID.randomUUID().toString()
@@ -89,9 +90,12 @@ class WorkspaceTest {
             val first = svc.accept(route, "first")
             assertTrue(started.await(5, TimeUnit.SECONDS))
             val cd = svc.accept(route.copy(messageId = "cd"), "/cd target")
-            val after = svc.accept(route, "second")
+            cd.get(5, TimeUnit.SECONDS)
+            assertTrue(replies.any { it.first.messageId == "cd" && it.second.contains("忙碌") })
             release.countDown()
-            listOf(first, cd, after).forEach { it.get(5, TimeUnit.SECONDS) }
+            first.get(5, TimeUnit.SECONDS)
+            svc.accept(route, "/cd target").get(5, TimeUnit.SECONDS)
+            svc.accept(route, "second").get(5, TimeUnit.SECONDS)
             svc.accept(route, "/cd .").get(5, TimeUnit.SECONDS)
             svc.accept(route, "same").get(5, TimeUnit.SECONDS)
             svc.accept(route, "/cd ..").get(5, TimeUnit.SECONDS)
@@ -111,7 +115,7 @@ class WorkspaceTest {
         val target = Files.createDirectory(temp.resolve("target")).toRealPath()
         val store = SessionStore(temp.resolve("sessions.json"))
         val runner = object : AgentRunner {
-            override fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: (String) -> Unit): AgentResult = error("commands must not run Codex")
+            override suspend fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: suspend (String) -> Unit): AgentResult = error("commands must not run Codex")
             override fun close() {}
         }
         ChatService(runner, store, ::key, sender = ReplySender { _, _ -> CompletableFuture.failedFuture(IllegalArgumentException()) }).use {
@@ -127,7 +131,7 @@ class WorkspaceTest {
         val store = SessionStore(file)
         val calls = mutableListOf<Path>()
         val runner = object : AgentRunner {
-            override fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: (String) -> Unit): AgentResult {
+            override suspend fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: suspend (String) -> Unit): AgentResult {
                 calls.add(workspace)
                 return AgentResult.Success("ok")
             }
@@ -152,7 +156,7 @@ class WorkspaceTest {
         }
     }
 
-    @Test fun `permission config defaults strictly and round trips`() {
+    @Test fun `permission config defaults strictly and round trips`(): Unit = runBlocking {
         val file = temp.resolve("config.json")
         val base = """{"appId":"cli_test","appSecret":"test","allowedUserId":"ou_test","tenant":"feishu""""
         Files.writeString(file, "$base}")
