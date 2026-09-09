@@ -9,8 +9,9 @@ import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.PosixFilePermissions
 
-class BridgeConfig(val appId: String, val appSecret: String, val allowedUserId: String, val tenant: String) {
+class BridgeConfig(val appId: String, val appSecret: String, val allowedUserId: String, val tenant: String, val sandboxMode: String = "read-only") {
     fun validate() {
+        SandboxMode.parse(sandboxMode)
         require(appId.startsWith("cli_") && appSecret.isNotBlank()) { "应用配置不完整，请重新绑定。" }
         require(allowedUserId.startsWith("ou_") && allowedUserId.length > 3) { "需要有效的用户 open_id（ou_ 开头）。" }
         require(tenant in setOf("feishu", "lark")) { "tenant 必须为 feishu 或 lark。" }
@@ -29,7 +30,12 @@ class ConfigStore(val path: Path) {
         return try {
             val json = JsonParser.parseString(Files.readString(path)).asJsonObject
             BridgeConfig(json["appId"].asString, json["appSecret"].asString,
-                json["allowedUserId"].asString, json["tenant"].asString).also { it.validate() }
+                json["allowedUserId"].asString, json["tenant"].asString,
+                if (json.has("sandboxMode")) {
+                    val mode = json["sandboxMode"]
+                    require(mode.isJsonPrimitive && mode.asJsonPrimitive.isString)
+                    mode.asString
+                } else "read-only").also { it.validate() }
         } catch (_: Exception) {
             throw IllegalArgumentException("配置文件无效，请检查 $path；不会自动覆盖已有配置。")
         }

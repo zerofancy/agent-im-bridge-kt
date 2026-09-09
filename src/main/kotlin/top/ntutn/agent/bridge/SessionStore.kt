@@ -9,8 +9,17 @@ import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 data class SessionKey(val appId: String, val chatId: String, val workspace: String, val codexHome: String)
+data class ChatKey(val appId: String, val chatId: String, val codexHome: String)
+data class WorkspaceEntry(val key: ChatKey, val workspace: String)
+fun SessionKey.chatKey() = ChatKey(appId, chatId, codexHome)
+
 data class SessionEntry(val key: SessionKey, val sessionId: String, val updatedAt: Long)
 class SessionPersistenceException : RuntimeException("会话存储失败，请检查本机会话文件及磁盘权限。")
 
@@ -22,6 +31,8 @@ fun validSessionId(value: String): Boolean = try { UUID.fromString(value).toStri
 
 class SessionStore(private val path: Path) {
     private val gson = GsonBuilder().setPrettyPrinting().create()
+    private val mutex = Mutex()
+    private var directories = linkedMapOf<ChatKey, WorkspaceEntry>()
     private var entries = linkedMapOf<SessionKey, SessionEntry>()
 
     init {
@@ -30,7 +41,17 @@ class SessionStore(private val path: Path) {
                 require(Files.isRegularFile(path, NOFOLLOW_LINKS))
                 Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"))
                 val root = JsonParser.parseString(Files.readString(path)).asJsonObject
-                require(root["version"].asInt == 1)
+                val version = root["version"].asInt
+                require(version in 1..2)
+                if (version == 2) for (raw in root["workspaces"].asJsonArray) {
+                    val item = raw.asJsonObject
+                    val key = item["key"].asJsonObject
+                    val chat = ChatKey(key["appId"].asString, key["chatId"].asString, key["codexHome"].asString)
+                    val entry = WorkspaceEntry(chat, item["workspace"].asString)
+                    require(chat.appId.isNotBlank() && chat.chatId.isNotBlank())
+                    require(Path.of(chat.codexHome).isAbsolute && Path.of(entry.workspace).isAbsolute)
+                    require(directories.put(chat, entry) == null)
+                }
                 for (raw in root["sessions"].asJsonArray) {
                     val item = raw.asJsonObject
                     val k = item["key"].asJsonObject
@@ -43,20 +64,42 @@ class SessionStore(private val path: Path) {
         }
     }
 
-    @Synchronized fun get(key: SessionKey): String? = entries[key]?.sessionId
+    suspend fun get(key: SessionKey): String? = mutex.withLock { entries[key]?.sessionId }
 
-    @Synchronized fun set(key: SessionKey, sessionId: String) {
+    suspend fun workspace(key: SessionKey): Path = mutex.withLock {
+        Path.of(directories[key.chatKey()]?.workspace ?: key.workspace)
+    }
+
+    suspend fun changeWorkspace(base: SessionKey, target: Path) = mutex.withLock {
+        val nextDirectories = LinkedHashMap(directories).apply {
+            put(base.chatKey(), WorkspaceEntry(base.chatKey(), target.toString()))
+        }
+        val current = directories[base.chatKey()]?.workspace ?: base.workspace
+        val next = LinkedHashMap(entries).apply {
+            if (target.toString() != current) remove(base.copy(workspace = target.toString()))
+        }
+        commit(next, nextDirectories)
+    }
+
+    suspend fun set(key: SessionKey, sessionId: String) = mutex.withLock {
         val entry = SessionEntry(key, sessionId, System.currentTimeMillis())
         validate(entry)
         val next = LinkedHashMap(entries).apply { put(key, entry) }
-        persist(next)
-        entries = next
+        commit(next, directories)
     }
 
-    @Synchronized fun remove(key: SessionKey) {
+    suspend fun remove(key: SessionKey) = mutex.withLock {
         val next = LinkedHashMap(entries).apply { remove(key) }
-        persist(next)
-        entries = next
+        commit(next, directories)
+    }
+
+    // Once the atomic replacement begins, finish its matching memory update even on cancellation.
+    private suspend fun commit(next: LinkedHashMap<SessionKey, SessionEntry>, nextDirectories: LinkedHashMap<ChatKey, WorkspaceEntry>) {
+        withContext(NonCancellable + Dispatchers.IO) {
+            persist(next, nextDirectories)
+            entries = next
+            directories = nextDirectories
+        }
     }
 
     private fun validate(entry: SessionEntry) {
@@ -65,7 +108,7 @@ class SessionStore(private val path: Path) {
         require(validSessionId(entry.sessionId) && entry.updatedAt > 0)
     }
 
-    private fun persist(next: Map<SessionKey, SessionEntry>) {
+    private fun persist(next: Map<SessionKey, SessionEntry>, nextDirectories: Map<ChatKey, WorkspaceEntry>) {
         var temp: Path? = null
         try {
             val parent = path.toAbsolutePath().parent
@@ -73,7 +116,7 @@ class SessionStore(private val path: Path) {
             require(Files.isDirectory(parent, NOFOLLOW_LINKS))
             require(!Files.isSymbolicLink(path))
             temp = Files.createTempFile(parent, ".sessions-", ".tmp", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
-            Files.writeString(temp, gson.toJson(mapOf("version" to 1, "sessions" to next.values)) + "\n")
+            Files.writeString(temp, gson.toJson(mapOf("version" to 2, "sessions" to next.values, "workspaces" to nextDirectories.values)) + "\n")
             Files.move(temp, path, ATOMIC_MOVE, REPLACE_EXISTING)
         } catch (_: Exception) { throw SessionPersistenceException() }
         finally { temp?.let { try { Files.deleteIfExists(it) } catch (_: Exception) {} } }

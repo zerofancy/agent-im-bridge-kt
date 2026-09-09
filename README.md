@@ -12,7 +12,7 @@ codex --version
 codex login status
 ```
 
-未登录时先在终端运行 `codex login`。程序复用本机默认模型和配置，保留项目规则，显式启用 `read-only` 沙箱和非交互模式；不会请求交互式提权。
+未登录时先在终端运行 `codex login`。程序复用本机默认模型和配置，保留项目规则，默认启用 `read-only` 沙箱，可通过本机配置切换访问模式，始终使用非交互模式；不会请求交互式提权。
 
 ```bash
 ./gradlew test installDist
@@ -61,11 +61,37 @@ codex login status
 - `--max-concurrent-runs`：默认 10，必须为正整数；一个聊天最多占用一个运行槽位。
 - `--no-browser`：仅打印首次绑定链接，不自动打开浏览器。
 
-参数只对本次启动生效，不写入飞书凭证文件。不支持修改文件、附件输入、流式输出、`/new` 或 `/stop` 命令。每条请求的最终答案临时文件在处理后清理。只读权限限制由本机 Codex 执行。隔离对象是对话上下文，所有聊天仍使用配置的同一工作目录，能够读取其中相同的文件。
+参数只对本次启动生效，不写入飞书凭证文件。支持配置后修改文件；不支持附件输入、流式输出、`/new` 或聊天内 `/stop` 命令。每条请求的最终答案临时文件在处理后清理。访问权限限制由本机 Codex 执行。隔离对象是对话上下文，未切换目录的聊天使用启动默认目录；不同聊天可以选择相同目录，此时文件仍然共享。
+
+## 聊天工作目录与编辑权限
+
+- `/pwd`：查看当前聊天的工作目录，不调用 Codex，不改变会话。
+- `/cd`：查看当前目录及访问模式。
+- `/cd /absolute/path`：切换当前聊天目录。
+- `/cd ../another-project`、`/cd ~/Project`：相对当前目录或用户主目录解析。
+- `/cd "path with spaces"`：支持整体路径及一对外围单/双引号；不展开环境变量或执行 shell。
+
+命令也只允许授权用户使用，群聊必须 @机器人。命令和普通请求按同聊天 FIFO 执行，前面的任务结束后才切换，后面的请求使用新目录。目录必须已存在且可读取，不自动创建。无效路径或落盘失败保留原状态；切换已成功但回复失败不回滚。目录在执行前会再次检查，失效时需重新 `/cd`。
+
+每个聊天的目录选择会持久化，重启后恢复。未切换过的聊天使用 `--workspace`。切换到不同真实目录会开始新会话，切回旧目录也不会恢复旧上下文；切换到同一真实目录则保留当前会话。Codex 保存的历史不会删除。同一群的话题共享该群的目录。
+
+在本机 `~/.agent-im-bridge-kt/config.json` 增加或修改以下字段，停止并重启机器人后对所有聊天生效：
+
+```json
+"sandboxMode": "workspace-write"
+```
+
+| 值 | 含义 |
+| --- | --- |
+| `read-only` | 默认只读分析 |
+| `workspace-write` | 允许 Codex 在当前工作目录内编辑；实际可写范围及临时目录例外由 Codex 沙箱决定 |
+| `danger-full-access` | 不使用 Codex 沙箱限制，访问范围由运行账号的系统权限决定 |
+
+缺失字段默认只读，非法值或非字符串值会阻止启动。聊天命令不能提权。新建和续接都显式传入本次启动的访问模式，保持 `-a never`，不会弹出交互式审批。改变访问模式本身不重置会话。目录切换是上下文及执行目录选择，不是独立容器。
 
 ## 会话存储
 
-会话映射保存于 `~/.agent-im-bridge-kt/sessions.json`（权限 `600`），包含应用 ID、聊天 ID、规范化工作目录、Codex 状态目录、session ID 和更新时间。写入使用单写入锁、临时文件和原子替换；不保存消息正文。完整历史由 Codex 存在 `CODEX_HOME`（默认 `~/.codex`）。更换应用、工作目录或 Codex 状态目录会使用不同绑定。
+会话映射保存于 `~/.agent-im-bridge-kt/sessions.json`（权限 `600`），包含应用 ID、聊天 ID、规范化工作目录、Codex 状态目录、session ID、更新时间及各聊天选择的目录。版本 2 兼容读取旧版文件，首次成功写入时升级；降级前请备份会话文件。写入使用单写入锁、临时文件和原子替换；不保存消息正文。完整历史由 Codex 存在 `CODEX_HOME`（默认 `~/.codex`）。更换应用、工作目录或 Codex 状态目录会使用不同绑定。
 
 首次使用 `codex exec --json` 创建会话，收到 `thread.started` 立即保存；以后显式 `codex exec resume <SESSION_ID> -` 续接。重启会加载原绑定。超时、执行失败和答案发送失败保留已取得的绑定，不自动重跑。仅当 CLI 明确报告指定会话不存在且尚未开始本轮时，先通知聊天旧上下文失效，再新建一次；不能可靠识别的错误按普通失败处理。
 
@@ -73,7 +99,7 @@ codex login status
 
 ## 飞书配置
 
-配置位于 `~/.agent-im-bridge-kt/config.json`，目录权限 `700`、文件权限 `600`。内含 `appId`、`appSecret`、`allowedUserId`、`tenant`（`feishu` 或 `lark`）。凭证是本机明文文件，程序和 SDK 日志不打印密钥；不要上传此文件。
+配置位于 `~/.agent-im-bridge-kt/config.json`，目录权限 `700`、文件权限 `600`。内含 `appId`、`appSecret`、`allowedUserId`、`sandboxMode`（可选，默认 `read-only`）、`tenant`（`feishu` 或 `lark`）。凭证是本机明文文件，程序和 SDK 日志不打印密钥；不要上传此文件。
 
 默认使用授权结果中的用户 open_id。如果服务未返回该 ID，程序会在真实终端提示补充；也可通过环境变量提供回退值：
 
@@ -126,9 +152,15 @@ ECHO_ALLOWED_USER_ID=ou_your_open_id ./build/install/agent-im-bridge-kt/bin/agen
 CODEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.CodexLiveTest --rerun-tasks
 ```
 
-飞书验收：私聊先发送“记住标记 private-随机值”，再问“刚才的标记是什么”；群 A、群 B 分别 @机器人发送不同标记并追问，检查各自回复与日志中的 session ID。退出并重启后再次追问，应保持各自标记。连续发送多条请求检查排队提示与原消息回复路由。真实飞书收发需要用户完成授权并发送测试消息；本机 CLI 测试不代替飞书端到端验证。
+飞书验收：私聊先发送“记住标记 private-随机值”，再问“刚才的标记是什么”；群 A、群 B 分别 @机器人发送不同标记并追问，检查各自回复与日志中的 session ID。退出并重启后再次追问，应保持各自标记。连续发送多条请求检查排队提示与原消息回复路由。补充目录验收：在两个聊天分别 `/cd` 到不同目录，检查 `/cd` 查询；在一个聊天切回原目录确认上下文新建。配置为 `workspace-write` 并重启，在测试目录请求创建文件，验证编辑及目录恢复。真实飞书收发需要用户完成授权并发送测试消息；本机 CLI 测试不代替飞书端到端验证。
 
 - [参考项目初始化代码](https://github.com/KeepSilenceQP/lark-coding-agent-bridge/blob/c8aa2f4d9b6b3526b172ea407bad76cb208fff3c/src/bot/wizard.ts)
 - [飞书 Java Channel](https://github.com/larksuite/oapi-sdk-java/blob/v2_main/CHANNEL.md)
 - [Java SDK 2.7.3 发布包与源码](https://repo.maven.apache.org/maven2/com/larksuite/oapi/oapi-sdk/2.7.3/)
 - [前期调研](docs/kotlin-mvp-research.md)
+
+权限真实测试（在主目录下创建独立测试文件夹，结束后清理）：
+
+```bash
+CODEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.SandboxLiveTest
+```

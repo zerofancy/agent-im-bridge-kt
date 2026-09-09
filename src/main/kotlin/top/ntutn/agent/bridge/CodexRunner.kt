@@ -17,14 +17,15 @@ sealed class AgentResult {
 }
 
 interface AgentRunner : AutoCloseable {
-    fun run(prompt: String, sessionId: String? = null, onSession: (String) -> Unit = {}): AgentResult
+    fun run(prompt: String, sessionId: String? = null, workspace: Path = Path.of("").toAbsolutePath(),
+            sandboxMode: SandboxMode = SandboxMode.READ_ONLY, onSession: (String) -> Unit = {}): AgentResult
 }
 
 // Only this exact pre-turn diagnostic is eligible for a retry. Never search model output for errors.
 internal fun missingSessionDiagnostic(line: String, sessionId: String): Boolean =
     line.trim() == "Error: thread/resume: thread/resume failed: no rollout found for thread id $sessionId (code -32600)"
 
-class CodexRunner(private val binary: String, private val workspace: Path, private val timeout: Duration,
+class CodexRunner(private val binary: String, private val timeout: Duration,
                   private val codexHome: Path = defaultCodexHome()) : AgentRunner {
     private val lock = Any()
     private val active = mutableSetOf<Process>()
@@ -44,7 +45,7 @@ class CodexRunner(private val binary: String, private val workspace: Path, priva
         } finally { terminate(process) }
     }
 
-    override fun run(prompt: String, sessionId: String?, onSession: (String) -> Unit): AgentResult {
+    override fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: (String) -> Unit): AgentResult {
         if (sessionId != null && !validSessionId(sessionId)) return AgentResult.Failure(AgentResult.Kind.PROTOCOL)
         val directory = Files.createTempDirectory("bridge-codex-")
         val output = directory.resolve("answer.txt")
@@ -58,7 +59,7 @@ class CodexRunner(private val binary: String, private val workspace: Path, priva
         var process: Process? = null
         fun failure(kind: AgentResult.Kind, code: Int? = null) = AgentResult.Failure(kind, code, observed.get() ?: sessionId)
         try {
-            val args = mutableListOf(binary, "-a", "never", "exec", "--sandbox", "read-only",
+            val args = mutableListOf(binary, "-a", "never", "exec", "--sandbox", sandboxMode.cliValue,
                 "--skip-git-repo-check", "--color", "never", "-C", workspace.toString())
             if (sessionId != null) args += "resume"
             args += listOf("--json", "--output-last-message", output.toString())

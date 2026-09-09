@@ -15,7 +15,7 @@ class CodexProtocolTest {
         val binary = temp.resolve("fake")
         Files.writeString(binary, "#!/bin/sh\n" + body.replace('§', '$'))
         binary.toFile().setExecutable(true)
-        return CodexRunner(binary.toString(), temp, timeout)
+        return CodexRunner(binary.toString(), timeout)
     }
     private fun event(type: String) = "echo '{\"type\":\"$type\",\"thread_id\":\"$id\"}'\n"
 
@@ -78,6 +78,30 @@ class CodexProtocolTest {
                 assertTrue(args.indexOf("resume") > args.indexOf("--sandbox"))
                 assertEquals(listOf(id, "-"), args.takeLast(2))
             } finally { pool.shutdownNow() }
+        }
+    }
+
+    @Test fun `each run supplies its own workspace and sandbox for new and resume`() {
+        val body = """
+            printf '%s\n' "§@" > "$temp/args"
+            while [ "§#" -gt 0 ]; do
+                if [ "§1" = "--output-last-message" ]; then shift; answer="§1"; fi
+                shift
+            done
+            cat >/dev/null
+            printf '%s' "§PWD" > "§answer"
+        """.trimIndent() + "\n" + event("thread.started") + event("turn.completed")
+        runner(body).use { runner ->
+            for (mode in SandboxMode.entries) for (session in listOf(null, id)) {
+                val workspace = Files.createTempDirectory(temp, "work-").toRealPath()
+                val result = assertIs<AgentResult.Success>(runner.run("hello", session, workspace, mode))
+                assertEquals(workspace.toString(), result.text)
+                val args = Files.readAllLines(temp.resolve("args"))
+                assertEquals(mode.cliValue, args[args.indexOf("--sandbox") + 1])
+                assertEquals(workspace.toString(), args[args.indexOf("-C") + 1])
+                assertEquals("never", args[args.indexOf("-a") + 1])
+                assertEquals(session != null, "resume" in args)
+            }
         }
     }
 

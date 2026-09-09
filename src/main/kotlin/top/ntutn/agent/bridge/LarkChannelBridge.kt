@@ -59,7 +59,7 @@ fun createCodexChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
     val service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), codexHome.toString())
-    }, options.maxConcurrentRuns) { route, text ->
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode)) { route, text ->
         channel.send(route.chatId, SendInput.text(text),
             SendOptions.newBuilder().replyTo(route.messageId).build()).thenApply { result ->
                 check(!result?.messageId.isNullOrBlank()) { "API 未返回消息 ID" }

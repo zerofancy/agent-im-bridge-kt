@@ -1,5 +1,6 @@
 package top.ntutn.agent.bridge
 
+import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.Collections
@@ -11,15 +12,15 @@ import kotlin.test.*
 class ChatServiceTest {
     @TempDir lateinit var temp: Path
     private val route = ReplyRoute("private", "om_test")
-    private fun key(chat: String) = SessionKey("cli_test", chat, temp.toString(), temp.resolve("codex").toString())
+    private fun key(chat: String) = SessionKey("cli_test", chat, temp.toRealPath().toString(), temp.resolve("codex").toString())
     private fun runner(block: (String, String?, (String) -> Unit) -> AgentResult) = object : AgentRunner {
-        override fun run(prompt: String, sessionId: String?, onSession: (String) -> Unit) = block(prompt, sessionId, onSession)
+        override fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode, onSession: (String) -> Unit) = block(prompt, sessionId, onSession)
         override fun close() {}
     }
     private fun service(runner: AgentRunner, limit: Int = 10, sender: ReplySender = ReplySender { _, _ -> CompletableFuture.completedFuture(Unit) }) =
-        ChatService(runner, SessionStore(temp.resolve("sessions.json")), ::key, limit, sender)
+        ChatService(runner, SessionStore(temp.resolve("sessions.json")), ::key, limit, sender = sender)
 
-    @Test fun `same chat is FIFO and resumes latest id while other chats run concurrently`() {
+    @Test fun `same chat is FIFO and resumes latest id while other chats run concurrently`(): Unit = runBlocking {
         val entered = CountDownLatch(2)
         val release = CountDownLatch(1)
         val active = AtomicInteger()
@@ -55,7 +56,7 @@ class ChatServiceTest {
         }
     }
 
-    @Test fun `oldest eligible chat head wins and queue exceeds ten messages without loss`() {
+    @Test fun `oldest eligible chat head wins and queue exceeds ten messages without loss`(): Unit = runBlocking {
         val entered = CountDownLatch(1); val release = CountDownLatch(1)
         val calls = Collections.synchronizedList(mutableListOf<String>())
         service(runner { p, _, _ -> calls += p; if (p == "0") { entered.countDown(); release.await() }; AgentResult.Success(p) }, 1).use {
@@ -68,7 +69,7 @@ class ChatServiceTest {
         }
     }
 
-    @Test fun `failed start message skips codex then schedules next request`() {
+    @Test fun `failed start message skips codex then schedules next request`(): Unit = runBlocking {
         val calls = AtomicInteger(); val sends = AtomicInteger()
         service(runner { _, _, _ -> calls.incrementAndGet(); AgentResult.Success("answer") }, sender = ReplySender { _, _ ->
             if (sends.incrementAndGet() == 1) CompletableFuture.failedFuture(IllegalStateException()) else CompletableFuture.completedFuture(Unit)
@@ -79,7 +80,7 @@ class ChatServiceTest {
         assertEquals(1, calls.get())
     }
 
-    @Test fun `long unicode answer preserves every reply route and stops on send failure`() {
+    @Test fun `long unicode answer preserves every reply route and stops on send failure`(): Unit = runBlocking {
         val text = "🙂".repeat(6001)
         assertEquals(listOf(3000,3000,1), splitAnswer(text).map { it.codePointCount(0, it.length) })
         assertEquals(text, splitAnswer(text).joinToString(""))
@@ -91,7 +92,7 @@ class ChatServiceTest {
         assertEquals(3,sends.get()); assertEquals(1,calls.get())
     }
 
-    @Test fun `only missing sessions trigger one replacement after notifying user`() {
+    @Test fun `only missing sessions trigger one replacement after notifying user`(): Unit = runBlocking {
         val store = SessionStore(temp.resolve("sessions.json"))
         val old = UUID.randomUUID().toString(); val fresh = UUID.randomUUID().toString()
         store.set(key("private"), old)
@@ -107,7 +108,7 @@ class ChatServiceTest {
         assertEquals(fresh,SessionStore(temp.resolve("sessions.json")).get(key("private")))
     }
 
-    @Test fun `ordinary failure preserves binding and does not retry`() {
+    @Test fun `ordinary failure preserves binding and does not retry`(): Unit = runBlocking {
         val id = UUID.randomUUID().toString(); val calls = AtomicInteger()
         service(runner { _, _, callback -> callback(id); calls.incrementAndGet(); AgentResult.Failure(AgentResult.Kind.TIMEOUT,sessionId=id) }).use {
             it.accept(route,"hello").get(5,TimeUnit.SECONDS)
@@ -115,7 +116,7 @@ class ChatServiceTest {
         assertEquals(1,calls.get()); assertEquals(id,SessionStore(temp.resolve("sessions.json")).get(key("private")))
     }
 
-    @Test fun `storage failure pauses that chat and queued tasks cannot run stale session`() {
+    @Test fun `storage failure pauses that chat and queued tasks cannot run stale session`(): Unit = runBlocking {
         val calls = AtomicInteger()
         service(runner { _, _, _ -> calls.incrementAndGet(); AgentResult.Failure(AgentResult.Kind.STORAGE) }).use {
             it.accept(route,"first").get(5,TimeUnit.SECONDS)
@@ -125,7 +126,7 @@ class ChatServiceTest {
         assertEquals(2,calls.get())
     }
 
-    @Test fun `suspended reply does not block another chat and close cancels pending replies`() {
+    @Test fun `suspended reply does not block another chat and close cancels pending replies`(): Unit = runBlocking {
         val waitingReply = CompletableFuture<Unit>()
         val replyStarted = CountDownLatch(1)
         val calls = Collections.synchronizedList(mutableListOf<String>())
@@ -146,7 +147,7 @@ class ChatServiceTest {
         } finally { svc.close() }
     }
 
-    @Test fun `close discards queue completes futures and prevents additional runs`() {
+    @Test fun `close discards queue completes futures and prevents additional runs`(): Unit = runBlocking {
         val entered = CountDownLatch(1); val calls = AtomicInteger()
         val svc = service(runner { _, _, _ -> calls.incrementAndGet(); entered.countDown(); CountDownLatch(1).await(); AgentResult.Success("never") },1)
         val first = svc.accept(route,"first")

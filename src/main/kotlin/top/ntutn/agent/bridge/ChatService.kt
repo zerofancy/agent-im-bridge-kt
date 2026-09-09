@@ -26,6 +26,7 @@ fun splitAnswer(text: String, limit: Int = 3000): List<String> {
 
 class ChatService(private val runner: AgentRunner, private val sessions: SessionStore,
                   private val sessionKey: (String) -> SessionKey, maxConcurrentRuns: Int = 10,
+                  private val sandboxMode: SandboxMode = SandboxMode.READ_ONLY,
                   private val sender: ReplySender) : AutoCloseable {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val mutex = Mutex()
@@ -97,14 +98,49 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         val started = System.nanoTime()
         try {
             if (mutex.withLock { closed }) return
+            val base = sessionKey(route.chatId)
+            val current = sessions.workspace(base)
+            if (work.prompt.trim() == "/pwd") {
+                send(route, "当前目录：$current")
+                return
+            }
+            if (isCdCommand(work.prompt)) {
+                val argument = work.prompt.substring(3).trim()
+                if (argument.isEmpty()) {
+                    send(route, "当前目录：$current\n访问模式：${sandboxMode.cliValue}")
+                    return
+                }
+                val target = try { withContext(Dispatchers.IO) { resolveWorkspace(argument, current) } }
+                catch (_: IllegalArgumentException) {
+                    send(route, "路径无效或目录不可读取，请检查 /cd 参数；原目录和会话未变。")
+                    return
+                }
+                try { sessions.changeWorkspace(base, target) }
+                catch (_: SessionPersistenceException) {
+                    send(route, "目录保存失败，原目录和会话未变，请检查本机存储。")
+                    return
+                }
+                if (target == current) {
+                    send(route, "当前目录：$target\n访问模式：${sandboxMode.cliValue}\n目录未变，会话保留。")
+                } else {
+                    send(route, "已切换目录：$target\n访问模式：${sandboxMode.cliValue}\n下次请求将开始新会话。")
+                }
+                return
+            }
+            val workspace = try { withContext(Dispatchers.IO) { checkedWorkspace(current) } }
+            catch (_: IllegalArgumentException) {
+                send(route, "工作目录不存在或不可读取，请使用 /cd 指定有效目录。")
+                return
+            }
+            val key = base.copy(workspace = workspace.toString())
             send(route, "正在处理…")
-            val key = sessionKey(route.chatId)
             if (mutex.withLock { unavailable.contains(route.chatId) }) throw SessionPersistenceException()
             suspend fun run(id: String?): AgentResult {
                 log.info("开始执行 chatId={} messageId={} sessionId={}", route.chatId, route.messageId, id)
                 return try {
-                    runInterruptible(Dispatchers.IO) { runner.run(work.prompt, id) { observed ->
-                        sessions.set(key, observed)
+                    runInterruptible(Dispatchers.IO) { runner.run(work.prompt, id, workspace, sandboxMode) { observed ->
+                        // Synchronous CLI callback must persist before its JSON reader continues.
+                        runBlocking { sessions.set(key, observed) }
                         log.info("会话绑定 chatId={} messageId={} sessionId={}", route.chatId, route.messageId, observed)
                     } }
                 } catch (e: CancellationException) {

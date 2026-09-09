@@ -29,9 +29,9 @@ class CodexRunnerTest {
 
     private fun run(body: String, prompt: String = "hello", timeout: Duration = Duration.ofSeconds(10)): AgentResult {
         val workspace = Files.createDirectories(temp.resolve("workspace with spaces")).toRealPath()
-        return CodexRunner(fake(body).toString(), workspace, timeout).use {
+        return CodexRunner(fake(body).toString(), timeout).use {
             it.checkAvailable()
-            when (val result = it.run(prompt)) {
+            when (val result = it.run(prompt, workspace = workspace)) {
                 is AgentResult.Success -> result.copy(sessionId = null)
                 is AgentResult.Failure -> result.copy(sessionId = null)
             }
@@ -71,11 +71,11 @@ class CodexRunnerTest {
     }
 
     @Test fun `missing binary and closed runner do not execute`() {
-        CodexRunner(temp.resolve("missing").toString(), temp, Duration.ofSeconds(1)).use {
+        CodexRunner(temp.resolve("missing").toString(), Duration.ofSeconds(1)).use {
             assertFailsWith<IllegalArgumentException> { it.checkAvailable() }
             assertEquals(AgentResult.Failure(AgentResult.Kind.START), it.run("hello"))
         }
-        val runner = CodexRunner(fake("cat > \"§answer\"").toString(), temp, Duration.ofSeconds(1))
+        val runner = CodexRunner(fake("cat > \"§answer\"").toString(), Duration.ofSeconds(1))
         runner.close()
         assertEquals(AgentResult.Failure(AgentResult.Kind.START), runner.run("hello"))
     }
@@ -83,7 +83,7 @@ class CodexRunnerTest {
     @Test fun `closing runner stops an active process tree`() {
         val pidFile = temp.resolve("closing-child.pid")
         val binary = fake("cat >/dev/null\nsleep 60 &\necho §! > '$pidFile'\nwait")
-        val runner = CodexRunner(binary.toString(), temp, Duration.ofSeconds(60))
+        val runner = CodexRunner(binary.toString(), Duration.ofSeconds(60))
         val worker = java.util.concurrent.Executors.newSingleThreadExecutor()
         try {
             val running = worker.submit<AgentResult> { runner.run("hello") }
