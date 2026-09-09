@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traex 后端接入 · 协议调研</title>
+<style>
+:root{color-scheme:light;--ink:#172b35;--muted:#526873;--line:#d9e3e7;--accent:#087c72}*{box-sizing:border-box}body{margin:0;background:#f3f6f7;color:var(--ink);font:16px/1.8 system-ui,-apple-system,"PingFang SC",sans-serif}main{max-width:1060px;margin:40px auto;padding:0 28px 60px}header{padding:36px;background:#153b43;color:white;border-radius:18px}header p{color:#d3e6e8}h1{font-size:34px;line-height:1.35;margin:10px 0}h2{font-size:23px;margin-top:0}h3{font-size:18px}section{background:white;border:1px solid var(--line);border-radius:14px;padding:28px;margin-top:20px}.eyebrow{font-size:13px;letter-spacing:.12em}.lead{font-size:19px}a{color:var(--accent)}header a{color:#b0f5e6}nav{display:flex;flex-wrap:wrap;gap:10px 24px;margin-top:22px}nav a{font-size:14px}table{border-collapse:collapse;width:100%;font-size:14px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:12px 10px}th{background:#f1f6f7}code{font-family:ui-monospace,SFMono-Regular,monospace;font-size:.9em;overflow-wrap:anywhere}pre{background:#112d35;color:#dceff0;padding:20px;border-radius:10px;overflow:auto;line-height:1.6}pre code{overflow-wrap:normal}.table-wrap{overflow:auto}.tag{color:#067368;font-size:13px;font-weight:650}.pending{color:#956118}.note{border-left:4px solid var(--accent);padding:10px 16px;background:#eff8f6}.muted{color:var(--muted);font-size:14px}li{margin:7px 0}.flow{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.node{padding:14px 18px;background:#edf5f5;border:1px solid var(--line);border-radius:9px}.arrow{color:var(--accent)}footer{font-size:13px;color:var(--muted);margin-top:25px}@media(max-width:640px){main{margin:16px auto;padding:0 14px 30px}header,section{padding:22px}h1{font-size:27px}th,td{min-width:120px}}@media print{body{background:white}main{margin:0;max-width:none;padding:0}header{background:white;color:var(--ink);border:1px solid var(--line)}header p{color:var(--muted)}nav{display:none}section{break-inside:avoid}pre{white-space:pre-wrap}a{color:inherit}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="eyebrow">AGENT IM BRIDGE · BACKEND RESEARCH</div>
+<h1>Traex 可通过现有 CLI 后端边界接入</h1>
+<p class="lead">新建、显式续聊、最终答案文件及只读执行已实测。需要独立处理后端身份与状态目录，并保留协议错误的保守判断。</p>
+<p>调研日期：2026-09-09 · 本机版本：traecli 0.204.1（internal edition）· macOS</p>
+<nav><a href="#evidence">实测结论</a><a href="#protocol">调用协议</a><a href="#paths">目录与认证</a><a href="#integration">接入建议</a><a href="#validation">验证边界</a></nav>
+</header><section><h2>接入建议已更新</h2><p>当前项目已切换到独立 app-server。本文保留 exec 探测的历史证据；实际接入请使用 <a href="traex-app-server-integration.html">Traex App Server 原生停止与接入方案</a>，其中已实测长输入中断及 interrupted 终态。</p></section>
+<section id="evidence"><h2>01 · 已确认的能力</h2>
+<div class="table-wrap"><table><thead><tr><th>问题</th><th>观察结果</th><th>对接入的意义</th></tr></thead><tbody>
+<tr><td>新建会话</td><td><span class="tag">实测</span> 退出 0；依次出现 thread.started、turn.started、item.completed、turn.completed。</td><td>可以复用现有生命周期事件模型。</td></tr>
+<tr><td>显式 resume</td><td><span class="tag">实测</span> 新进程返回同一 UUID，正确回答上一轮设定的探测标记。</td><td>保存 thread_id，之后显式续接；禁止依靠 --last。</td></tr>
+<tr><td>最终输出</td><td><span class="tag">实测</span> -o 文件含最终答复；stdout 可包含多条 agent_message，且未携带 phase。</td><td>继续使用独立答案文件，不能拼接所有 agent_message 当成最终答复。</td></tr>
+<tr><td>不存在的 UUID</td><td><span class="tag">实测</span> 退出 1、stdout 为空、stderr 返回明确的 no rollout found 诊断。</td><td>该版本与现有 Codex 的精确匹配规则相同；仍保留后端级识别入口。</td></tr>
+<tr><td>续聊时更换目录</td><td><span class="tag">实测</span> -C 新目录生效，但 UUID 和旧标记仍保留。</td><td>CLI 不会因目录改变自动清空上下文；/cd 的新会话行为必须由 Bridge 实现。</td></tr>
+<tr><td>只读权限</td><td><span class="tag">实测</span> 新建及续聊的 turn_context 均为 approval_policy=never、sandbox_policy=read-only。工具写入探测文件被 Operation not permitted 拒绝。</td><td>显式传入本地 sandboxMode；不依赖 CLI 默认权限。</td></tr>
+<tr><td>工具失败与轮次失败</td><td><span class="tag">实测</span> 写入工具退出 1，但模型解释了拒绝结果，CLI 退出 0 且 turn.completed。</td><td>工具失败不等于 AgentResult.Failure；按轮次状态、进程退出码和最终文件判断。</td></tr>
+</tbody></table></div>
+<p class="muted">共完成 5 次成功模型轮次（一个新会话及其 3 次续聊，另一个隔离目录的新会话），另做 1 次缺失会话探测。未调用已有用户会话；只读取本次探测对应的历史记录。</p>
+</section>
+<section id="protocol"><h2>02 · 已验证的调用方式</h2>
+<p>下列形态已在本机验证。生产实现使用 ProcessBuilder 参数数组，正文写入 stdin，不经 shell 拼接。占位路径和 ID 应替换为本次任务值。</p>
+<h3>新建</h3><pre><code>traex -a never exec \
+  --sandbox read-only \
+  --skip-git-repo-check --color never \
+  -C /absolute/workspace \
+  --json --output-last-message /absolute/task/answer.txt -</code></pre>
+<h3>续聊</h3><pre><code>traex -a never exec \
+  --sandbox read-only \
+  --skip-git-repo-check --color never \
+  -C /absolute/workspace \
+  resume --json --output-last-message /absolute/task/answer.txt \
+  SESSION_UUID -</code></pre>
+<p><code>-C</code>、<code>--sandbox</code>、<code>--color</code> 放在 exec 的 resume 子命令之前；根级 <code>-a never</code> 和 <code>-c 'approval_policy="never"'</code> 两种方式均已验证。不要添加 <code>--ephemeral</code>，否则无法满足持久续聊。</p>
+<h3>stdout 样例（会话 ID 已替换）</h3><pre><code>{"type":"thread.started","thread_id":"00000000-0000-4000-8000-000000000001"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}
+{"type":"turn.completed","usage":{"input_tokens":15550,"cache_creation_input_tokens":0,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}</code></pre>
+<p>收到 thread.started 后执行挂起的会话提交回调，等待落盘完成再读后续事件。resume 返回的 ID 必须与请求 ID 一致；重复出现不同 ID 或缺少终态均按协议异常处理。usage 是可选统计信息，不应成为成功判断的必要条件。</p>
+<h3>缺失会话诊断</h3><pre><code>Error: thread/resume: thread/resume failed: no rollout found for thread id SESSION_UUID (code -32600)</code></pre>
+<p>该探测没有输出 thread.started 或 turn.started。只有同时满足“非零退出、匹配指定 ID 的可信诊断、本轮未开始、未发现新会话”，才映射 SESSION_MISSING 并允许最多一次新建。不能从模型正文搜索错误关键词。</p>
+<p class="note">stdout JSONL 并非完整工具审计流。只读探测确实执行了 shell 工具，但 stdout 只包含两条 agent_message；具体工具调用与退出 1 的结果存在 rollout 的 history_mutation.items 中。不要把本地 rollout 格式当成 exec 输出格式解析。</p>
+<p>这与 <a href="https://bytedance.us.larkoffice.com/docx/GauzdjqReo7qXCxAaNWumU00s5d">TraeX Guide</a> 对非交互输出的说明一致：exec 事件不是完整本地会话镜像，只需结果时优先使用 -o。</p>
+</section>
+<section id="paths"><h2>03 · 状态目录与认证</h2>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>当前版本的观察</th><th>证据</th></tr></thead><tbody>
+<tr><td>执行入口</td><td>~/.local/bin/traex → ~/.local/share/traex/current/traex</td><td>本机符号链接与 --version</td></tr>
+<tr><td>共享配置根</td><td>默认 ~/.trae；主配置 traecli.toml</td><td>exec --help、用户手册、本机目录</td></tr>
+<tr><td>运行时根</td><td>默认 ~/.trae/cli；含 auth.json、sessions、日志及 SQLite 状态</td><td>目录检查及探测会话落盘</td></tr>
+<tr><td>仅 TRAE_HOME</td><td>指定共享根后，运行时使用其 cli 子目录</td><td>独立目录 login status 探测创建 cli/tmp 等目录</td></tr>
+<tr><td>仅 TRAECLI_HOME</td><td>直接指定运行时目录，不再追加 cli</td><td>独立目录探测创建 runtime/tmp；模型会话写入 runtime/sessions</td></tr>
+<tr><td>两者同时设置</td><td>运行时采用 TRAECLI_HOME，TRAE_HOME 保留共享根身份</td><td>相同探测与隔离模型轮次</td></tr>
+<tr><td>CODEX_HOME</td><td>单独改为一个空目录，没有将 Traex 运行时导入其中；原登录状态仍可见</td><td>新目录未产生文件，login status 退出 0</td></tr>
+</tbody></table></div>
+<p>建议解析规则：<code>sharedRoot = TRAE_HOME ?: ~/.trae</code>，<code>runtimeRoot = TRAECLI_HOME ?: sharedRoot/cli</code>，均规范化路径。空值、相对路径和符号链接的环境变量边缘行为尚未逐项测试，Bridge 应明确自己的校验规则。</p>
+<p>Traex 帮助的 <code>--ignore-user-config</code> 文案仍出现 CODEX_HOME/config.toml，不能据此把 Codex 目录用于 Traex。本次未使用该开关；应保留用户配置和项目规则。</p>
+<h3>login status 不能作为唯一启动门槛</h3>
+<p>空运行时目录的 login status 返回 1；随后相同隔离环境执行 exec 却成功，并生成 auth.json 和会话文件。说明当前本机环境存在执行时认证路径。<a href="https://bytedance.larkoffice.com/wiki/HWUPwVssCi0KSPkOCZtcwznmnYg">用户手册</a>介绍了 Git/本机身份与 SSO 登录方式，但本次没有检查凭据内容，也没有确认具体触发了哪种认证机制。</p>
+<p>启动时只检查可执行文件及支持的参数能力；认证诊断应脱敏。不要因为 login status 返回非零就推断模型请求一定不可用，也不要由 Bridge 复制凭证。</p>
+</section>
+<section id="integration"><h2>04 · 对当前项目的接入建议</h2>
+<div class="flow"><div class="node">飞书接入</div><span class="arrow">→</span><div class="node">ChatService<br>即时控制 / FIFO 调度</div><span class="arrow">→</span><div class="node">挂起 AgentRunner<br>Codex / Traex 适配</div></div>
+<p>已重新核对本轮更新的代码：AgentRunner.run 和 onSession 现为挂起接口，CodexRunner 已采用结构化协程。因此直接沿用当前接口与进程清理机制，不恢复旧的同步接口或线程池。</p>
+<ol>
+<li><strong>后端选择：</strong>第一版增加 <code>--backend codex|traex</code> 和 <code>--traex-bin</code>，默认仍为 Codex；仅初始化选中后端。使用明确的 traex 命令，避免 traecli 别名指向旧版 CoCo。</li>
+<li><strong>公共执行器与协议适配：</strong>抽出可复用的协程进程管理；Traex 适配器负责参数、状态目录、版本信息及错误识别。已验证的事件解析可以共享，版本差异保留独立测试入口。</li>
+<li><strong>会话隔离：</strong>SessionKey 加 backendId，将 codexHome 泛化为 runtimeRoot；键为应用、聊天、后端、规范化工作目录及运行时根。ChatKey 同样区分后端与运行时根。v1/v2 数据迁移为 Codex 绑定，不传给 Traex。</li>
+<li><strong>持久化：</strong>目录选择与 session 绑定继续原子提交；迁移失败不覆盖源文件。onSession 提交必须被等待，取消时也等待其清理结束。</li>
+<li><strong>用户提示：</strong>将“Codex 执行失败”等固定文案改为后端显示名；日志附 backendId，仍不输出正文、stderr 原文和凭据。</li>
+</ol>
+<h3>按最新项目约定保留的行为</h3>
+<ul>
+<li>/status、/pwd、/help、/stop、/cd 是即时控制命令，不排入模型 FIFO、不占用模型槽位；未知斜杠命令原样交给 Agent。</li>
+<li>/cd 必须带路径，聊天忙碌时拒绝。切换不同目录清除目标旧绑定，切回也新建；落盘成功但回复失败不回滚。</li>
+<li>/stop 取消当前聊天任务及命令接收时已有队列；新请求等清理完成再执行，按请求身份释放槽位。</li>
+<li>模型任务不设自动超时或无进展超时；仅保留发送、连接及进程清理的技术超时。本次探测脚本的限时只用于调研保护，不是产品设计。</li>
+<li>保持同聊天 FIFO、跨聊天并发上限、用户校验、群聊明确 @、SDK 去重和原消息回复。</li>
+<li>访问模式仅由本地 sandboxMode 决定，重启生效；固定不请求交互审批，不通过重试放宽权限。</li>
+</ul>
+</section>
+<section id="validation"><h2>05 · 尚需在实现阶段验证</h2>
+<div class="table-wrap"><table><thead><tr><th>项目</th><th>本次边界 / 后续检查</th></tr></thead><tbody>
+<tr><td>取消及子进程树</td><td><span class="pending">未实测 Traex 长任务取消</span>。需验证 /stop、服务关闭、工具子进程退出、I/O 完成、会话提交取消后的等待，以及新请求不会提前占槽。</td></tr>
+<tr><td>非只读模式</td><td>帮助列出 workspace-write / danger-full-access，但未运行这两种模式；需验证配置覆盖、resume 权限和工作目录外写入边界。</td></tr>
+<tr><td>网络与认证失败事件</td><td>空运行时探测自动认证成功，未获得确定的认证失败样本。还需采集真实 turn.failed/error、重试及退出码关系。</td></tr>
+<tr><td>协议异常</td><td>空答案、缺少终态、ID 不一致、损坏 JSONL、超长行、输出量大等采用假 CLI 离线覆盖；不能由一次成功探测推断健壮性。</td></tr>
+<tr><td>跨聊天并发</td><td>本次只验证独立新进程续聊，未进行 Traex 多聊天压力测试。实现后验证共享运行时目录下的独立 UUID 与写入互不串用。</td></tr>
+<tr><td>版本与平台</td><td>确认范围限 macOS 0.204.1；Linux、其他版本及权限配置档覆盖组合仍待验证。</td></tr>
+</tbody></table></div>
+<p>实现行为变更后运行 <code>./gradlew test installDist</code>；真实 Traex 测试建议通过单独的 <code>TRAEX_LIVE_TEST=1</code> 启用，不纳入默认离线测试。</p>
+<p class="muted">另尝试过原生 sandbox macos 子命令，但该版本要求 --permissions-profile，探测在参数解析阶段退出 2，不能作为沙箱验证证据。上文只读结论来自实际模型工具调用、对应 rollout 的 function_call_output 及文件不存在的交叉检查。</p>
+</section>
+<section><h2>参考与证据范围</h2>
+<ul>
+<li><a href="https://bytedance.larkoffice.com/wiki/HWUPwVssCi0KSPkOCZtcwznmnYg">TRAE CLI 2.0 用户手册</a>：命令、沙箱、配置、登录和迁移；读取修订 1961。</li>
+<li><a href="https://bytedance.us.larkoffice.com/docx/GauzdjqReo7qXCxAaNWumU00s5d">TraeX Guide 完整指南</a>：exec 事件与会话文件的差异、路径及非交互模式；读取修订 5。</li>
+<li><a href="https://bytedance.larkoffice.com/docx/VFfidF48jooI8hxs5LKcRdY3nVc">Lark-agent-bridge（cc/codex/traex）</a>：已有多后端桥接采用 App Server，并区分 Codex/Traex 历史目录；读取修订 1409。仅作架构参考，不代替本机兼容性验证。</li>
+<li>本机：--version、exec --help、exec resume --help、login status、app-server --help、acp --help，临时目录探测及仅限探测 UUID 的 rollout 元数据。</li>
+</ul>
+<p>App Server 提供 stdio/Unix socket/WebSocket 和 schema 生成，ACP 提供 stdio 服务。当前最终文本回复需求可先使用 exec；以后若需要实时事件、运行中补充或远程运行，再评估协议升级。本次没有实测 App Server 或 ACP 握手。</p>
+</section>
+<footer>产物仅为调研文档，未修改业务代码、未启动飞书 Bridge、未进行发布。探测中未读取或展示凭据正文，未将私人会话或原始授权响应放入本报告。</footer>
+</main></body></html>

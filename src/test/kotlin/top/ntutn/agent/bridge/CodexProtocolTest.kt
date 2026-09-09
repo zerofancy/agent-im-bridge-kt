@@ -7,10 +7,11 @@ import kotlin.test.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.future.await
 
-class CodexProtocolTest {
+open class CodexProtocolTest {
+    protected open val backendId = BackendId.CODEX
     @TempDir lateinit var temp: Path
     private val id = "11111111-1111-4111-8111-111111111111"
-    private fun runner() = CodexRunner(fakeAppServer(temp).toString())
+    protected fun runner() = AppServerAgentRunner(BackendSpec(backendId, fakeAppServer(temp).toString(), temp.resolve("runtime"), temp.resolve("shared")))
     private suspend fun waitTurns(count: Int) = withTimeout(5000) {
         while (requests(temp).count { it.string("method") == "turn/start" } < count) delay(10)
     }

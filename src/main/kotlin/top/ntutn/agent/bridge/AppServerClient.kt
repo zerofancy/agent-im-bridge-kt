@@ -9,7 +9,6 @@ import kotlinx.coroutines.future.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
-import java.nio.file.Path
 
 internal fun json(vararg values: Pair<String, Any?>): JsonObject = JsonObject().apply {
     values.forEach { (key, value) -> when (value) {
@@ -22,11 +21,11 @@ internal fun json(vararg values: Pair<String, Any?>): JsonObject = JsonObject().
     } }
 }
 internal fun JsonObject.string(key: String): String? = get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
-internal class RpcFailure(val code: Int?, val diagnostic: String?) : Exception("Codex RPC rejected")
-internal class TransportFailure : Exception("Codex app-server connection unavailable; restart Bridge")
+internal class RpcFailure(val code: Int?, val diagnostic: String?) : Exception("Agent RPC rejected")
+internal class TransportFailure : Exception("Agent app-server connection unavailable; restart Bridge")
 
 /** This scope owns the transport, not any individual model request. */
-internal class AppServerClient private constructor(val process: Process) {
+internal class AppServerClient private constructor(val process: Process, private val displayName: String) {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val state = Mutex()
@@ -39,9 +38,9 @@ internal class AppServerClient private constructor(val process: Process) {
     private val writer = process.outputStream.bufferedWriter(Charsets.UTF_8)
 
     companion object {
-        suspend fun start(binary: String, home: Path): AppServerClient = withContext(Dispatchers.IO) {
-            AppServerClient(ProcessBuilder(binary, "app-server", "--listen", "stdio://")
-                .apply { environment()["CODEX_HOME"] = home.toString() }.start()).also { it.read() }
+        suspend fun start(backend: BackendSpec): AppServerClient = withContext(Dispatchers.IO) {
+            AppServerClient(ProcessBuilder(backend.binary, "app-server", "--listen", "stdio://")
+                .apply { environment().putAll(backend.environment) }.start(), backend.displayName).also { it.read() }
         }
     }
 
@@ -71,7 +70,7 @@ internal class AppServerClient private constructor(val process: Process) {
                     }
                 }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { log.warn("Codex app-server 协议读取失败 pid={}", process.pid()) }
+            catch (_: Exception) { log.warn("${displayName} app-server 协议读取失败 pid={}", process.pid()) }
             finally { withContext(NonCancellable) { breakTransport() } }
         }
         scope.launch {
@@ -84,13 +83,13 @@ internal class AppServerClient private constructor(val process: Process) {
             breakTransport()
             state.withLock { listeners.values.forEach { it.close(TransportFailure()) }; listeners.clear() }
             exited.complete(Unit)
-            log.info("Codex app-server 已退出 pid={} exitCode={}", process.pid(), process.exitValue())
+            log.info("${displayName} app-server 已退出 pid={} exitCode={}", process.pid(), process.exitValue())
         }
     }
 
     private suspend fun breakTransport() {
         state.withLock {
-            if (!broken && process.isAlive) log.warn("Codex app-server 连接失效但进程仍存活 pid={}；暂停新执行，可用本机 --stop 退出", process.pid())
+            if (!broken && process.isAlive) log.warn("${displayName} app-server 连接失效但进程仍存活 pid={}；暂停新执行，可用本机 --stop 退出", process.pid())
             broken = true
             pending.values.forEach { it.completeExceptionally(TransportFailure()) }
             pending.clear()
@@ -102,7 +101,7 @@ internal class AppServerClient private constructor(val process: Process) {
             request("initialize", json("clientInfo" to json("name" to "agent_im_bridge_kt", "version" to "1.0")))
             write(json("method" to "initialized"))
         }
-        log.info("Codex app-server 已连接 pid={}", process.pid())
+        log.info("${displayName} app-server 已连接 pid={}", process.pid())
     }
 
     suspend fun subscribe(thread: String): Channel<JsonObject> = state.withLock {
@@ -119,7 +118,7 @@ internal class AppServerClient private constructor(val process: Process) {
             (++sequence).also { pending[it] = reply }
         }
         try {
-            log.debug("Codex RPC pid={} requestId={} method={}", process.pid(), id, method)
+            log.debug("${displayName} RPC pid={} requestId={} method={}", process.pid(), id, method)
             write(json("id" to id, "method" to method, "params" to params))
             return reply.await()
         } finally { withContext(NonCancellable) { state.withLock { pending.remove(id) } } }

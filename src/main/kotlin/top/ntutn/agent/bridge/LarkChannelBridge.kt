@@ -54,11 +54,11 @@ fun channelOptions(config: BridgeConfig): LarkChannelOptions {
         }).build()
 }
 
-fun createCodexChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, codexHome: java.nio.file.Path): Pair<LarkChannel, ChatService> {
+fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec): Pair<LarkChannel, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
     val service = ChatService(runner, sessions, { chatId ->
-        SessionKey(config.appId, chatId, options.workspace.toString(), codexHome.toString())
+        SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
     }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode)) { route, text ->
         channel.send(route.chatId, SendInput.text(text),
             SendOptions.newBuilder().replyTo(route.messageId).build()).thenApply { result ->

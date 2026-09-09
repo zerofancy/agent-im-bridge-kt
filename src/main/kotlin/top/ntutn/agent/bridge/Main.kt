@@ -28,12 +28,13 @@ fun safeError(error: Throwable): String {
 fun main(args: Array<String>) {
     if (args.contains("--help")) {
         println("""
-            飞书 Codex 连续对话
-            用法：agent-im-bridge-kt [--workspace <目录>] [--codex-bin <命令或路径>]
+            飞书 Agent 连续对话（Codex / Traex）
+            用法：agent-im-bridge-kt [--workspace <目录>] [--codex-bin <命令或路径>] [--traex-bin <命令或路径>]
                                   [--max-concurrent-runs <数量>] [--no-browser]
             --stop             停止本机旧实例并退出（单独使用）
             --workspace        默认启动时的当前目录
             --codex-bin        默认 codex
+            --traex-bin        默认 traex；后端由 config.json 的 backend 选择，重启生效
             --max-concurrent-runs 默认 10，同一聊天串行，超出请求在内存排队
             --no-browser       仅打印授权链接
             飞书绑定配置兼容 ~/.agent-im-bridge-kt/config.json。
@@ -43,7 +44,7 @@ fun main(args: Array<String>) {
     }
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     var channel: LarkChannel? = null
-    var runner: CodexRunner? = null
+    var runner: AppServerAgentRunner? = null
     var service: ChatService? = null
     var instance: InstanceLock? = null
     try {
@@ -56,16 +57,16 @@ fun main(args: Array<String>) {
         val options = RunOptions.parse(args)
         instance = InstanceLock.acquire(stateDirectory)
         val sessions = SessionStore(stateDirectory.resolve("sessions.json"))
-        val codexHome = CodexRunner.defaultCodexHome()
-        runner = CodexRunner(options.binary, codexHome)
-        runner.checkAvailable()
         val store = ConfigStore(Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt", "config.json"))
         val config = store.load() ?: register(options.noBrowser).also {
             store.save(it)
             println("机器人配置已保存：${store.path}")
         }
-        log.info("Codex 访问模式：{}（修改配置后重启生效）", config.sandboxMode)
-        val bridge = createCodexChannel(config, runner, sessions, options, codexHome)
+        val backend = BackendSpec.resolve(BackendId.parse(config.backend), options)
+        runner = AppServerAgentRunner(backend)
+        runner.checkAvailable()
+        log.info("{} 访问模式：{}（修改配置后重启生效）", backend.displayName, config.sandboxMode)
+        val bridge = createAgentChannel(config, runner, sessions, options, backend)
         channel = bridge.first
         service = bridge.second
         val activeChannel = channel
@@ -77,11 +78,11 @@ fun main(args: Array<String>) {
                 { activeService.close() }, { activeRunner.close() },
                 { activeChannel.disconnect().get(5, TimeUnit.SECONDS) }, { activeInstance.close() }
             )
-            println("Codex Bridge 已停止。")
+            println("${backend.displayName} Bridge 已停止。")
         })
         log.info("正在连接飞书……")
         channel.connect().get(45, TimeUnit.SECONDS)
-        log.info("Codex Bridge 已连接（按聊天持续会话）。请用授权账号私聊机器人，或在群聊中 @机器人。Ctrl-C 退出。")
+        log.info("${backend.displayName} Bridge 已连接（按聊天持续会话）。请用授权账号私聊机器人，或在群聊中 @机器人。Ctrl-C 退出。")
         CountDownLatch(1).await()
     } catch (e: Exception) {
         // Only our own config validation errors have safe, controlled messages.

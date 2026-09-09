@@ -48,7 +48,7 @@ class WorkspaceTest {
         assertEquals(Path.of(b.workspace), restored.workspace(b))
         assertNull(restored.get(a.copy(workspace = target.toString())))
         assertEquals(id, restored.get(b))
-        assertEquals(2, JsonParser.parseString(Files.readString(file)).asJsonObject["version"].asInt)
+        assertEquals(3, JsonParser.parseString(Files.readString(file)).asJsonObject["version"].asInt)
         Files.delete(file); Files.createDirectory(file)
         assertFailsWith<SessionPersistenceException> { store.changeWorkspace(a, temp.toRealPath()) }
         assertEquals(target, store.workspace(a))

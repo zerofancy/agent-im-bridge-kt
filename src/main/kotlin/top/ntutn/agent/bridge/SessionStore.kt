@@ -15,10 +15,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-data class SessionKey(val appId: String, val chatId: String, val workspace: String, val codexHome: String)
-data class ChatKey(val appId: String, val chatId: String, val codexHome: String)
+data class SessionKey(val appId: String, val chatId: String, val workspace: String, val runtimeRoot: String, val backendId: String = "codex")
+data class ChatKey(val appId: String, val chatId: String, val runtimeRoot: String, val backendId: String = "codex")
 data class WorkspaceEntry(val key: ChatKey, val workspace: String)
-fun SessionKey.chatKey() = ChatKey(appId, chatId, codexHome)
+fun SessionKey.chatKey() = ChatKey(appId, chatId, runtimeRoot, backendId)
 
 data class SessionEntry(val key: SessionKey, val sessionId: String, val updatedAt: Long)
 class SessionPersistenceException : RuntimeException("会话存储失败，请检查本机会话文件及磁盘权限。")
@@ -42,20 +42,23 @@ class SessionStore(private val path: Path) {
                 Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"))
                 val root = JsonParser.parseString(Files.readString(path)).asJsonObject
                 val version = root["version"].asInt
-                require(version in 1..2)
-                if (version == 2) for (raw in root["workspaces"].asJsonArray) {
+                require(version in 1..3)
+                val homeField = if (version < 3) "codexHome" else "runtimeRoot"
+                fun backend(key: com.google.gson.JsonObject): String = if (version < 3) "codex"
+                    else BackendId.parse(requireNotNull(key.string("backendId"))).configValue
+                if (version >= 2) for (raw in root["workspaces"].asJsonArray) {
                     val item = raw.asJsonObject
                     val key = item["key"].asJsonObject
-                    val chat = ChatKey(key["appId"].asString, key["chatId"].asString, key["codexHome"].asString)
+                    val chat = ChatKey(key["appId"].asString, key["chatId"].asString, key[homeField].asString, backend(key))
                     val entry = WorkspaceEntry(chat, item["workspace"].asString)
                     require(chat.appId.isNotBlank() && chat.chatId.isNotBlank())
-                    require(Path.of(chat.codexHome).isAbsolute && Path.of(entry.workspace).isAbsolute)
+                    require(Path.of(chat.runtimeRoot).isAbsolute && Path.of(entry.workspace).isAbsolute)
                     require(directories.put(chat, entry) == null)
                 }
                 for (raw in root["sessions"].asJsonArray) {
                     val item = raw.asJsonObject
                     val k = item["key"].asJsonObject
-                    val key = SessionKey(k["appId"].asString, k["chatId"].asString, k["workspace"].asString, k["codexHome"].asString)
+                    val key = SessionKey(k["appId"].asString, k["chatId"].asString, k["workspace"].asString, k[homeField].asString, backend(k))
                     val entry = SessionEntry(key, item["sessionId"].asString, item["updatedAt"].asLong)
                     validate(entry)
                     require(entries.put(key, entry) == null)
@@ -71,6 +74,8 @@ class SessionStore(private val path: Path) {
     }
 
     suspend fun changeWorkspace(base: SessionKey, target: Path) = mutex.withLock {
+        BackendId.parse(base.backendId)
+        require(target.isAbsolute)
         val nextDirectories = LinkedHashMap(directories).apply {
             put(base.chatKey(), WorkspaceEntry(base.chatKey(), target.toString()))
         }
@@ -103,8 +108,9 @@ class SessionStore(private val path: Path) {
     }
 
     private fun validate(entry: SessionEntry) {
+        BackendId.parse(entry.key.backendId)
         require(entry.key.appId.isNotBlank() && entry.key.chatId.isNotBlank())
-        require(Path.of(entry.key.workspace).isAbsolute && Path.of(entry.key.codexHome).isAbsolute)
+        require(Path.of(entry.key.workspace).isAbsolute && Path.of(entry.key.runtimeRoot).isAbsolute)
         require(validSessionId(entry.sessionId) && entry.updatedAt > 0)
     }
 
@@ -116,7 +122,7 @@ class SessionStore(private val path: Path) {
             require(Files.isDirectory(parent, NOFOLLOW_LINKS))
             require(!Files.isSymbolicLink(path))
             temp = Files.createTempFile(parent, ".sessions-", ".tmp", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
-            Files.writeString(temp, gson.toJson(mapOf("version" to 2, "sessions" to next.values, "workspaces" to nextDirectories.values)) + "\n")
+            Files.writeString(temp, gson.toJson(mapOf("version" to 3, "sessions" to next.values, "workspaces" to nextDirectories.values)) + "\n")
             Files.move(temp, path, ATOMIC_MOVE, REPLACE_EXISTING)
         } catch (_: Exception) { throw SessionPersistenceException() }
         finally { temp?.let { try { Files.deleteIfExists(it) } catch (_: Exception) {} } }

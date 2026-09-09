@@ -19,7 +19,7 @@ class SessionStoreTest {
         store.set(key("private"), id)
         assertEquals(id, SessionStore(path).get(key("private")))
         for (other in listOf(key("group"), key("private").copy(appId = "other"),
-            key("private").copy(workspace = "/other"), key("private").copy(codexHome = "/other"))) assertNull(store.get(other))
+            key("private").copy(workspace = "/other"), key("private").copy(runtimeRoot = "/other"))) assertNull(store.get(other))
         assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(path))
         store.remove(key("private"))
         assertNull(SessionStore(path).get(key("private")))

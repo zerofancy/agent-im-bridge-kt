@@ -2,6 +2,7 @@
 import json, os, sys, uuid, subprocess
 root = os.path.dirname(os.path.realpath(sys.argv[0]))
 active = {}
+interrupts = {}
 children = []
 def send(x):
     print(json.dumps(x), flush=True)
@@ -13,6 +14,7 @@ def completed(tid, turn, status):
     event('turn/completed', tid, turn, turn={'id':turn, 'status':status})
 def item(tid, turn, name, text, phase=None):
     event('item/completed', tid, turn, item={'id':name,'type':'agentMessage','text':text,'phase':phase})
+with open(root+'/environment','w') as f: json.dump({k:os.environ.get(k) for k in ('CODEX_HOME','TRAE_HOME','TRAECLI_HOME')},f)
 with open(root+'/pid','w') as f: f.write(str(os.getpid()))
 for line in sys.stdin:
     req = json.loads(line)
@@ -23,7 +25,9 @@ for line in sys.stdin:
         result(req, {'userAgent':'fake'})
     elif method in ('thread/start','thread/resume'):
         tid = p.get('threadId',str(uuid.uuid4()))
-        if tid == '00000000-0000-4000-8000-000000000000':
+        if os.environ.get('TRAECLI_HOME') == root+'/runtime' and 'excludeTurns' in p:
+            send({'id':req['id'],'error':{'code':-32600,'message':'unsupported excludeTurns'}})
+        elif tid == '00000000-0000-4000-8000-000000000000':
             send({'id':req['id'],'error':{'code':-32600,'message':'no rollout found for thread id '+tid}})
         elif tid == '00000000-0000-4000-8000-000000000001':
             send({'id':req['id'],'error':{'code':-32600,'message':'some session not found'}})
@@ -40,7 +44,12 @@ for line in sys.stdin:
             while True: __import__('time').sleep(60)
         if prompt == 'reject':
             send({'id':req['id'],'error':{'code':-32600,'message':'ordinary failure'}}); continue
-        if prompt == 'wait-start':
+        if prompt == 'early-terminal':
+            item(tid,turn,'answer','early final','final_answer')
+            completed(tid,turn,'completed')
+            result(req, {'turn':{'id':turn,'status':'completed'}})
+            continue
+        if prompt in ('wait-start', 'wait-activation'):
             __import__('threading').Timer(0.5, lambda request=req, turn_id=turn: result(request, {'turn':{'id':turn_id,'status':'inProgress'}})).start()
         else: result(req, {'turn':{'id':turn,'status':'inProgress'}})
         if prompt.startswith('wait'):
@@ -62,6 +71,12 @@ for line in sys.stdin:
         completed(tid,turn,'failed' if prompt == 'failed' else 'completed')
     elif method == 'turn/interrupt':
         tid=p['threadId']; turn,prompt=active[tid]
+        assert p['turnId'] == turn
+        interrupts[tid]=interrupts.get(tid,0)+1
+        if prompt in ('wait-activation','wait-natural','wait-wrong-error','wait-inactive-forever') and (interrupts[tid] == 1 or prompt == 'wait-inactive-forever'):
+            send({'id':req['id'],'error':{'code':-32600,'message':'no active turn to interrupt' if prompt != 'wait-wrong-error' else 'permission denied'}})
+            if prompt == 'wait-natural': completed(tid,turn,'completed')
+            continue
         result(req,{})
         if prompt != 'wait-ignore':
             for child in children: child.terminate(); child.wait()

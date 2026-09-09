@@ -97,10 +97,10 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         if (command.name != "/cd" && command.argument.isNotEmpty())
             return reply("用法：${command.name}；查看 /help 获取帮助。")
         return when (command.name) {
-            "/help" -> reply(BridgeCommand.help)
+            "/help" -> reply(BridgeCommand.help(runner.displayName))
             "/status" -> {
                 val state = running[route.chatId]?.stage?.label ?: if (route.chatId in switching) "切换目录中" else "空闲"
-                reply("正在执行：${running.size}/$limit\n正在排队：${queue.size}\n当前聊天：$state\n当前聊天排队：${queue.count { it.route.chatId == route.chatId }}")
+                reply("当前后端：${runner.displayName}\n正在执行：${running.size}/$limit\n正在排队：${queue.size}\n当前聊天：$state\n当前聊天排队：${queue.count { it.route.chatId == route.chatId }}")
             }
             "/pwd" -> { { send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}") } }
             "/stop" -> {
@@ -116,7 +116,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                     if (previousStage == Stage.PREPARING || previousStage == Stage.REPLYING) target.task!!.cancel()
                     if (target.stopNotice == null) target.stopNotice = scope.launch {
                         if (withTimeoutOrNull(30_000) { target.completed.asDeferred().await(); true } != true) {
-                            try { send(route, "Codex 尚未确认停止，当前聊天保持停止中，可用本机 --stop 退出整个 Bridge。") }
+                            try { send(route, "${runner.displayName} 尚未确认停止，当前聊天保持停止中，可用本机 --stop 退出整个 Bridge。") }
                             catch (e: CancellationException) { throw e }
                             catch (_: Exception) { log.warn("停止等待提示发送失败 messageId={}", route.messageId) }
                         }
@@ -128,7 +128,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                         catch (_: Exception) { log.warn("停止提示发送失败 messageId={}", route.messageId) }
                         target.completed.asDeferred().await()
                         val failed = mutex.withLock { target.stopBackendFailed }
-                        send(route, if (failed) "Codex 后端异常，本次执行已结束；已取消 ${target.stopCancelled} 个排队请求，会话和目录保留，未自动重跑。"
+                        send(route, if (failed) "${runner.displayName} 后端异常，本次执行已结束；已取消 ${target.stopCancelled} 个排队请求，会话和目录保留，未自动重跑。"
                             else "当前任务已停止，已取消 ${target.stopCancelled} 个排队请求；会话和目录保留。")
                     }
                 } else {
@@ -242,16 +242,16 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             val answer = when (result) {
                 is AgentResult.Success -> result.text
                 is AgentResult.Failure -> {
-                    log.warn("Codex 失败 chatId={} messageId={} sessionId={} kind={} exitCode={}",
+                    log.warn("${runner.displayName} 失败 chatId={} messageId={} sessionId={} kind={} exitCode={}",
                         route.chatId, route.messageId, result.sessionId, result.kind, result.exitCode)
                     when (result.kind) {
-                        AgentResult.Kind.START -> "无法连接 Codex app-server，请检查 CLI 版本、配置或重启 Bridge。"
-                        AgentResult.Kind.STOPPED -> "Codex 当前轮已中断，会话保留。"
-                        AgentResult.Kind.EXECUTION -> "Codex 执行失败，已保留会话，请检查本机登录、网络及配置。"
-                        AgentResult.Kind.EMPTY -> "Codex 未返回有效答案，已保留会话。"
-                        AgentResult.Kind.PROTOCOL -> "Codex 会话协议异常，未自动重跑，请检查 CLI 版本。"
+                        AgentResult.Kind.START -> "无法连接 ${runner.displayName} app-server，请检查 CLI 版本、配置或重启 Bridge。"
+                        AgentResult.Kind.STOPPED -> "${runner.displayName} 当前轮已中断，会话保留。"
+                        AgentResult.Kind.EXECUTION -> "${runner.displayName} 执行失败，已保留会话，请检查本机登录、网络及配置。"
+                        AgentResult.Kind.EMPTY -> "${runner.displayName} 未返回有效答案，已保留会话。"
+                        AgentResult.Kind.PROTOCOL -> "${runner.displayName} 会话协议异常，未自动重跑，请检查 CLI 版本。"
                         AgentResult.Kind.STORAGE -> "会话保存失败，当前聊天已暂停执行，请修复本机存储后重启。"
-                        AgentResult.Kind.SESSION_MISSING -> "Codex 会话不可用，新建重试失败，请检查本机状态目录。"
+                        AgentResult.Kind.SESSION_MISSING -> "${runner.displayName} 会话不可用，新建重试失败，请检查本机状态目录。"
                     }
                 }
             }
