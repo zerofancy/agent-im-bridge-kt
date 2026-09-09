@@ -6,6 +6,7 @@ plugins {
 repositories { mavenCentral() }
 
 dependencies {
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("com.larksuite.oapi:oapi-sdk:2.7.3")
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("org.slf4j:slf4j-api:2.0.17")

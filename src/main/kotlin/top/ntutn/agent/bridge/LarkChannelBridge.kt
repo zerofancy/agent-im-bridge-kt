@@ -54,10 +54,12 @@ fun channelOptions(config: BridgeConfig): LarkChannelOptions {
         }).build()
 }
 
-fun createCodexChannel(config: BridgeConfig, runner: AgentRunner): Pair<LarkChannel, ChatService> {
+fun createCodexChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, codexHome: java.nio.file.Path): Pair<LarkChannel, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
-    val service = ChatService(runner) { route, text ->
+    val service = ChatService(runner, sessions, { chatId ->
+        SessionKey(config.appId, chatId, options.workspace.toString(), codexHome.toString())
+    }, options.maxConcurrentRuns) { route, text ->
         channel.send(route.chatId, SendInput.text(text),
             SendOptions.newBuilder().replyTo(route.messageId).build()).thenApply { result ->
                 check(!result?.messageId.isNullOrBlank()) { "API 未返回消息 ID" }
@@ -66,7 +68,7 @@ fun createCodexChannel(config: BridgeConfig, runner: AgentRunner): Pair<LarkChan
     }
     channel.on<NormalizedMessage>("message") { message ->
         extractPrompt(message, config.allowedUserId)?.let { prompt ->
-            log.info("收到请求 messageId={} chatType={}", message.messageId, message.chatType)
+            log.info("收到请求 chatId={} messageId={} chatType={}", message.chatId, message.messageId, message.chatType)
             service.accept(ReplyRoute(message.chatId, message.messageId), prompt)
         }
     }

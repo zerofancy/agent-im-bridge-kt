@@ -1,23 +1,47 @@
 package top.ntutn.agent.bridge
 
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
+import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.time.Duration
-import kotlin.test.Test
-import kotlin.test.assertIs
-import kotlin.test.assertTrue
+import java.util.UUID
+import kotlin.test.*
 
-// Explicit opt-in: real model calls use the local user's authenticated Codex account.
+// Opt-in: six real model calls using the local authenticated account.
 @EnabledIfEnvironmentVariable(named = "CODEX_LIVE_TEST", matches = "1")
 class CodexLiveTest {
-    @Test fun `real CLI supports independent question and repository reading`() {
-        CodexRunner("codex", Path.of("").toAbsolutePath(), Duration.ofSeconds(120)).use { runner ->
+    @TempDir lateinit var temp: Path
+
+    @Test fun `real CLI persists isolated sessions and resumes after restart`() {
+        val workspace = Path.of("").toRealPath()
+        val home = CodexRunner.defaultCodexHome()
+        val keys = listOf("private", "group-a", "group-b").map {
+            SessionKey("live-test", it, workspace.toString(), home.toString())
+        }
+        val markers = keys.map { "marker-${UUID.randomUUID()}" }
+        val path = temp.resolve("sessions.json")
+        val store = SessionStore(path)
+        CodexRunner("codex", workspace, Duration.ofSeconds(120)).use { runner ->
             runner.checkAvailable()
-            val answer = assertIs<AgentResult.Success>(runner.run("只用中文回答：1 加 1 等于几？"))
-            assertTrue(answer.text.isNotBlank())
-            val repository = assertIs<AgentResult.Success>(runner.run("阅读当前目录的 build.gradle.kts，用一句中文说明该项目使用的语言与 Java 版本。不要修改文件。"))
-            assertTrue(repository.text.contains("Kotlin", ignoreCase = true))
-            assertTrue(repository.text.contains("11"))
+            keys.forEachIndexed { index, key ->
+                val result = assertIs<AgentResult.Success>(runner.run(
+                    "记住本次对话的唯一标记 ${markers[index]}。只回复此标记，不使用工具。", null
+                ) { store.set(key, it) })
+                assertTrue(result.text.contains(markers[index]))
+            }
+        }
+        val restored = SessionStore(path)
+        assertEquals(3, keys.map { restored.get(it) }.toSet().size)
+        CodexRunner("codex", workspace, Duration.ofSeconds(120)).use { runner ->
+            keys.forEachIndexed { index, key ->
+                val id = assertNotNull(restored.get(key))
+                val result = assertIs<AgentResult.Success>(runner.run(
+                    "我上一条消息要求记住的唯一标记是什么？只回复标记，不使用工具。", id
+                ) { restored.set(key, it) })
+                assertEquals(id, result.sessionId)
+                assertTrue(result.text.contains(markers[index]))
+                markers.filterIndexed { i, _ -> i != index }.forEach { assertFalse(result.text.contains(it)) }
+            }
         }
     }
 }

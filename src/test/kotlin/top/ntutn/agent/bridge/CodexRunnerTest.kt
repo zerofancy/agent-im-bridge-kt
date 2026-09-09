@@ -20,14 +20,22 @@ class CodexRunnerTest {
               esac
               shift
             done
-        """.trimIndent().replace('§', '$') + "\n" + body.replace('§', '$') + "\n")
+            echo '{"type":"thread.started","thread_id":"11111111-1111-4111-8111-111111111111"}'
+            echo '{"type":"turn.started"}'
+        """.trimIndent().replace('§', '$') + "\n" + body.replace('§', '$') + "\nprintf '\\n{\"type\":\"turn.completed\"}\\n'\n")
         binary.toFile().setExecutable(true)
         return binary
     }
 
     private fun run(body: String, prompt: String = "hello", timeout: Duration = Duration.ofSeconds(10)): AgentResult {
         val workspace = Files.createDirectories(temp.resolve("workspace with spaces")).toRealPath()
-        return CodexRunner(fake(body).toString(), workspace, timeout).use { it.checkAvailable(); it.run(prompt) }
+        return CodexRunner(fake(body).toString(), workspace, timeout).use {
+            it.checkAvailable()
+            when (val result = it.run(prompt)) {
+                is AgentResult.Success -> result.copy(sessionId = null)
+                is AgentResult.Failure -> result.copy(sessionId = null)
+            }
+        }
     }
 
     @Test fun `stdin unicode shell syntax and workspace are preserved`() {
@@ -90,7 +98,10 @@ class CodexRunnerTest {
     }
 
     @Test fun `runtime options validate paths and timeout`() {
-        assertEquals(300, RunOptions.parse(emptyArray()).timeoutSeconds)
+        assertEquals(300L, RunOptions.parse(emptyArray()).timeoutSeconds)
+        assertEquals(10, RunOptions.parse(emptyArray()).maxConcurrentRuns)
+        assertEquals(3, RunOptions.parse(arrayOf("--max-concurrent-runs", "3")).maxConcurrentRuns)
+        assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--max-concurrent-runs", "0")) }
         assertEquals(temp.toRealPath(), RunOptions.parse(arrayOf("--workspace", temp.toString())).workspace)
         assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--timeout-seconds", "0")) }
         assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--workspace")) }
