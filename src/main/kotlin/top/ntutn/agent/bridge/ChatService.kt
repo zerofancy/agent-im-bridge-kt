@@ -28,12 +28,16 @@ fun splitAnswer(text: String, limit: Int = 3000): List<String> {
 class ChatService(private val runner: AgentRunner, private val sessions: SessionStore,
                   private val sessionKey: (String) -> SessionKey, maxConcurrentRuns: Int = 10,
                   private val sandboxMode: SandboxMode = SandboxMode.READ_ONLY,
+                  private val replyContext: ReplyContext? = null,
+                  private val typingReactions: TypingReactions? = null,
                   private val sender: ReplySender) : AutoCloseable {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val mutex = Mutex()
+    private val sentMessages = SentMessageLru()
     private val limit = maxConcurrentRuns.also { require(it > 0) }
     private val job = SupervisorJob()
     private val scope = CoroutineScope(job + Dispatchers.Default)
+    private val senderNames = replyContext?.nameCache(scope)
     private var closed = false
     private val queue = mutableListOf<Work>()
     private val running = mutableMapOf<String, Work>()
@@ -43,7 +47,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
     private enum class Stage(val label: String) {
         PREPARING("准备执行"), EXECUTING("执行中"), REPLYING("发送回复中"), STOPPING("停止中")
     }
-    private class Work(val route: ReplyRoute, val prompt: String, var ready: Boolean = true,
+    private class Work(val route: ReplyRoute, val prompt: String, val input: MessageInput?, var ready: Boolean = true,
                        val completed: CompletableFuture<Unit> = CompletableFuture()) {
         var task: Job? = null
         var notice: Job? = null
@@ -52,17 +56,20 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         var stopNotice: Job? = null
         var stopCancelled = 0
         var stopBackendFailed = false
+        var activity: RequestActivity? = null
+        fun finish() { activity?.finish() ?: completed.complete(Unit) }
     }
 
-    fun accept(route: ReplyRoute, prompt: String): CompletableFuture<Unit> {
-        val work = Work(route, prompt)
+    fun accept(route: ReplyRoute, prompt: String, input: MessageInput? = null): CompletableFuture<Unit> {
+        val work = Work(route, prompt, input)
         val command = BridgeCommand.parse(prompt)
         val admission = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             val control = mutex.withLock {
                 if (closed) {
-                    work.completed.complete(Unit)
+                    work.finish()
                     return@withLock null
                 }
+                typingReactions?.let { work.activity = RequestActivity(scope, it, route, work.completed) }
                 if (command != null) return@withLock prepareControl(work, command)
                 work.ready = running.size < limit && route.chatId !in running && route.chatId !in switching && queue.isEmpty()
                 queue.add(work)
@@ -83,11 +90,21 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 try { control() }
                 catch (e: CancellationException) { throw e }
                 catch (_: Exception) { log.warn("控制命令回复失败 chatId={} messageId={}", route.chatId, route.messageId) }
-                finally { work.completed.complete(Unit) }
+                finally { work.finish() }
             }
         }
-        admission.invokeOnCompletion { error -> if (error != null) work.completed.complete(Unit) }
+        admission.invokeOnCompletion { error -> if (error != null) work.finish() }
         return work.completed
+    }
+
+    init {
+        scope.launch { cleanupAttachments() }
+    }
+
+    private suspend fun cleanupAttachments() {
+        try { replyContext?.cleanup() }
+        catch (e: CancellationException) { throw e }
+        catch (_: Exception) { log.warn("临时附件清理失败") }
     }
 
     // Called under the state mutex: reserve state or capture a snapshot before any suspension.
@@ -107,7 +124,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 val target = running[route.chatId]
                 val cancelled = if (target?.stage == Stage.STOPPING) emptyList() else queue.filter { it.route.chatId == route.chatId }
                 queue.removeAll(cancelled.toSet())
-                cancelled.forEach { it.notice?.cancel(); it.completed.complete(Unit) }
+                cancelled.forEach { it.notice?.cancel(); it.finish() }
                 if (target != null) {
                     val previousStage = target.stage
                     if (previousStage != Stage.STOPPING) target.stopCancelled = cancelled.size
@@ -196,6 +213,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
     private suspend fun execute(work: Work) {
         val route = work.route
         val started = System.nanoTime()
+        val preparedPrompts = mutableListOf<PreparedPrompt>()
         try {
             if (mutex.withLock { closed }) return
             val base = sessionKey(route.chatId)
@@ -206,12 +224,21 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 return
             }
             val key = base.copy(workspace = workspace.toString())
-            send(route, "正在处理…")
             if (mutex.withLock { unavailable.contains(route.chatId) }) throw SessionPersistenceException()
             suspend fun run(id: String?): AgentResult {
+                stage(work, Stage.PREPARING)
+                cleanupAttachments()
+                val prepared = if (work.input != null && replyContext != null)
+                    replyContext.prepare(route, work.prompt, work.input, sentMessages.snapshot(key, id), senderNames)
+                        .also { preparedPrompts += it }
+                    else null
+                work.handle.onSubmitted = { observed ->
+                    prepared?.let { sentMessages.submitted(key, observed, it.messageIds) }
+                }
+                stage(work, Stage.EXECUTING)
                 log.info("开始执行 chatId={} messageId={} sessionId={}", route.chatId, route.messageId, id)
                 return try {
-                    runner.runControlled(work.handle, work.prompt, id, workspace, sandboxMode) { observed ->
+                    runner.runControlled(work.handle, prepared?.text ?: work.prompt, id, workspace, sandboxMode) { observed ->
                         sessions.set(key, observed)
                         log.info("会话绑定 chatId={} messageId={} sessionId={}", route.chatId, route.messageId, observed)
                     }
@@ -224,7 +251,6 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 }
             }
             val previous = withContext(Dispatchers.IO) { sessions.get(key) }
-            stage(work, Stage.EXECUTING)
             var result = run(previous)
             if (work.handle.stopRequested) {
                 mutex.withLock { work.stopBackendFailed = result is AgentResult.Failure && result.kind != AgentResult.Kind.STOPPED }
@@ -273,11 +299,15 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             log.error("执行或发送失败 chatId={} messageId={}；未自动重跑。", route.chatId, route.messageId)
         } finally {
             withContext(NonCancellable) {
+                for (prepared in preparedPrompts) {
+                    try { prepared.release() }
+                    catch (_: Exception) { log.warn("临时附件释放失败 messageId={}", route.messageId) }
+                }
                 mutex.withLock {
                     if (running[route.chatId] === work) running.remove(route.chatId)
                     dispatch()
                 }
-                work.completed.complete(Unit)
+                work.finish()
                 work.stopNotice?.cancel()
             }
         }
@@ -303,7 +333,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             } finally {
                 job.cancel()
                 job.join()
-                cancelled.forEach { it.completed.complete(Unit) }
+                cancelled.forEach { it.finish() }
             }
         }
     }

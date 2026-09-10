@@ -18,16 +18,21 @@ class MessageInputTest {
 
     private fun message(text: String = "你好", chat: String = "p2p", sender: String = owner,
                         senderType: String = "user", type: String = "text", mention: Boolean = false,
-                        id: String = "om_test") = run {
+                        id: String = "om_test", createdAt: String = System.currentTimeMillis().toString()) = run {
         val gson = Gson()
         val payload = mapOf<String, Any>("event" to mapOf<String, Any>(
             "sender" to mapOf<String, Any>("sender_id" to mapOf("open_id" to sender), "sender_type" to senderType),
             "message" to mapOf<String, Any>("message_id" to id, "chat_id" to "oc_test", "chat_type" to chat,
+                "create_time" to createdAt, "update_time" to "1788939999000", "parent_id" to "om_parent",
                 "message_type" to type, "content" to gson.toJson(mapOf("text" to text)),
                 "mentions" to if (mention) listOf(mapOf<String, Any>("key" to "@_user_1", "id" to mapOf("open_id" to "ou_bot"), "name" to "Bridge")) else emptyList<Map<String, Any>>())
         ))
         val raw = gson.fromJson(gson.toJson(payload), P2MessageReceiveV1::class.java)
         ChannelNormalizer().normalizeMessage(raw, NormalizeOptions(bot, true, true))
+    }
+
+    @Test fun `metadata uses sender open id and creation time from raw event`() {
+        assertEquals(MessageInput("p2p", "om_parent", MessageSender(owner), "1788937445000"), extractMessageInput(message(createdAt = "1788937445000")))
     }
 
     @Test fun `private chat preserves internal whitespace and unicode`() {

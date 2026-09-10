@@ -67,22 +67,6 @@ class ControlCommandTest {
         } finally { cleaned.complete(Unit); svc.close() }
     }
 
-    @Test fun `stop while waiting acknowledgement prevents model execution`(): Unit = runBlocking {
-        val ack = CompletableFuture<Unit>(); val entered = CompletableDeferred<Unit>(); val calls = AtomicInteger()
-        val svc = ChatService(runner { calls.incrementAndGet(); AgentResult.Success("unexpected") }, SessionStore(temp.resolve("sessions.json")), ::key,
-            sender = ReplySender { r, text ->
-                if (text == "正在处理…") { entered.complete(Unit); ack } else sender.send(r, text)
-            })
-        try {
-            val task = svc.accept(route("a"), "hello")
-            withTimeout(5000) { entered.await() }
-            svc.accept(route("a", "status"), "/status").await()
-            assertTrue(response("status").contains("准备执行"))
-            svc.accept(route("a", "stop"), "/stop").await(); task.await()
-            assertTrue(ack.isCancelled); assertEquals(0, calls.get())
-        } finally { svc.close() }
-    }
-
     @Test fun `stop during reply suppresses remaining chunks and preserves binding`(): Unit = runBlocking {
         val store = SessionStore(temp.resolve("sessions.json"))
         val id = "11111111-1111-4111-8111-111111111111"

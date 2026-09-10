@@ -105,6 +105,8 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
                     return@coroutineScope failure(AgentResult.Kind.PROTOCOL)
                 }
                 handle.turnId.complete(turnId)
+                // Only confirmed submissions belong in the reply-context LRU.
+                withContext(NonCancellable) { handle.onSubmitted(id) }
                 log.info("${displayName} 轮次开始 requestId={} sessionId={} turnId={}", handle.requestId, id, turnId)
                 interrupt = launch {
                     handle.stop.await()

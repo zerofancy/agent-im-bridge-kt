@@ -70,7 +70,7 @@ class ChatServiceTest {
         }
     }
 
-    @Test fun `failed start message skips codex then schedules next request`(): Unit = runBlocking {
+    @Test fun `failed reply still schedules next request`(): Unit = runBlocking {
         val calls = AtomicInteger(); val sends = AtomicInteger()
         service(runner { _, _, _ -> calls.incrementAndGet(); AgentResult.Success("answer") }, sender = ReplySender { _, _ ->
             if (sends.incrementAndGet() == 1) CompletableFuture.failedFuture(IllegalStateException()) else CompletableFuture.completedFuture(Unit)
@@ -78,7 +78,7 @@ class ChatServiceTest {
             it.accept(route, "first").get(5, TimeUnit.SECONDS)
             it.accept(route, "second").get(5, TimeUnit.SECONDS)
         }
-        assertEquals(1, calls.get())
+        assertEquals(2, calls.get())
     }
 
     @Test fun `long unicode answer preserves every reply route and stops on send failure`(): Unit = runBlocking {
@@ -88,9 +88,9 @@ class ChatServiceTest {
         val sends = AtomicInteger(); val calls = AtomicInteger()
         service(runner { _, _, _ -> calls.incrementAndGet(); AgentResult.Success(text) }, sender = ReplySender { r, _ ->
             assertEquals(route,r)
-            if (sends.incrementAndGet() == 3) CompletableFuture.failedFuture(IllegalStateException()) else CompletableFuture.completedFuture(Unit)
+            if (sends.incrementAndGet() == 2) CompletableFuture.failedFuture(IllegalStateException()) else CompletableFuture.completedFuture(Unit)
         }).use { it.accept(route,"hello").get(5,TimeUnit.SECONDS) }
-        assertEquals(3,sends.get()); assertEquals(1,calls.get())
+        assertEquals(2,sends.get()); assertEquals(1,calls.get())
     }
 
     @Test fun `only missing sessions trigger one replacement after notifying user`(): Unit = runBlocking {
@@ -140,11 +140,11 @@ class ChatServiceTest {
             val first = svc.accept(route, "blocked")
             assertTrue(replyStarted.await(5, TimeUnit.SECONDS))
             svc.accept(ReplyRoute("other", "om_other"), "other").get(5, TimeUnit.SECONDS)
-            assertEquals(listOf("other"), calls)
+            assertEquals(listOf("blocked", "other"), calls)
             svc.close()
             first.get(5, TimeUnit.SECONDS)
             assertTrue(waitingReply.isCancelled)
-            assertEquals(listOf("other"), calls)
+            assertEquals(listOf("blocked", "other"), calls)
         } finally { svc.close() }
     }
 

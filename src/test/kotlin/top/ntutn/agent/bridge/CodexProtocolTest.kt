@@ -17,6 +17,25 @@ open class CodexProtocolTest {
     }
     private fun alive(pid: Long) = ProcessHandle.of(pid).map { it.isAlive }.orElse(false)
 
+    @Test fun `submission callback waits for accepted turn and excludes rejected starts`(): Unit = runBlocking {
+        runner().use { r ->
+            val calls = mutableListOf<String>()
+            for (prompt in listOf("reject", "hello", "empty", "failed")) {
+                val handle = AgentRunHandle()
+                handle.onSubmitted = { session ->
+                    assertTrue(handle.turnId.isCompleted)
+                    assertEquals(session, handle.threadId.await())
+                    calls += prompt
+                }
+                r.runControlled(handle, prompt, null, temp, SandboxMode.READ_ONLY) {}
+            }
+            assertEquals(listOf("hello", "empty", "failed"), calls)
+            val handle = AgentRunHandle()
+            handle.onSubmitted = { error("Never submitted") }
+            r.runControlled(handle, "hello", null, temp, SandboxMode.READ_ONLY) { throw IllegalStateException() }
+        }
+    }
+
     @Test fun `only exact pre-turn missing RPC allows fallback`(): Unit = runBlocking {
         runner().use {
             assertEquals(AgentResult.Kind.SESSION_MISSING, assertIs<AgentResult.Failure>(it.run("x", "00000000-0000-4000-8000-000000000000")).kind)

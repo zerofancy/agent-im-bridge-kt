@@ -10,6 +10,8 @@ import com.lark.oapi.channel.model.SendInput
 import com.lark.oapi.channel.model.SendOptions
 import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1
 import org.slf4j.LoggerFactory
+import java.nio.file.Path
+import java.security.MessageDigest
 
 fun extractPrompt(message: NormalizedMessage, allowedUserId: String): String? {
     if (message.senderId != allowedUserId || message.messageId.isNullOrBlank() || message.chatId.isNullOrBlank()) return null
@@ -34,6 +36,13 @@ fun extractPrompt(message: NormalizedMessage, allowedUserId: String): String? {
     return text.trim().takeIf { it.isNotBlank() }
 }
 
+fun extractMessageInput(message: NormalizedMessage): MessageInput {
+    val event = (message.raw as P2MessageReceiveV1).event
+    return MessageInput(message.chatType, event.message.parentId,
+        MessageSender(event.sender.senderId?.openId, "open_id", event.sender.senderType ?: "unknown"),
+        event.message.createTime)
+}
+
 fun channelOptions(config: BridgeConfig): LarkChannelOptions {
     config.validate()
     return LarkChannelOptions.newBuilder(config.appId, config.appSecret)
@@ -41,6 +50,7 @@ fun channelOptions(config: BridgeConfig): LarkChannelOptions {
         .transport("websocket")
         .domain(if (config.tenant == "lark") "https://open.larksuite.com" else "https://open.feishu.cn")
         .includeRawEvent(true)
+        .httpTransport(LarkRequests.transport())
         .policy(LarkChannelOptions.PolicyConfig().apply {
             dmMode = "allowlist"
             setDmAllowlist(listOf(config.allowedUserId))
@@ -57,9 +67,17 @@ fun channelOptions(config: BridgeConfig): LarkChannelOptions {
 fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec): Pair<LarkChannel, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
+    val appDirectory = MessageDigest.getInstance("SHA-256").digest(config.appId.toByteArray())
+        .joinToString("") { "%02x".format(it) }
+    val source = LarkMessageSource({ channel.rawClient }) { id, idType ->
+        channel.botIdentity?.takeIf { it.openId == id || (idType == "app_id" && id == config.appId) }?.name
+    }
+    val context = ReplyContext(source,
+        AttachmentStore(Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)),
+        config.appId, source)
     val service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode)) { route, text ->
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, LarkTypingReactions(config.appId) { channel.rawClient }) { route, text ->
         channel.send(route.chatId, SendInput.text(text),
             SendOptions.newBuilder().replyTo(route.messageId).build()).thenApply { result ->
                 check(!result?.messageId.isNullOrBlank()) { "API 未返回消息 ID" }
@@ -69,7 +87,8 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
     channel.on<NormalizedMessage>("message") { message ->
         extractPrompt(message, config.allowedUserId)?.let { prompt ->
             log.info("收到请求 chatId={} messageId={} chatType={}", message.chatId, message.messageId, message.chatType)
-            service.accept(ReplyRoute(message.chatId, message.messageId), prompt)
+            service.accept(ReplyRoute(message.chatId, message.messageId), prompt,
+                extractMessageInput(message))
         }
     }
     channel.on<ChannelErrorEvent>("error") { event -> log.error("通道错误 {}", safeError(event.error)) }

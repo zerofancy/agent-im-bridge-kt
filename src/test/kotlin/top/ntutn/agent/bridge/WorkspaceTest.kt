@@ -85,7 +85,7 @@ class WorkspaceTest {
             override fun close() {}
         }
         val sender = ReplySender { route, text -> synchronized(replies) { replies += route to text }; CompletableFuture.completedFuture(Unit) }
-        ChatService(runner, store, ::key, 1, SandboxMode.WORKSPACE_WRITE, sender).use { svc ->
+        ChatService(runner, store, ::key, 1, SandboxMode.WORKSPACE_WRITE, sender = sender).use { svc ->
             val route = ReplyRoute("a", "m1")
             val first = svc.accept(route, "first")
             assertTrue(started.await(5, TimeUnit.SECONDS))
