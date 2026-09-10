@@ -8,20 +8,40 @@ import com.lark.oapi.service.im.v1.model.GetMessageReq
 import com.lark.oapi.service.im.v1.model.GetMessageResourceReq
 
 /** Reuses Channel credentials/domain. Reads and downloads cancel their HTTP calls with the owning coroutine. */
+class ResourceDownloadException(message: String, val statusCode: Int? = null,
+                                val detail: String? = null, cause: Throwable? = null) : RuntimeException(message, cause) {
+    fun userVisibleReason(): String = detail?.trim()?.takeIf { it.isNotEmpty() } ?: when (statusCode) {
+        400 -> "请求无效或当前身份无权访问该资源"
+        401, 403 -> "当前身份缺少读取该资源的权限"
+        404 -> "资源不存在或当前身份不可见"
+        else -> "HTTP ${statusCode ?: "unknown"}"
+    }
+}
+
 class LarkMessageSource(private val client: () -> Client,
                         private val botName: (String, String) -> String? = { _, _ -> null }) : MessageSource, SenderNameSource {
     override suspend fun get(id: String): QuotedMessage = LarkRequests.execute {
         val response = client().im().v1().message().get(GetMessageReq.newBuilder().messageId(id).build())
         check(response.success()) { "Message lookup failed" }
-        val message = response.data?.items?.singleOrNull { it.messageId == id }
-            ?: error("Message unavailable")
-        QuotedMessage(message.messageId, message.chatId, message.parentId, message.msgType,
-            message.body?.content.orEmpty(), message.deleted == true,
-            message.sender.let { sender ->
-                val idType = sender?.idType ?: "open_id"
+        val items = response.data?.items.orEmpty().toList()
+        val root = items.singleOrNull { it.messageId == id } ?: error("Message unavailable")
+        val children = items.filter { it !== root }.groupBy { it.upperMessageId }
+        val visited = mutableSetOf<String>()
+        fun convert(message: com.lark.oapi.service.im.v1.model.Message, depth: Int): QuotedMessage {
+            val sender = message.sender
+            val idType = sender?.idType ?: "open_id"
+            val fresh = visited.add(message.messageId)
+            val nested = if (message.msgType == "merge_forward" && fresh && depth < 32)
+                children[message.messageId].orEmpty().map { convert(it, depth + 1) } else emptyList()
+            return QuotedMessage(message.messageId, message.chatId.orEmpty(), message.parentId, message.msgType,
+                message.body?.content.orEmpty(), message.deleted == true,
                 MessageSender(sender?.id, idType, sender?.senderType ?: "unknown",
-                    sender?.senderName?.takeIf { it.isNotBlank() } ?: sender?.id?.let { botName(it, idType) })
-            }, message.createTime)
+                    sender?.senderName?.takeIf { it.isNotBlank() } ?: sender?.id?.let { botName(it, idType) }),
+                message.createTime, nested, !fresh || depth >= 32)
+        }
+        val result = convert(root, 0)
+        result.copy(forwardIncomplete = result.forwardIncomplete ||
+            (root.msgType == "merge_forward" && items.any { it.messageId !in visited }))
     }
 
     internal suspend fun reaction(input: ReactionInput, appId: String, botOpenId: String?): IncomingMessage? {
@@ -50,7 +70,9 @@ class LarkMessageSource(private val client: () -> Client,
     override suspend fun download(messageId: String, key: String, type: String, output: OutputStream): String? = LarkRequests.download(output) {
         val response = client().im().v1().messageResource().get(GetMessageResourceReq.newBuilder()
             .messageId(messageId).fileKey(key).type(type).build())
-        check(response.rawResponse?.statusCode == 200 && response.data != null) { "Resource download failed" }
+        val statusCode = response.rawResponse?.statusCode
+        if (statusCode != 200 || response.data == null)
+            throw ResourceDownloadException("Resource download failed", statusCode)
         response.fileName
     }
 }

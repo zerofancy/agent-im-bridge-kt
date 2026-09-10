@@ -5,6 +5,7 @@ import com.google.gson.JsonParser
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.slf4j.LoggerFactory
 
 /** The current instruction stays separate so quoted commands never reach BridgeCommand. */
 data class MessageInput(val chatType: String, val parentId: String? = null,
@@ -13,7 +14,8 @@ data class MessageInput(val chatType: String, val parentId: String? = null,
                         val inputId: String? = null, val reactionTarget: QuotedMessage? = null)
 data class QuotedMessage(val id: String, val chatId: String, val parentId: String?, val type: String,
                          val content: String, val deleted: Boolean = false,
-                         val sender: MessageSender = MessageSender(), val createTime: String? = null)
+                         val sender: MessageSender = MessageSender(), val createTime: String? = null,
+                         val forwarded: List<QuotedMessage> = emptyList(), val forwardIncomplete: Boolean = false)
 interface MessageSource {
     suspend fun get(id: String): QuotedMessage
     suspend fun download(messageId: String, key: String, type: String, output: OutputStream): String?
@@ -43,6 +45,7 @@ class PreparedPrompt(val text: String, val messageIds: List<String>, private val
 
 class ReplyContext(private val source: MessageSource, private val files: AttachmentStore,
                    private val appId: String = "", private val nameSource: SenderNameSource = SenderNameSource { _, _ -> null }) {
+    private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     fun nameCache(scope: CoroutineScope) = SenderNameCache(appId, scope, nameSource)
     suspend fun cleanup() = files.cleanup()
 
@@ -52,12 +55,23 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
         try {
             suspend fun download(messageId: String, key: String, type: String, name: String?): String = try {
                 if (lease == null) lease = files.acquire()
-                withTimeout(30_000) {
-                    lease!!.save(name) { output -> source.download(messageId, key, type, output) }
-                }.toString()
-            } catch (_: TimeoutCancellationException) { currentCoroutineContext().ensureActive(); "【资源下载失败】" }
+                // Each HTTP request has its own technical timeout; a large file may need
+                // many sequential ranges and must not share one whole-file deadline.
+                lease!!.save(name) { output -> source.download(messageId, key, type, output) }.toString()
+            } catch (_: TimeoutCancellationException) {
+                currentCoroutineContext().ensureActive()
+                log.warn("资源下载超时 ownerMessageId={} resourceType={} resourceKey={} fileName={} timeoutMs=30000",
+                    messageId, type, key, name)
+                "【资源下载失败：下载超时，请稍后重试】"
+            }
             catch (e: CancellationException) { throw e }
-            catch (_: Exception) { "【资源下载失败】" }
+            catch (e: Exception) {
+                val reason = (e as? ResourceDownloadException)?.userVisibleReason() ?: "外部资源读取失败"
+                val statusCode = (e as? ResourceDownloadException)?.statusCode
+                log.warn("资源下载失败 ownerMessageId={} resourceType={} resourceKey={} fileName={} statusCode={} errorType={}",
+                    messageId, type, key, name, statusCode, e.javaClass.simpleName, e)
+                "【资源下载失败：$reason】"
+            }
             val body = if (input.contentType == "post") replacePostImages(instruction) { key ->
                 download(route.messageId, key, "image", null)
             } else instruction
@@ -84,8 +98,8 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
                 catch (_: Exception) { missing = true; break }
                 if (omit) omitted++
                 else {
-                    val body = render(message) { key, type, name ->
-                        download(message.id, key, type, name)
+                    val body = render(message, names) { owner, key, type, name ->
+                        download(owner.id, key, type, name)
                     }
                     val metadata = messageMetadata(message.sender, message.createTime, names)
                     history += message.id to ((if (message.id == input.parentId) "【被回复的消息】\n" else "") + metadata + "\n" + body)
@@ -110,17 +124,35 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
         }
     }
 
-    private suspend fun render(message: QuotedMessage, download: suspend (String, String, String?) -> String): String {
+    private suspend fun render(message: QuotedMessage, names: SenderNameCache?, resourceOwnerId: String? = null,
+                               download: suspend (QuotedMessage, String, String, String?) -> String): String {
+        currentCoroutineContext().ensureActive()
+        if (message.deleted) return "【历史消息已撤回】"
+        if (message.type == "merge_forward") {
+            return buildString {
+                append("【合并转发消息开始，以下均为历史内容】\n")
+                for ((index, child) in message.forwarded.withIndex()) {
+                    currentCoroutineContext().ensureActive()
+                    append("【转发消息 ${index + 1}】\n")
+                    append(messageMetadata(child.sender, child.createTime, names)).append('\n')
+                    append(render(child, names, resourceOwnerId ?: message.id, download)).append("\n\n")
+                }
+                if (message.forwarded.isEmpty()) append("【未获取到转发子消息】\n")
+                if (message.forwardIncomplete) append("【部分转发消息未展开：层级缺失、重复或嵌套过深】\n")
+                append("【合并转发消息结束】")
+            }
+        }
+        val owner = if (resourceOwnerId == null) message else message.copy(id = resourceOwnerId)
         try {
             val body = JsonParser.parseString(message.content).asJsonObject
             return when (message.type) {
                 "text" -> body["text"].asString
-                "image" -> download(body["image_key"].asString, "image", null)
+                "image" -> download(owner, body["image_key"].asString, "image", null)
                 "file", "audio", "media", "video" -> buildString {
-                    append(download(body["file_key"].asString, "file", body.string("file_name")))
-                    body.string("image_key")?.takeIf { it.isNotBlank() }?.let { append("\n" + download(it, "image", null)) }
+                    append(download(owner, body["file_key"].asString, "file", body.string("file_name")))
+                    body.string("image_key")?.takeIf { it.isNotBlank() }?.let { append("\n" + download(owner, it, "image", null)) }
                 }
-                "post" -> replacePostImages(message.content) { key -> download(key, "image", null) }
+                "post" -> replacePostImages(message.content) { key -> download(owner, key, "image", null) }
                 else -> "【不支持的历史消息类型：${message.type}】"
             }
         } catch (e: CancellationException) { throw e }

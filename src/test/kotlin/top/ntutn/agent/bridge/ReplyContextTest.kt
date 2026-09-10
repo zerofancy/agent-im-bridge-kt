@@ -23,6 +23,73 @@ class ReplyContextTest {
     }
     private fun context(source: MessageSource) = ReplyContext(source, AttachmentStore(temp.resolve("files")))
 
+    @Test fun `quoted forwards expand nested history and download each owning message resource`(): Unit = runBlocking {
+        val file = QuotedMessage("file-child", "original-chat", null, "file",
+            """{"file_key":"attachment","file_name":"report.txt"}""", sender = MessageSender("file-sender"))
+        val nested = QuotedMessage("nested", "chat", null, "merge_forward", "", forwarded = listOf(file))
+        val post = QuotedMessage("post-child", "chat", null, "post",
+            """{"content":[[{"tag":"text","text":"图片说明"},{"tag":"img","image_key":"picture"}]]}""")
+        val broken = QuotedMessage("broken", "chat", null, "text", "invalid json")
+        val deleted = file.copy(id = "deleted", deleted = true)
+        val forward = QuotedMessage("forward", "chat", null, "merge_forward", "",
+            forwarded = listOf(text("first"), nested, broken, post, deleted))
+        val source = Source(mapOf("forward" to forward))
+        val result = context(source).prepare(route, "看看转发内容", MessageInput("p2p", "forward"), emptySet())
+        try {
+            assertContains(result.text, "内容first")
+            assertContains(result.text, "file-sender")
+            assertContains(result.text, "图片说明")
+            assertContains(result.text, "【历史消息内容无法解析】")
+            assertContains(result.text, "【历史消息已撤回】")
+            assertContains(result.text, "【合并转发消息结束】")
+            assertEquals(listOf("forward:attachment:file", "forward:picture:image"), source.downloads)
+            assertEquals(listOf("forward"), source.reads)
+            assertTrue(result.text.indexOf("内容first") < result.text.indexOf("file-sender"))
+            assertTrue(result.text.indexOf("file-sender") < result.text.indexOf("图片说明"))
+            val paths = Files.walk(temp.resolve("files")).use { stream -> stream.filter { Files.isRegularFile(it) }.collect(java.util.stream.Collectors.toList()) }
+            assertTrue(paths.any { Files.readString(it) == "data" })
+        } finally { result.release() }
+    }
+
+    @Test fun `cancelling forwarded attachment preparation removes partial download`(): Unit = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val child = QuotedMessage("file-child", "chat", null, "file", """{"file_key":"key","file_name":"report.txt"}""")
+        val source = object : MessageSource {
+            override suspend fun get(id: String) = QuotedMessage(id, "chat", null, "merge_forward", "", forwarded = listOf(child))
+            override suspend fun download(messageId: String, key: String, type: String, output: java.io.OutputStream): String? {
+                output.write("partial".toByteArray())
+                entered.complete(Unit)
+                awaitCancellation()
+            }
+        }
+        val task = async { context(source).prepare(route, "read", MessageInput("p2p", "forward"), emptySet()) }
+        withTimeout(3000) { entered.await() }
+        task.cancelAndJoin()
+        assertTrue(task.isCancelled)
+        Files.walk(temp.resolve("files")).use { stream ->
+            assertFalse(stream.anyMatch { Files.isRegularFile(it) && it.fileName.toString() != ".lease" })
+        }
+    }
+
+    @Test fun `nested forwarded resources inherit the top level forward owner when downloading`(): Unit = runBlocking {
+        val deepFile = QuotedMessage("deep-file", "chat", null, "file", """{"file_key":"deep-key","file_name":"deep.txt"}""")
+        val nested = QuotedMessage("nested-forward", "chat", null, "merge_forward", "", forwarded = listOf(deepFile))
+        val root = QuotedMessage("root-forward", "chat", null, "merge_forward", "", forwarded = listOf(nested))
+        val source = Source(mapOf("root-forward" to root))
+        val result = context(source).prepare(route, "read", MessageInput("p2p", "root-forward"), emptySet())
+        try {
+            assertEquals(listOf("root-forward:deep-key:file"), source.downloads)
+        } finally { result.release() }
+    }
+
+    @Test fun `empty and incomplete forward states are explicit`() = runBlocking {
+        val forward = QuotedMessage("forward", "chat", null, "merge_forward", "", forwardIncomplete = true)
+        val result = context(Source(mapOf("forward" to forward))).prepare(route, "go", MessageInput("p2p", "forward"), emptySet())
+        assertContains(result.text, "未获取到转发子消息")
+        assertContains(result.text, "部分转发消息未展开")
+        assertFalse(result.text.contains("历史消息内容无法解析"))
+    }
+
     @Test fun `named reply template resolves only retained senders and separates current instruction`(): Unit = runBlocking {
         val time = java.time.Instant.parse("2026-09-09T07:04:05Z").toEpochMilli().toString()
         val source = Source(mapOf(
@@ -127,7 +194,7 @@ class ReplyContextTest {
             assertEquals(listOf("post:image:image", "post:bad:image", "file:f:file"), source.downloads)
             assertContains(result.text, "【省略了1条历史消息】")
             assertContains(result.text, "\"title\":\"标题\"")
-            assertContains(result.text, "【资源下载失败】")
+            assertContains(result.text, "【资源下载失败：外部资源读取失败】")
             assertContains(result.text, "\"href\":\"https://example.com\"")
             assertFalse(result.text.contains("private external failure"))
             val paths = Regex(Regex.escape(temp.toAbsolutePath().toString()) + "[^\\s]+\\.txt").findAll(result.text).map { Path.of(it.value) }.toList()
@@ -136,6 +203,20 @@ class ReplyContextTest {
             assertNotEquals(paths[0], paths[1])
         } finally { result.release() }
         assertFalse(Files.exists(temp.resolve("escaped.txt")))
+    }
+
+    @Test fun `resource download business failures degrade with actionable reason and without fatal rethrow`(): Unit = runBlocking {
+        val source = object : MessageSource {
+            override suspend fun get(id: String): QuotedMessage =
+                QuotedMessage(id, "chat", null, "post", """{"content":[[{"tag":"img","image_key":"missing"}]]}""")
+            override suspend fun download(messageId: String, key: String, type: String, output: java.io.OutputStream): String? {
+                throw ResourceDownloadException("Resource download failed", 400, "The message is invisible to the operator.")
+            }
+        }
+        val result = context(source).prepare(route, "go", MessageInput("p2p", "post"), emptySet())
+        try {
+            assertContains(result.text, "【资源下载失败：The message is invisible to the operator.】")
+        } finally { result.release() }
     }
 
     @Test fun `cancelled message and download propagate cancellation`(): Unit = runBlocking {

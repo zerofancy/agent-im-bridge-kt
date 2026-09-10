@@ -32,7 +32,7 @@ class PostContentTest {
             val nodes = actual.getAsJsonObject("zh_cn").getAsJsonArray("content")[0].asJsonArray
             val path = Path.of(nodes[1].asJsonObject["image_key"].asString)
             assertTrue(path.isAbsolute); assertEquals("image", Files.readString(path))
-            assertEquals("【资源下载失败】", nodes[2].asJsonObject["image_key"].asString)
+            assertEquals("【资源下载失败：外部资源读取失败】", nodes[2].asJsonObject["image_key"].asString)
             nodes[1].asJsonObject.addProperty("image_key", "one")
             nodes[2].asJsonObject.addProperty("image_key", "bad")
             assertEquals(expected, actual)

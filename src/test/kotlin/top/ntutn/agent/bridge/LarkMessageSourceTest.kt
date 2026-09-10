@@ -7,6 +7,29 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.*
 
 class LarkMessageSourceTest {
+    @Test fun `message API preserves forward hierarchy instead of dropping child items`(): Unit = runBlocking {
+        val client = Client.newBuilder("forward-test", "test-secret").httpTransport(IHttpTransport { request ->
+            RawResponse().apply {
+                statusCode = 200; headers = emptyMap()
+                body = if (request.reqUrl.contains("tenant_access_token"))
+                    """{"code":0,"tenant_access_token":"test-token","expire":7200}""".toByteArray()
+                else """{"code":0,"data":{"items":[
+                    {"message_id":"root","chat_id":"chat","msg_type":"merge_forward","body":{"content":""}},
+                    {"message_id":"text","upper_message_id":"root","msg_type":"text","sender":{"id":"user","sender_type":"user","sender_name":"原发送人"},"body":{"content":"{\"text\":\"历史正文\"}"}},
+                    {"message_id":"nested","upper_message_id":"root","msg_type":"merge_forward"},
+                    {"message_id":"file","upper_message_id":"nested","msg_type":"file","body":{"content":"{\"file_key\":\"file-key\"}"}},
+                    {"message_id":"orphan","upper_message_id":"missing","msg_type":"text"}
+                ]}}""".toByteArray()
+            }
+        }).build()
+        val root = LarkMessageSource({ client }).get("root")
+        assertEquals(listOf("text", "nested"), root.forwarded.map { it.id })
+        assertEquals("原发送人", root.forwarded.first().sender.name)
+        assertEquals("file", root.forwarded.last().forwarded.single().id)
+        assertContains(root.forwarded.last().forwarded.single().content, "file-key")
+        assertTrue(root.forwardIncomplete)
+    }
+
     @Test fun `SDK adapter reads parent and uses the owning message for downloads`(): Unit = runBlocking {
         val urls = mutableListOf<String>()
         val client = Client.newBuilder("test-app", "test-secret").httpTransport(IHttpTransport { request ->
@@ -29,6 +52,7 @@ class LarkMessageSourceTest {
         source.download("om_parent", "img_key", "image", java.io.ByteArrayOutputStream())
         assertTrue(urls.any { it.contains("/messages/om_parent/resources/img_key") && it.contains("type=image") })
     }
+
     @Test fun `reaction resolves own bot message and rejects other senders`(): Unit = runBlocking {
         var owner = "reaction-app"
         var senderType = "app"
