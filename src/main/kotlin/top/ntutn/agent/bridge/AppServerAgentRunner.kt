@@ -12,7 +12,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val mutex = Mutex()
     private val connectionMutex = Mutex()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + FatalErrorHandler.context)
     private val active = mutableMapOf<AgentRunHandle, Deferred<AgentResult>>()
     private var client: AppServerClient? = null
     private var closed = false
@@ -29,10 +29,12 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
 
     internal suspend fun processId(): Long? = connectionMutex.withLock { client?.process?.pid() }
 
+    internal suspend fun healthy(): Boolean = connectionMutex.withLock { client?.healthy() == true }
+
     fun checkAvailable(): Unit = runBlocking {
         try { connection(); Unit }
         catch (e: CancellationException) { throw e }
-        catch (_: Exception) { throw IllegalArgumentException("${displayName} app-server 启动或握手失败，请检查 --${backend.id.configValue}-bin、CLI 版本及配置；不再支持 exec 回退。") }
+        catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); throw IllegalArgumentException("${displayName} app-server 启动或握手失败，请检查 --${backend.id.configValue}-bin、CLI 版本及配置；不再支持 exec 回退。") }
     }
 
     override suspend fun run(prompt: String, sessionId: String?, workspace: Path, sandboxMode: SandboxMode,
@@ -45,7 +47,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
             if (closed) return AgentResult.Failure(AgentResult.Kind.START, sessionId = sessionId)
             check(handle !in active)
             scope.async(start = CoroutineStart.LAZY) { execute(handle, prompt, sessionId, workspace, sandboxMode, onSession) }
-                .also { active[handle] = it; it.start() }
+                .also { task -> task.invokeOnCompletion { error -> if (error != null) FatalErrorHandler.rethrowProgrammingError(error) }; active[handle] = task; task.start() }
         }
         try { return task.await() }
         catch (e: CancellationException) {
@@ -61,7 +63,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
         fun failure(kind: AgentResult.Kind) = AgentResult.Failure(kind, sessionId = observed)
         if (handle.stopRequested) return@coroutineScope failure(AgentResult.Kind.STOPPED)
         if (sessionId != null && !validSessionId(sessionId)) return@coroutineScope failure(AgentResult.Kind.PROTOCOL)
-        val server = try { connection() } catch (e: CancellationException) { throw e } catch (_: Exception) { return@coroutineScope failure(AgentResult.Kind.START) }
+        val server = try { connection() } catch (e: CancellationException) { throw e } catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); return@coroutineScope failure(AgentResult.Kind.START) }
         try {
             val params = json("cwd" to workspace.toString(), "approvalPolicy" to "never", "sandbox" to sandboxMode.cliValue)
             if (sessionId != null) { params.addProperty("threadId", sessionId); if (backend.excludeTurns) params.addProperty("excludeTurns", true) }
@@ -77,7 +79,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
             observed = id
             handle.threadId.complete(id)
             try { onSession(id) } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { return@coroutineScope failure(AgentResult.Kind.STORAGE) }
+            catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); return@coroutineScope failure(AgentResult.Kind.STORAGE) }
             if (handle.stopRequested) return@coroutineScope failure(AgentResult.Kind.STOPPED)
             val events = server.subscribe(id)
             var interrupt: Job? = null
@@ -113,7 +115,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
                     log.info("${displayName} 请求中断 requestId={} sessionId={} turnId={}", handle.requestId, id, turnId)
                     try { interruptTurn(server, id, turnId) }
                     catch (e: CancellationException) { throw e }
-                    catch (_: Exception) { log.warn("${displayName} 中断未获确认 requestId={}；继续等待轮次结束，可用本机 --stop 退出", handle.requestId) }
+                    catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("${displayName} 中断未获确认 requestId={}；继续等待轮次结束，可用本机 --stop 退出", handle.requestId) }
                 }
                 val messages = linkedMapOf<String, Pair<String?, String>>()
                 for (event in events) {
@@ -142,14 +144,14 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
                 }
                 failure(AgentResult.Kind.EXECUTION)
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) {
+            catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e);
                 log.warn("${displayName} 执行结果不明 requestId={} sessionId={}；等待后端退出，可用本机 --stop 退出", handle.requestId, id)
                 server.exited.await()
                 failure(AgentResult.Kind.PROTOCOL)
             } finally { interrupt?.cancelAndJoin(); server.unsubscribe(id) }
         } catch (e: CancellationException) { throw e }
         catch (_: TransportFailure) { failure(AgentResult.Kind.EXECUTION) }
-        catch (_: Exception) { failure(AgentResult.Kind.PROTOCOL) }
+        catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); failure(AgentResult.Kind.PROTOCOL) }
     }
 
     private suspend fun interruptTurn(server: AppServerClient, threadId: String, turnId: String) {

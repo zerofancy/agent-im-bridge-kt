@@ -33,16 +33,29 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                   private val sandboxMode: SandboxMode = SandboxMode.READ_ONLY,
                   private val replyContext: ReplyContext? = null,
                   private val typingReactions: TypingReactions? = null,
+                  private val lifecycle: RuntimeLifecycle? = null,
+                  initiallyHeld: Boolean = false,
                   private val sender: ReplySender) : AutoCloseable {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val mutex = Mutex()
     private val sentMessages = SentMessageLru()
     private val limit = maxConcurrentRuns.also { require(it > 0) }
     private val job = SupervisorJob()
-    private val scope = CoroutineScope(job + Dispatchers.Default)
+    private val scope = CoroutineScope(job + Dispatchers.Default + FatalErrorHandler.context)
     private val senderNames = replyContext?.nameCache(scope)
     private val sharedTyping = typingReactions?.let { SharedTypingReactions(it) }
     private var closed = false
+    private var draining = initiallyHeld
+    private val outstanding = mutableSetOf<CompletableFuture<Unit>>()
+    private val startupNotice = lifecycle?.let { StartupNotice(it.startedAt) }
+
+    suspend fun drain() = mutex.withLock { draining = true }
+    suspend fun activate() = mutex.withLock { check(!closed); draining = false }
+    suspend fun deploymentStatus() = mutex.withLock {
+        outstanding.removeAll { it.isDone }
+        json("draining" to draining, "pending" to outstanding.size, "running" to running.size,
+            "queued" to queue.size, "incoming" to incomingCount.get(), "closed" to closed)
+    }
     private val queue = mutableListOf<Work>()
     private val running = mutableMapOf<String, Work>()
     // A failed session write cannot be followed by another request with stale in-memory state.
@@ -76,14 +89,28 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         val command = BridgeCommand.parse(if (message.input.contentType == "post")
             message.input.commandText.orEmpty() else message.prompt)
         return if (command != null) accept(message.route, message.prompt, message.input)
-        else receive(null) { message }
+        else receive(null, message.route) { message }
     }
 
-    internal fun receive(id: String?, resolve: suspend () -> IncomingMessage?): CompletableFuture<Unit> {
+    internal fun receive(id: String?, rejectedRoute: ReplyRoute? = null, resolve: suspend () -> IncomingMessage?): CompletableFuture<Unit> {
         val result = CompletableFuture<Unit>()
-        incomingCount.incrementAndGet()
-        val item = Incoming(incomingSequence.incrementAndGet(), id, resolve, result)
-        if (incoming.trySend(item).isFailure) { incomingCount.decrementAndGet(); result.complete(Unit) }
+        val admission = scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val rejected = mutex.withLock {
+                outstanding.removeAll { it.isDone }
+                if (closed || draining) true else {
+                    outstanding.add(result)
+                    incomingCount.incrementAndGet()
+                    val item = Incoming(incomingSequence.incrementAndGet(), id, resolve, result)
+                    if (incoming.trySend(item).isFailure) { incomingCount.decrementAndGet(); result.complete(Unit) }
+                    false
+                }
+            }
+            if (rejected) {
+                try { if (rejectedRoute != null && !mutex.withLock { closed }) send(rejectedRoute, "应用升级中，请稍后重试。") }
+                finally { result.complete(Unit) }
+            }
+        }
+        admission.invokeOnCompletion { error -> if (error != null) result.completeExceptionally(error) }
         return result
     }
 
@@ -107,7 +134,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                         if (e !is TimeoutCancellationException) throw e
                         currentCoroutineContext().ensureActive()
                         log.warn("消息接收准备超时，未提交模型")
-                    } catch (_: Exception) {
+                    } catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e);
                         item.completed.complete(Unit)
                         log.warn("消息接收准备失败，未提交模型")
                     } finally { incomingCount.decrementAndGet() }
@@ -135,6 +162,10 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                     work.finish()
                     return@withLock null
                 }
+                outstanding.removeAll { it.isDone }
+                outstanding.add(work.completed)
+                if (draining && incomingOrder == null && command == null)
+                    return@withLock suspend { send(route, "应用升级中，请稍后重试。") }
                 sharedTyping?.let { work.activity = RequestActivity(scope, it.forRequest(), route, work.completed) }
                 if (input?.malformedPost == true) return@withLock suspend { send(route, "富文本消息 JSON 无法解析，请重新发送。") }
                 if (command != null) return@withLock prepareControl(work, command)
@@ -146,7 +177,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                         try { send(route, "已加入队列，前面的请求处理完成后继续。") }
                         catch (_: TimeoutCancellationException) { log.warn("排队提示发送超时 messageId={}", route.messageId) }
                         catch (e: CancellationException) { throw e }
-                        catch (_: Exception) { log.warn("排队提示发送失败 messageId={}", route.messageId) }
+                        catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("排队提示发送失败 messageId={}", route.messageId) }
                         finally { withContext(NonCancellable) { mutex.withLock { work.ready = true; dispatch() } } }
                     }
                 }
@@ -156,7 +187,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             if (control != null) {
                 try { control() }
                 catch (e: CancellationException) { throw e }
-                catch (_: Exception) { log.warn("控制命令回复失败 chatId={} messageId={}", route.chatId, route.messageId) }
+                catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("控制命令回复失败 chatId={} messageId={}", route.chatId, route.messageId) }
                 finally { work.finish() }
             }
         }
@@ -171,7 +202,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
     private suspend fun cleanupAttachments() {
         try { replyContext?.cleanup() }
         catch (e: CancellationException) { throw e }
-        catch (_: Exception) { log.warn("临时附件清理失败") }
+        catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("临时附件清理失败") }
     }
 
     // Called under the state mutex: reserve state or capture a snapshot before any suspension.
@@ -184,7 +215,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             "/help" -> reply(BridgeCommand.help(runner.displayName))
             "/status" -> {
                 val state = running[route.chatId]?.stage?.label ?: if (route.chatId in switching) "切换目录中" else "空闲"
-                reply("当前后端：${runner.displayName}\n正在执行：${running.size}/$limit\n正在排队：${queue.size}\n当前聊天：$state\n当前聊天排队：${queue.count { it.route.chatId == route.chatId }}")
+                reply((lifecycle?.status().orEmpty()) + "部署状态：${if (draining) "排空或等待激活" else "空闲"}\n当前后端：${runner.displayName}\n正在执行：${running.size}/$limit\n正在排队：${queue.size}\n当前聊天：$state\n当前聊天排队：${queue.count { it.route.chatId == route.chatId }}")
             }
             "/pwd" -> { { send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}") } }
             "/stop" -> {
@@ -203,14 +234,14 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                         if (withTimeoutOrNull(30_000) { target.completed.asDeferred().await(); true } != true) {
                             try { send(route, "${runner.displayName} 尚未确认停止，当前聊天保持停止中，可用本机 --stop 退出整个 Bridge。") }
                             catch (e: CancellationException) { throw e }
-                            catch (_: Exception) { log.warn("停止等待提示发送失败 messageId={}", route.messageId) }
+                            catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("停止等待提示发送失败 messageId={}", route.messageId) }
                         }
                     }
                     suspend {
                         // Cancellation must happen even when the acknowledgement cannot be delivered.
                         try { send(route, "正在停止…") }
                         catch (e: CancellationException) { throw e }
-                        catch (_: Exception) { log.warn("停止提示发送失败 messageId={}", route.messageId) }
+                        catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("停止提示发送失败 messageId={}", route.messageId) }
                         target.completed.asDeferred().await()
                         val failed = mutex.withLock { target.stopBackendFailed }
                         send(route, if (failed) "${runner.displayName} 后端异常，本次执行已结束；已取消 ${target.stopCancelled} 个排队请求，会话和目录保留，未自动重跑。"
@@ -225,7 +256,8 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 }
             }
             "/cd" -> {
-                if (command.argument.isEmpty()) reply("请使用 /cd <path>，查看 /help 获取帮助。")
+                if (draining) reply("应用升级中，暂时不能切换目录。")
+                else if (command.argument.isEmpty()) reply("请使用 /cd <path>，查看 /help 获取帮助。")
                 else if (incomingCount.get() > 0) reply("正在准备接收到的消息，请稍后再切换目录。")
                 else if (route.chatId in running || route.chatId in switching || queue.any { it.route.chatId == route.chatId })
                     reply("当前聊天忙碌，请等待空闲，或先 /stop 停止任务后再切换目录。")
@@ -317,7 +349,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                     throw e
                 } catch (_: SessionPersistenceException) {
                     AgentResult.Failure(AgentResult.Kind.STORAGE, sessionId = id)
-                } catch (_: Exception) {
+                } catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e);
                     AgentResult.Failure(AgentResult.Kind.EXECUTION, sessionId = id)
                 }
             }
@@ -365,14 +397,14 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             throw e
         } catch (_: SessionPersistenceException) {
             mutex.withLock { unavailable.add(route.chatId) }
-            try { send(route, "会话存储不可用，当前聊天已暂停执行，请修复后重启。") } catch (e: CancellationException) { throw e } catch (_: Exception) { }
-        } catch (_: Exception) {
+            try { send(route, "会话存储不可用，当前聊天已暂停执行，请修复后重启。") } catch (e: CancellationException) { throw e } catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); }
+        } catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e);
             log.error("执行或发送失败 chatId={} messageId={}；未自动重跑。", route.chatId, route.messageId)
         } finally {
             withContext(NonCancellable) {
                 for (prepared in preparedPrompts) {
                     try { prepared.release() }
-                    catch (_: Exception) { log.warn("临时附件释放失败 messageId={}", route.messageId) }
+                    catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("临时附件释放失败 messageId={}", route.messageId) }
                 }
                 mutex.withLock {
                     if (running[route.chatId] === work) running.remove(route.chatId)
@@ -386,7 +418,8 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
 
     private suspend fun send(route: ReplyRoute, text: String) {
         currentCoroutineContext().ensureActive()
-        check(!mutex.withLock { closed }) { "closed" }
+        if (mutex.withLock { closed }) throw CancellationException("Bridge closed")
+        startupNotice?.beforeReply(route, sender)
         withTimeout(30_000) { sender.send(route, text).await() }
     }
 

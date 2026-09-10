@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>飞书卡片接入调研</title><style>body{margin:0;background:#f4f6fa;color:#233047;font:16px/1.8 system-ui,sans-serif}main{max-width:1000px;margin:auto;padding:44px 24px}h1,h2{line-height:1.35}h1{font-size:34px}h2{margin-top:36px}section,.lead{background:white;padding:24px;border-radius:14px;margin:20px 0}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #dce3ed;padding:12px;text-align:left;vertical-align:top}code{overflow-wrap:anywhere;color:#3254a3}a{color:#235bc0}.meta{color:#68758b}.flow{padding:18px;background:#eaf1ff;border-radius:10px}.notice{border-left:4px solid #deaa43;padding-left:18px}li{margin:8px 0}@media(max-width:650px){main{padding:22px 14px}section{padding:16px}table{font-size:14px}}</style></head><body><main>
+<h1>飞书卡片接入调研</h1><p class="meta">agent-im-bridge-kt · 2026-09-10 · 代码与 SDK 源码核验，未发送真实卡片</p>
+<div class="lead"><strong>结论：可以接入。</strong>飞书支持交互卡片、原消息更新、原生流式文本和按钮回调。建议先做“状态卡片 + 停止按钮 + 最终答案”，再接入答案流式展示。停止始终走现有 app-server 原生中断；卡片只是控制入口与展示层。</div>
+<section><h2>已确认的能力</h2><table><tr><th>能力</th><th>接入方式</th><th>本项目判断</th></tr>
+<tr><td>卡片消息与原消息回复</td><td>interactive 消息；可直接发送卡片 JSON，或引用 CardKit card_id；发送保留 replyTo。</td><td>继续使用当前聊天和原消息路由，记录返回的 message_id。</td></tr>
+<tr><td>状态与整卡更新</td><td>im.message.patch；CardKit 也有卡片/组件更新接口。</td><td>适合排队、执行、停止中、完成等有限次状态变化。</td></tr>
+<tr><td>原生流式文本</td><td>CardKit cardElement.content：PUT /open-apis/cardkit/v1/cards/:card_id/elements/:element_id/content。</td><td>传累计全文，服务端识别增量；维护 element_id、递增 sequence 与操作幂等 uuid。</td></tr>
+<tr><td>按钮回调</td><td>底层 card.action.trigger；当前 Java Channel 暴露 cardAction 事件。</td><td>现有 dispatcher 已注册回调处理器；应用控制台仍需启用对应回调配置。</td></tr></table>
+<p>协议依据：本机官方 Java SDK 2.7.3 的 CardElement、ContentCardElementReqBody、RawMessageSender、ChannelEventDispatcherFactory 与 CardActionEvent 源码。官方页面入口见文末；部分网页正文未能通过本次网页工具提取。</p></section>
+<section><h2>当前 SDK 有三个需要绕开的细节</h2><ol>
+<li><strong>名称不能代表调用协议。</strong>CardStreamController 的注释提及 CardKit，但实现实际调用 im.message.patch 更新整卡。RawMessageSender.updateCardElementContent 又调用组件 patch，而不是专用 content 接口。原生打字机效果应直接使用生成式 SDK 的 cardElement.content。</li>
+<li><strong>必须检查业务响应码。</strong>本机 RawMessageSender.patchCard、updateCardElementContent、finishStreamingCard 没有检查返回响应的 success()。HTTP 请求返回不等于更新成功。桥接层应封装低层 API，统一校验业务码并做有限重试。</li>
+<li><strong>回调处理不能等模型停止。</strong>ChannelEventDispatcherFactory 在调用处理逻辑之后才返回响应；不能假设 SDK 会在业务处理前自动确认。回调只做快速校验与停止意图提交，异步等待终态并更新卡片。</li></ol></section>
+<section><h2>推荐的代码结构</h2><p class="flow">模型事件 → 每个请求的展示状态 → 合并刷新队列 → 卡片 API<br>按钮回调 → 身份与请求校验 → ChatService 停止流程 → turn/interrupt → 终态 → 卡片收尾</p>
+<table><tr><th>位置</th><th>建议变化</th></tr>
+<tr><td>LarkChannelBridge</td><td>订阅 cardAction；保存卡片消息 ID；复用原消息回复路由与现有 HTTP transport。</td></tr>
+<tr><td>ReplySender / 新增 RunPresenter</td><td>现有 send 只返回 Unit，不足以管理更新。增加展示接口，分离开始、状态、答案快照、结束；卡片句柄保存 requestId、messageId、cardId。</td></tr>
+<tr><td>ChatService</td><td>将 PREPARING、EXECUTING、REPLYING、STOPPING 映射为可读状态；新增基于预期 requestId 的原子停止入口。</td></tr>
+<tr><td>AppServerAgentRunner</td><td>目前只收集完成的 agentMessage。第二阶段增加公开答案事件观察接口；先核验各后端 delta 与 phase 契约，无法可靠识别最终答案阶段时只展示状态和完成消息。</td></tr>
+<tr><td>CardApi / CardUpdateWorker</td><td>生命周期受 Bridge 管理的协程；每张卡串行写入并合并快照。同步 SDK I/O 放 Dispatchers.IO，按当前项目取消机制接入。</td></tr></table>
+<p>共享 RPC 读取协程不得等待飞书 HTTP。刷新建议从 500–1000ms 合并一次起步，这是本方案的工程默认值，不是平台频率上限。最终状态必须刷新并封闭后续写入，避免晚到的增量把“已停止”改回“执行中”。</p></section>
+<section><h2>停止按钮的准确语义</h2><ul>
+<li>第一阶段按钮标注“停止当前任务并清空待处理请求”，匹配现有 /stop 语义。服务端先原子确认卡片 requestId 仍是该聊天当前任务，再执行停止；旧卡片返回已结束，不能误停后来任务。</li>
+<li>校验 operatorId 等于 allowedUserId，并验证应用、聊天、卡片 messageId 和服务端请求绑定。按钮 value 仅作为查询标识，不直接信任其中的聊天或权限信息。</li>
+<li>重复点击复用停止过程，不能再次清空停止后新入队请求。按钮回调不进入模型队列、不占模型槽位。</li>
+<li>RPC 接受中断后显示“停止中”；收到本轮终态才显示“已停止”。30 秒未确认显示异常并保持占槽，沿用现有行为。</li>
+<li>卡片发送或更新故障不阻止原生停止；保留 /stop 文本入口。进程重启后未知或旧请求绑定一律视为失效。</li></ul></section>
+<section><h2>流式卡片生命周期</h2><ol>
+<li>排队与长时间工具执行使用普通状态卡片。模型任务没有超时，不应让卡片流式模式持续时间约束变成任务超时。</li>
+<li>开始可展示的答案输出时，创建或启用 CardKit 流式卡片；保存 card_id 与 message_id 的映射。</li>
+<li>用固定 element_id 更新累计文本；每张卡统一管理 sequence。重试同一逻辑操作复用 uuid 与原请求，不重新生成不同操作身份。</li>
+<li>正常完成、失败和停止均进入有技术超时的收尾流程：刷最终快照、关闭 streaming_mode、更新终态及按钮状态。更新失败可降级文本回复，不能重跑模型。</li>
+<li>超长答案按实测卡片限制分段或保留现有附件交付方式；不把本地路径伪装成可点击下载链接。</li></ol>
+<p class="notice">同张卡在流式模式下的按钮可用性、点击是否影响流式状态，以及平台有效期、大小和频率限制，本次未完成真实验证。首版采用普通状态卡片；第二阶段若同卡按钮与流式冲突，使用独立控制卡片和答案卡片。</p></section>
+<section><h2>实施顺序与验收</h2><p><strong>第一阶段：</strong>静态状态卡片、原消息更新、最终答案和停止回调。先完成真实应用回调配置与一轮收发验证，再替换默认展示。<strong>第二阶段：</strong>接入原生 content 流式接口及各后端公开答案增量。</p>
+<p>验证应覆盖：原消息回复路由；同聊天 FIFO 与跨聊天并发；旧卡片、重复点击、无权限点击；停止确认前保持占槽；卡片慢请求不阻塞 RPC；更新乱序、业务错误码、限流与取消；最终状态不可逆；关闭后无后台刷新；原有附件独立行及流式下载不回归。</p>
+<p>本次只增加调研文档，没有业务代码变更、发送真实消息或重启服务。未运行业务测试；应用权限、回调配置和客户端交互兼容性待接入联调。</p></section>
+<section><h2>资料与核验入口</h2><ul>
+<li><a href="https://open.feishu.cn/document/cardkit-v1/card/create">飞书：创建卡片实体</a></li>
+<li><a href="https://open.feishu.cn/document/cardkit-v1/card-element/content">飞书：流式更新文本</a></li>
+<li><a href="https://open.feishu.cn/document/server-docs/im-v1/message/patch">飞书：更新应用发送的消息卡片</a></li>
+<li><a href="https://open.feishu.cn/document/feishu-cards/card-callback-communication">飞书：卡片回调通信</a></li>
+<li><a href="https://github.com/larksuite/oapi-sdk-java">官方 Java SDK 仓库</a>；本次实际核验本机 Maven 缓存的 oapi-sdk-2.7.3-sources.jar，不将仓库最新版本等同于本机版本。</li></ul>
+<p class="meta">证据边界：端点、请求字段、SDK 行为来自本机官方源码；架构与实施顺序是针对当前项目的建议。未用第三方文章中的数值限制作为已确认平台契约。</p></section>
+</main></body></html>

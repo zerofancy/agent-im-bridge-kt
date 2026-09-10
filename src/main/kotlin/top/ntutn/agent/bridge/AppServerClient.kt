@@ -27,7 +27,7 @@ internal class TransportFailure : Exception("Agent app-server connection unavail
 /** This scope owns the transport, not any individual model request. */
 internal class AppServerClient private constructor(val process: Process, private val displayName: String) {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + FatalErrorHandler.context)
     private val state = Mutex()
     private val writes = Mutex()
     private val pending = mutableMapOf<Long, CompletableDeferred<JsonObject>>()
@@ -70,13 +70,13 @@ internal class AppServerClient private constructor(val process: Process, private
                     }
                 }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { log.warn("${displayName} app-server 协议读取失败 pid={}", process.pid()) }
+            catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("${displayName} app-server 协议读取失败 pid={}", process.pid()) }
             finally { withContext(NonCancellable) { breakTransport() } }
         }
         scope.launch {
             try { process.errorStream.bufferedReader(Charsets.UTF_8).use { reader ->
                 while (runInterruptible { reader.readLine() } != null) { /* Drain without logging payloads. */ }
-            } } catch (e: CancellationException) { throw e } catch (_: Exception) { }
+            } } catch (e: CancellationException) { throw e } catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); }
         }
         scope.launch {
             process.onExit().await()
@@ -128,10 +128,12 @@ internal class AppServerClient private constructor(val process: Process, private
         try { withContext(Dispatchers.IO) { writes.withLock {
             runInterruptible { writer.write(message.toString()); writer.newLine(); writer.flush() }
         } } } catch (e: CancellationException) { throw e }
-        catch (_: Exception) { breakTransport(); throw TransportFailure() }
+        catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); breakTransport(); throw TransportFailure() }
     }
 
     /** Only whole-Bridge shutdown or failed startup may terminate this owned process. */
+    internal suspend fun healthy(): Boolean = state.withLock { !broken && process.isAlive }
+
     suspend fun close() = withContext(NonCancellable + Dispatchers.IO) {
         val handles = process.toHandle().descendants().use { it.toArray().map { h -> h as ProcessHandle } }.reversed() + process.toHandle()
         handles.filter { it.isAlive }.forEach { it.destroy() }

@@ -12,12 +12,12 @@ enum class BackendId(val configValue: String, val displayName: String) {
 }
 
 data class BackendSpec(val id: BackendId, val binary: String, val runtimeRoot: Path,
-                       val sharedRoot: Path = runtimeRoot) {
+                       val sharedRoot: Path = runtimeRoot, val temporaryRoot: Path? = null) {
     val displayName: String get() = id.displayName
-    val environment: Map<String, String> get() = when (id) {
+    val environment: Map<String, String> get() = (when (id) {
         BackendId.CODEX -> mapOf("CODEX_HOME" to runtimeRoot.toString())
         BackendId.TRAEX -> mapOf("TRAE_HOME" to sharedRoot.toString(), "TRAECLI_HOME" to runtimeRoot.toString())
-    }
+    }) + (temporaryRoot?.let { mapOf("TMPDIR" to it.toString(), "TMP" to it.toString(), "TEMP" to it.toString()) } ?: emptyMap())
     val excludeTurns: Boolean get() = id == BackendId.CODEX
 
     internal fun isMissingSession(error: RpcFailure, sessionId: String): Boolean =

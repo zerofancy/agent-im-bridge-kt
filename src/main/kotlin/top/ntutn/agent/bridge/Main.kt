@@ -27,74 +27,72 @@ fun safeError(error: Throwable): String {
 
 fun main(args: Array<String>) {
     if (args.contains("--help")) {
-        println("""
-            飞书 Agent 连续对话（Codex / Traex）
-            用法：agent-im-bridge-kt [--workspace <目录>] [--codex-bin <命令或路径>] [--traex-bin <命令或路径>]
-                                  [--max-concurrent-runs <数量>] [--no-browser]
-            --stop             停止本机旧实例并退出（单独使用）
-            --workspace        默认启动时的当前目录
-            --codex-bin        默认 codex
-            --traex-bin        默认 traex；后端由 config.json 的 backend 选择，重启生效
-            --max-concurrent-runs 默认 10，同一聊天串行，超出请求在内存排队
-            --no-browser       仅打印授权链接
-            飞书绑定配置兼容 ~/.agent-im-bridge-kt/config.json。
-            ECHO_ALLOWED_USER_ID 用于授权缺少 open_id 时补充身份。
-        """.trimIndent())
+        println("使用 bridgectl dev 调试；bridgectl start/status/stop --env prod 管理正式环境；bridgectl --help 查看部署命令。")
         return
     }
+    FatalErrorHandler.install()
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     var channel: LarkChannel? = null
     var runner: AppServerAgentRunner? = null
     var service: ChatService? = null
     var instance: InstanceLock? = null
+    var control: RuntimeControl? = null
+    var lifecycle: RuntimeLifecycle? = null
     try {
-        val stateDirectory = Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt")
-        if (args.contains("--stop")) {
-            require(args.contentEquals(arrayOf("--stop"))) { "--stop 必须单独使用。" }
-            println(InstanceLock.stop(stateDirectory))
+        // Preserve only the legacy stop operation for migration. New environments use bridgectl stop.
+        if (args.contentEquals(arrayOf("--stop"))) {
+            println(InstanceLock.stop(Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt")))
             return
         }
-        val options = RunOptions.parse(args)
-        instance = InstanceLock.acquire(stateDirectory)
-        val sessions = SessionStore(stateDirectory.resolve("sessions.json"))
-        val store = ConfigStore(Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt", "config.json"))
-        val config = store.load() ?: register(options.noBrowser).also {
-            store.save(it)
-            println("机器人配置已保存：${store.path}")
-        }
-        val backend = BackendSpec.resolve(BackendId.parse(config.backend), options)
+        require(args.isEmpty()) { "使用 bridgectl 管理环境，不再直接传入运行参数" }
+        val environment = RuntimeEnvironment.current()
+        environment.verifyClasspath()
+        instance = InstanceLock.acquire(environment.directory)
+        lifecycle = RuntimeLifecycle(environment)
+        FatalErrorHandler.attach(lifecycle)
+        val config = ConfigStore(environment.directory.resolve("config.json")).load()
+            ?: throw IllegalArgumentException("环境尚未绑定机器人，请使用 bridgectl init")
+        environment.validate(config)
+        val options = environment.options()
+        val sessions = SessionStore(environment.directory.resolve("sessions.json"))
+        val backend = environment.backend(BackendId.parse(config.backend), options)
         runner = AppServerAgentRunner(backend)
         runner.checkAvailable()
-        log.info("{} 访问模式：{}（修改配置后重启生效）", backend.displayName, config.sandboxMode)
-        val bridge = createAgentChannel(config, runner, sessions, options, backend)
-        channel = bridge.first
-        service = bridge.second
+        val bridge = createAgentChannel(config, runner, sessions, options, backend, lifecycle, System.getenv("BRIDGE_HOLD") == "1")
+        channel = bridge.first; service = bridge.second
+        val monitoredRunner = runner
+        control = RuntimeControl(lifecycle, service) { monitoredRunner.healthy() }
         val activeChannel = channel
         val activeService = service
-        val activeInstance = instance
         val activeRunner = runner
+        val activeInstance = instance
+        val activeControl = control
+        val activeLifecycle = lifecycle
         Runtime.getRuntime().addShutdownHook(Thread {
             closeBridgeResources(
-                { activeService.close() }, { activeRunner.close() },
-                { activeChannel.disconnect().get(5, TimeUnit.SECONDS) }, { activeInstance.close() }
+                { activeControl.close() }, { activeService.close() }, { activeRunner.close() },
+                { activeChannel.disconnect().get(5, TimeUnit.SECONDS) },
+                { activeLifecycle.finish(activeLifecycle.stopReason, 0) }, { activeInstance.close() }
             )
-            println("${backend.displayName} Bridge 已停止。")
         })
-        log.info("正在连接飞书……")
+        channel.on<Any>("reconnecting") { activeControl.connected(false) }
+        channel.on<Any>("reconnected") { activeControl.connected(true) }
+        log.info("正在连接飞书…… environment={} release={}", environment.name, environment.release)
         channel.connect().get(45, TimeUnit.SECONDS)
-        log.info("${backend.displayName} Bridge 已连接（按聊天持续会话）。请用授权账号私聊机器人，或在群聊中 @机器人。Ctrl-C 退出。")
+        control.connected(true)
+        log.info("{} Bridge 已连接 environment={} release={}", backend.displayName, environment.name, environment.release)
         CountDownLatch(1).await()
     } catch (e: Exception) {
-        // Only our own config validation errors have safe, controlled messages.
-        if (e is IllegalArgumentException && e.stackTrace.firstOrNull()?.className?.startsWith("top.ntutn.agent.bridge") == true)
-            log.error("{}", e.message)
-        else log.error("{}", safeError(e))
+        FatalErrorHandler.rethrowProgrammingError(e)
+        log.error("启动失败 type={}", e.javaClass.simpleName)
         closeBridgeResources(
-            { service?.close() }, { runner?.close() },
-            { channel?.disconnect()?.get(5, TimeUnit.SECONDS) }, { instance?.close() }
+            { control?.close() }, { service?.close() }, { runner?.close() },
+            { channel?.disconnect()?.get(5, TimeUnit.SECONDS) },
+            { lifecycle?.finish("启动失败 ${e.javaClass.simpleName}", 1) }, { instance?.close() }
         )
         exitProcess(1)
     }
+
 }
 
 // Shutdown is best-effort for every resource, including after a JVM linkage error.
@@ -103,6 +101,7 @@ internal fun closeBridgeResources(vararg actions: () -> Unit) {
         if (index == actions.size) return
         try { actions[index]() }
         catch (error: Throwable) {
+            FatalErrorHandler.rethrowProgrammingError(error)
             LoggerFactory.getLogger("top.ntutn.agent.bridge").warn("退出清理失败 type={}", error.javaClass.simpleName)
         } finally { closeAt(index + 1) }
     }

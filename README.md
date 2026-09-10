@@ -2,77 +2,95 @@
 
 本机运行的飞书机器人：通过官方链接绑定机器人，将授权用户的私聊及群聊 @ 文本交给本地 Codex 或 Traex CLI，返回最终答案。按后端及聊天保存并续接会话，默认只读分析。
 
-## 运行
+## 部署与运行（macOS）
 
-需要 JDK 11、所选后端的 CLI（`codex` 或 `traex`）及本机可用的认证，以及可访问飞书和后端服务的网络。首次构建还需要访问 Maven Central 和 Gradle 下载服务。支持 macOS/Linux。
-
-```bash
-java -version
-codex --version
-codex login status
-```
-
-未登录时先在终端运行 `codex login`。程序复用本机默认模型和配置，保留项目规则，默认启用 `read-only` 沙箱，可通过本机配置切换访问模式，始终使用非交互模式；不会请求交互式提权。
+需要 JDK 11+、Python 3.9+，以及当前 macOS 用户已登录的图形会话。正式服务由用户级 launchd 守护，调试与正式使用不同机器人、配置、会话、运行锁、模型目录、附件和默认工作目录。完整说明见 [部署与运行诊断](docs/macos-deployment.html)。
 
 ```bash
 ./gradlew test installDist
-./build/install/agent-im-bridge-kt/bin/agent-im-bridge-kt
+./bridgectl publish
+# 输出 r-<内容哈希>，以下命令使用该版本
+./bridgectl migrate-legacy --env prod --workspace "$PWD"
+./bridgectl start --env prod --release r-<内容哈希>
+./bridgectl status --env prod
 ```
 
-首次启动会打印授权链接并尝试打开默认浏览器。请在飞书官方页面登录，选择或创建机器人并完成授权。程序自动取得凭证、保存配置并建立长连接。看到 `Codex Bridge 已连接` 后，使用完成授权的账号测试：
+`migrate-legacy` 仅用于首次迁移：核对旧实例锁已释放，备份旧配置与会话映射后迁移，不复制运行锁；保留原工作目录和模型状态目录以续接历史，不复制桌面端模型状态数据库。已初始化的环境拒绝覆盖。配置中的 JDK、Python 和后端可执行文件使用明确路径；守护不依赖交互式 shell 配置。
 
-1. 私聊机器人发送 `1 加 1 等于几？`，原消息上立即出现“敲键盘”表情，随后收到 Codex 答案；回复完成后表情消失。
-2. 将机器人加入测试群，发送 `@机器人 阅读当前目录的 build.gradle.kts，说明项目使用的语言`，结果回复到原消息。
-3. 不 @机器人、仅 @所有人、其他用户发送、图片/文件或空文本，不回复。
-
-每个私聊 `chatId` 对应一个持续会话，每个群聊对应另一个独立会话；同群不同话题共享上下文。同聊天严格串行，不同聊天默认最多并发 10 个任务。后续请求进入内存 FIFO 队列，收到“已加入队列，前面的请求处理完成后继续”；空闲聊天按队首入队顺序获得运行槽位。队列不限制容量，重启不恢复排队请求。
-
-即使群聊中其他人 @，也只有配置的授权用户能触发。`@所有人 + @机器人` 会触发，但回复是纯文本，不产生结构化 @ 通知。最终答案超过 3000 个 Unicode 字符时顺序分段，每段均回复原消息。支持 `text` 和富文本 `post` 消息。纯文本去除机器人 @ 标记，保留正文内部空格与换行；富文本 JSON 直接交给模型，仅将图片节点的 `image_key` 替换为下载后的本地绝对路径，其余结构与内容保留。独立图片、文件消息仍不处理。损坏的富文本 JSON 会回复解析失败提示。
-
-模型任务不再自动超时，也没有无进展超时；用聊天 `/stop` 主动终止当前聊天任务并清空已有队列。按 Ctrl-C 停止接收和调度，请求原生中断，最多等待 5 秒后清理 Bridge 自己的 app-server 进程树并清空队列。后续使用同一命令启动，直接读取配置，无需重新绑定。开发时也可使用 `./gradlew run --console=plain`。
-
-只显示链接、不自动打开浏览器：
+后续升级：构建、发布得到新版本，再提交独立部署任务。提交立即返回部署编号，机器人可以在自己的任务中提交升级而不等待自身结束。
 
 ```bash
-./build/install/agent-im-bridge-kt/bin/agent-im-bridge-kt --no-browser
+./bridgectl deploy --env prod --release r-<新内容哈希>
+./bridgectl deploy-status <部署编号>
+./bridgectl deploy-force <部署编号>   # 明确中断剩余任务并丢弃队列
+./bridgectl deploy-cancel <部署编号>  # 仅停止旧实例前可取消
+./bridgectl rollback --env prod
+./bridgectl stop --env prod          # 卸载守护，保持停止
+./bridgectl start --env prod
 ```
 
-也可以从另一个终端停止本机实例：
+升级默认停止接收新模型任务，排空已经接收的解析、排队、执行和发送任务；没有自动排空超时。排空中即时查询和 `/stop` 可用，`/cd` 拒绝，新消息提示稍后重试。新版以暂停接收方式启动，60 秒内完成连接检查并连续稳定 10 秒后激活；激活前失败自动恢复旧版。激活决定持久化后不再自动回滚，避免丢弃新版已经接收的任务；独立执行器中断后恢复事务。
+
+正式和调试 JVM 都从 `~/.agent-im-bridge-kt/releases/<版本>/lib` 的真实绝对路径启动。产物目录封存且校验内容哈希；`build` 只是构建中间产物，不能直接运行，也不能原地覆盖发布目录。`prune --env prod` 会保留最近三个版本、当前/上一版本和运行/部署引用的版本。
+
+### 调试环境
+
+首次在终端运行即可交互绑定，无需准备配置 JSON 或手动创建目录：
 
 ```bash
-./build/install/agent-im-bridge-kt/bin/agent-im-bridge-kt --stop
+./gradlew test installDist
+./bridgectl dev
 ```
 
-`--stop` 单独使用，不连接飞书、不检查 Codex 登录，也不启动新实例。程序核对实例锁中的 PID 与启动时间后请求正常退出，等待最多 20 秒；退出会清理运行任务并丢弃内存队列，会话绑定保留。没有运行实例时直接提示。超时不会强制杀进程。升级前运行的旧版若未记录 PID，需要先在旧终端 Ctrl-C 一次，之后即可使用 `--stop`。
+`dev` 会打开飞书授权页面，让你选择或创建测试机器人；误选正式机器人会拒绝启动。绑定成功后自动创建独立模型目录，未登录时引导 Codex 登录。取消绑定不会保存半份配置；取消模型登录后，重新运行 `dev` 会继续登录，无需重新绑定。
+
+默认工作目录为 `~/.agent-im-bridge-kt/environments/dev/workspace`，由应用自动创建。它是模型操作文件的默认位置，普通对话测试可直接使用空目录。测试项目代码时，首次可以用 `./bridgectl dev --workspace /absolute/path/to/dev-checkout` 指定独立 checkout；应用不会自动复制代码或未提交修改。此目录必须与正式工作目录分开。
+
+```bash
+./bridgectl status --env dev
+./bridgectl stop --env dev
+# 修改代码后重新构建并启动测试快照
+./gradlew test installDist
+./bridgectl dev
+```
+
+`dev` 不自动编译。已有配置会直接复用；损坏或不完整的配置不会自动覆盖。交互授权只在前台终端执行，launchd 重启不会弹出授权页面。自动化仍可使用 `bridgectl init --env dev --workspace <独立目录> --config <配置 JSON>` 预先导入配置。
+
+调试与正式环境的 app ID、模型状态和默认工作目录不能重叠；环境路径经过符号链接解析后再次校验。构建仅修改 build，正式快照继续运行；dev 不停止 prod，不复制正式凭据或会话。这是同一系统账号下的操作隔离，不是针对恶意进程的权限沙箱。
+
+### 异常恢复与诊断
+
+未捕获线程/协程异常及 JVM 链接错误记录安全诊断后以退出码 70 立即退出，launchd 清理所属进程组并重新拉起；重启节流 30 秒。手动停止卸载守护，不自动拉起。崩溃不恢复内存队列、不自动重跑结果不明的任务。常规单次外部发送失败仍按请求处理。
+
+每次进程启动后，第一次向用户发送回复前，向同一条消息先发送一次“应用启动于x时x分”。整个进程只尝试一次，所有聊天共用发送门；Typing 不触发提示，提示失败不重试、不阻断正常回复。`/status` 显示环境、版本、启动时间、上次退出时间/原因/退出码和部署状态，保留现有任务统计。无法确认的退出原因明确显示未知。
+
+日志、管理令牌、生命周期和配置分别位于 `environments/<环境>/{logs,control,lifecycle}` 及该环境根目录。管理接口仅绑定 `127.0.0.1`，令牌文件权限为 600；`bridgectl status` 不显示令牌。不要上传环境配置、令牌或完整模型状态。
 
 ## 后端配置与启动参数
 
-编辑 `~/.agent-im-bridge-kt/config.json` 的 `backend` 字段，重启生效。仅支持小写 `codex`、`traex`；缺少字段的旧配置沿用 Codex，首次绑定显式保存 `"backend": "codex"`。例如在原有飞书凭证字段之外设置：
+编辑 `~/.agent-im-bridge-kt/environments/<环境>/config.json` 的 `backend` 字段，重启生效。仅支持小写 `codex`、`traex`；缺少字段的旧配置沿用 Codex，首次绑定显式保存 `"backend": "codex"`。例如在原有飞书凭证字段之外设置：
 
 ```json
 "backend": "traex",
 "sandboxMode": "read-only"
 ```
 
-不提供 `--backend` 或聊天切换命令。`--codex-bin` / `--traex-bin` 只指定各自的可执行文件，不改变配置选中的后端。程序先读取配置，只启动所选后端的独立 app-server；启动失败不切换后端、不回退到 exec。首次绑定默认 Codex；希望使用 Traex 时可在首次配置保存后停止程序、修改字段再启动，无需重新绑定飞书。
+启动设置保存在同一环境的 `runtime.json`，通过 `bridgectl init` 或迁移生成。修改后重启生效，不由聊天命令修改：
 
-Traex 默认运行 `traex`；自定义路径用 `--traex-bin "/path/to/traex"`。共享配置根由 `TRAE_HOME` 指定（默认 `~/.trae`），运行时根由 `TRAECLI_HOME` 指定（默认共享根下的 `cli`）。Codex 继续使用 `CODEX_HOME`（默认 `~/.codex`）。空环境变量按未设置处理，路径按启动目录规范化并解析已有符号链接；程序不会复制凭据。Traex 不以 `login status` 返回值作为唯一启动门槛，实际通过 app-server 握手检查可用性。
-
-```bash
-./build/install/agent-im-bridge-kt/bin/agent-im-bridge-kt \
-  --workspace /absolute/path/to/project \
-  --codex-bin codex \
-  --max-concurrent-runs 10
+```json
+{
+  "workspace": "/absolute/path/to/project",
+  "java": "/absolute/path/to/jdk/bin/java",
+  "python": "/absolute/path/to/python3",
+  "codexBinary": "/opt/homebrew/bin/codex",
+  "traexBinary": "/opt/homebrew/bin/traex",
+  "maxConcurrentRuns": 10
+}
 ```
 
-- `--workspace`：默认启动时的当前目录；必须存在且可读取。
-- `--codex-bin`：默认 `codex`，也支持可执行文件路径（路径有空格时加引号）。
-- `--traex-bin`：默认 `traex`，路径规则同上。仅启动配置选中的后端。
-- 原 `--timeout-seconds` 已移除，传入会提示错误；使用聊天 `/stop` 手动停止模型任务。
-- `--max-concurrent-runs`：默认 10，必须为正整数；一个聊天最多占用一个运行槽位。
-- `--no-browser`：仅打印首次绑定链接，不自动打开浏览器。
+模型目录默认是该环境的 `backend/codex`、`backend/trae` 与 `backend/trae/cli`，可以通过 `codexHome`、`traeHome`、`traeCliHome` 显式配置。守护启动时清除调用者的模型目录环境变量，由 Bridge 为后端设置本环境路径。首次旧环境迁移会显式登记旧路径以保留模型登录与历史。
 
-参数只对本次启动生效，不写入飞书凭证文件。支持配置后修改文件；不支持附件输入、流式输出、`/new` 命令。最终答案通过 app-server 事件读取。访问权限限制由所选后端执行。隔离对象是对话上下文，未切换目录的聊天使用启动默认目录；不同聊天可以选择相同目录，此时文件仍然共享。
+后端只由机器人配置的 `backend` 字段决定；指定可执行文件不会切换后端。每个实例启动独立 app-server，失败不回退、不连接桌面端服务。任务没有自动超时，使用聊天 `/stop` 主动停止。访问模式只由该环境的 `sandboxMode` 决定，重启生效。
 
 ## 聊天工作目录与编辑权限
 
@@ -91,7 +109,7 @@ Traex 默认运行 `traex`；自定义路径用 `--traex-bin "/path/to/traex"`�
 
 每个聊天的目录选择会持久化，重启后恢复。未切换过的聊天使用 `--workspace`。切换到不同真实目录会开始新会话，切回旧目录也不会恢复旧上下文；切换到同一真实目录则保留当前会话。Codex 保存的历史不会删除。同一群的话题共享该群的目录。
 
-在本机 `~/.agent-im-bridge-kt/config.json` 增加或修改以下字段，停止并重启机器人后对所有聊天生效：
+在本机 `~/.agent-im-bridge-kt/environments/<环境>/config.json` 增加或修改以下字段，停止并重启机器人后对所有聊天生效：
 
 ```json
 "sandboxMode": "workspace-write"
@@ -111,27 +129,21 @@ Traex 默认运行 `traex`；自定义路径用 `--traex-bin "/path/to/traex"`�
 
 ## 会话存储
 
-会话映射保存于 `~/.agent-im-bridge-kt/sessions.json`（权限 `600`），包含应用 ID、聊天 ID、后端 ID、规范化工作目录、后端运行时目录、session ID、更新时间及各聊天选择的目录。版本 3 兼容读取 v1/v2 文件，旧数据归入 Codex，首次成功写入时原子升级；降级前请备份会话文件。写入使用单写入锁、临时文件和原子替换；不保存消息正文。完整历史由各后端保存在自身运行时目录。更换应用、后端、工作目录或运行时目录会使用不同绑定。Codex 与 Traex 的聊天目录选择也相互隔离，切回后恢复该后端原有绑定；`/cd` 切换不同目录仍会清除目标旧绑定。
+会话映射保存于 `~/.agent-im-bridge-kt/environments/<环境>/sessions.json`（权限 `600`），包含应用 ID、聊天 ID、后端 ID、规范化工作目录、后端运行时目录、session ID、更新时间及各聊天选择的目录。版本 3 兼容读取 v1/v2 文件，旧数据归入 Codex，首次成功写入时原子升级；降级前请备份会话文件。写入使用单写入锁、临时文件和原子替换；不保存消息正文。完整历史由各后端保存在自身运行时目录。更换应用、后端、工作目录或运行时目录会使用不同绑定。Codex 与 Traex 的聊天目录选择也相互隔离，切回后恢复该后端原有绑定；`/cd` 切换不同目录仍会清除目标旧绑定。
 
 每个 Bridge 实例使用独立的 `codex app-server --listen stdio://` 或 `traex app-server --listen stdio://` 服务，不连接 Codex 桌面端服务。先完成 `initialize` / `initialized` 握手，新会话调用 `thread/start`，已有会话调用 `thread/resume`；保存 thread ID 后才使用 `turn/start` 执行请求。旧 exec 的会话绑定仍可续接。最终回复来自当前轮的 `item/completed` 消息，等 `turn/completed` 成功后发送，不发送工具输出或过程消息。每轮显式指定目录、权限和非交互审批策略。CLI 不支持所需协议时明确报错，不回退到 exec。
 
 重启会加载原绑定。手动停止、执行失败和答案发送失败保留绑定，不自动重跑。仅当原生 RPC 明确报告会话不存在、尚未提交本轮时，先通知旧上下文失效，再新建一次。app-server 退出会使受影响任务失败，后续请求可重启服务；连接失效而进程仍存活时，不将任务视为已停止，暂停新执行并提示本机重启。
 
-存储损坏时停止启动且不覆盖原文件；运行中保存失败会暂停该聊天，修复存储后重启。需要手动重置时，先停止机器人，备份并移走会话文件（将重置全部聊天绑定，Codex 历史仍保留）。`bridge.lock` 防止同一状态目录下多个 Bridge 实例同时运行；升级前必须先退出旧版进程，再运行 `./gradlew test installDist` 并启动新版。禁止用 `installDist` 覆盖运行中的安装目录，否则 JVM 延迟加载类时可能出现 `NoClassDefFoundError`。锁文件正常保留，不要删除正在使用的锁文件。
+存储损坏时停止启动且不覆盖原文件；运行中保存失败会暂停该聊天，修复存储后重启。需要手动重置时，先停止机器人，备份并移走会话文件（将重置全部聊天绑定，Codex 历史仍保留）。`bridge.lock` 防止同一状态目录下多个 Bridge 实例同时运行；旧式安装目录运行的实例必须先退出再构建。新的快照实例可在构建期间运行；发布升级必须使用 `bridgectl deploy`，禁止修改已发布 JAR。锁文件正常保留，不要删除正在使用的锁文件。
 
 ## 飞书配置
 
-配置位于 `~/.agent-im-bridge-kt/config.json`，目录权限 `700`、文件权限 `600`。内含 `appId`、`appSecret`、`allowedUserId`、`sandboxMode`（可选，默认 `read-only`）、`backend`（可选，默认 `codex`）、`tenant`（`feishu` 或 `lark`）。凭证是本机明文文件，程序和 SDK 日志不打印密钥；不要上传此文件。
+配置位于 `~/.agent-im-bridge-kt/environments/<环境>/config.json`，目录权限 `700`、文件权限 `600`。内含 `appId`、`appSecret`、`allowedUserId`、`sandboxMode`（可选，默认 `read-only`）、`backend`（可选，默认 `codex`）、`tenant`（`feishu` 或 `lark`）。凭证是本机明文文件，程序和 SDK 日志不打印密钥；不要上传此文件。
 
-默认使用授权结果中的用户 open_id。如果服务未返回该 ID，程序会在真实终端提示补充；也可通过环境变量提供回退值：
+首次在终端执行 `bridgectl dev` 交互绑定测试机器人；也可用 `bridgectl init --env dev --workspace <独立目录> --config <新机器人配置 JSON>` 导入配置。配置必须包含有效的 `allowedUserId`；缺失或格式错误时拒绝启动，不开放给其他用户。正式迁移使用已有绑定配置。仅前台 dev 首次配置时打开授权浏览器；守护入口不执行交互绑定，也不自动修改或覆盖损坏配置。
 
-```bash
-ECHO_ALLOWED_USER_ID=ou_your_open_id ./build/install/agent-im-bridge-kt/bin/agent-im-bridge-kt
-```
-
-缺少或格式错误的 open_id 会停止启动，不会开放给所有用户，也不会保存不完整配置。此环境变量只用于授权缺失用户 ID 的情况，不覆盖已有配置中的用户。
-
-需要重新绑定时，先停止程序，将配置文件移动为本机备份，再启动。损坏的配置不会被自动覆盖。首版使用 SDK 内存去重，进程重启不保留去重记录；同一机器人请只启动一个 Bridge 实例。
+需要更换机器人时先停止对应环境，备份后修改该环境的配置，再重新启动；同一个机器人不能同时绑定调试与正式环境。SDK 及 Bridge 的事件去重记录保存在内存，重启不承诺跨进程恰好一次。
 
 ## 收不到消息或回复失败
 
@@ -228,3 +240,7 @@ TRAEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.TraexLiveTest --
 ```bash
 CODEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.SandboxLiveTest
 ```
+
+## 部署体系验证
+
+`./gradlew test installDist` 包含 Kotlin 离线测试和 Python 部署事务测试。真实 launchd 验收显式运行 `python3 deployment/live_launchd_test.py`：使用临时状态目录和假 JVM 入口/假后端，验证异常重启、进程组清理、排空取消、升级、激活后再次重启、失败回滚及手动停止；不连接飞书，不调用真实模型。测试移除自己的 LaunchAgent，保留临时日志供诊断。

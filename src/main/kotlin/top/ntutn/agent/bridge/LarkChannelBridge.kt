@@ -69,7 +69,7 @@ fun channelOptions(config: BridgeConfig): LarkChannelOptions {
         }).build()
 }
 
-fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec): Pair<LarkChannel, ChatService> {
+fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec, lifecycle: RuntimeLifecycle? = null, initiallyHeld: Boolean = false): Pair<LarkChannel, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
     val appDirectory = MessageDigest.getInstance("SHA-256").digest(config.appId.toByteArray())
@@ -78,30 +78,41 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         channel.botIdentity?.takeIf { it.openId == id || (idType == "app_id" && id == config.appId) }?.name
     }
     val context = ReplyContext(source,
-        AttachmentStore(Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)),
+        AttachmentStore(lifecycle?.environment?.attachments ?: Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)),
         config.appId, source)
     val service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, LarkTypingReactions(config.appId) { channel.rawClient }) { route, text ->
-        channel.send(route.chatId, SendInput.text(text),
-            SendOptions.newBuilder().replyTo(route.messageId).build()).thenApply { result ->
-                check(!result?.messageId.isNullOrBlank()) { "API 未返回消息 ID" }
-                Unit
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, LarkTypingReactions(config.appId) { channel.rawClient }, lifecycle, initiallyHeld) { route, text ->
+        val sent = java.util.concurrent.CompletableFuture<Unit>()
+        try {
+            channel.send(route.chatId, SendInput.text(text),
+                SendOptions.newBuilder().replyTo(route.messageId).build()).whenComplete { result, error ->
+                if (error != null) {
+                    val cause = generateSequence(error) { it.cause }.take(10).last()
+                    if (cause is Error) FatalErrorHandler.unexpected(cause)
+                    sent.completeExceptionally(java.io.IOException("飞书发送失败"))
+                } else if (result?.messageId.isNullOrBlank()) sent.completeExceptionally(java.io.IOException("API 未返回消息 ID"))
+                else sent.complete(Unit)
             }
+        } catch (error: Exception) { sent.completeExceptionally(java.io.IOException("飞书发送失败")) }
+        sent
     }
     channel.on<NormalizedMessage>("message") { message ->
-        extractPrompt(message, config.allowedUserId)?.let { prompt ->
-            log.info("收到请求 chatId={} messageId={} chatType={}", message.chatId, message.messageId, message.chatType)
-            service.receive(IncomingMessage(ReplyRoute(message.chatId, message.messageId), prompt,
-                extractMessageInput(message)))
+        FatalErrorHandler.boundary {
+            extractPrompt(message, config.allowedUserId)?.let { prompt ->
+                log.info("收到请求 chatId={} messageId={} chatType={}", message.chatId, message.messageId, message.chatType)
+                service.receive(IncomingMessage(ReplyRoute(message.chatId, message.messageId), prompt, extractMessageInput(message)))
+            }
         }
     }
     channel.on<ReactionEvent>("reaction") { event ->
-        extractReaction(event, config.allowedUserId)?.let { reaction ->
-            service.receive(reaction.id) { source.reaction(reaction, config.appId, channel.botIdentity?.openId) }
+        FatalErrorHandler.boundary {
+            extractReaction(event, config.allowedUserId)?.let { reaction ->
+                service.receive(reaction.id) { source.reaction(reaction, config.appId, channel.botIdentity?.openId) }
+            }
         }
     }
-    channel.on<ChannelErrorEvent>("error") { event -> log.error("通道错误 {}", safeError(event.error)) }
+    channel.on<ChannelErrorEvent>("error") { event -> FatalErrorHandler.boundary { log.error("通道错误 {}", safeError(event.error)) } }
     channel.on<Any>("reconnecting") { log.warn("飞书连接中断，SDK 正在重连。") }
     channel.on<Any>("reconnected") { log.info("飞书连接已恢复。") }
     return channel to service

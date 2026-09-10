@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bridge · macOS 部署与运行诊断</title>
+<style>
+:root{color-scheme:light;--ink:#172b3a;--muted:#526575;--accent:#086c69}*{box-sizing:border-box}body{margin:0;background:#edf2f4;color:var(--ink);font:16px/1.75 system-ui,-apple-system,sans-serif}main{max-width:1050px;margin:auto;padding:56px 32px 100px}header{border-top:5px solid var(--accent);padding:30px 0}h1{font-size:38px;line-height:1.25;margin:12px 0}h2{font-size:25px;margin-top:0}h3{font-size:18px}p{margin:12px 0}.eyebrow{color:var(--accent);font-size:13px;letter-spacing:.12em;font-weight:700}.sub{color:var(--muted);max-width:760px}section{background:white;border:1px solid #d9e3e8;border-radius:12px;padding:28px;margin:22px 0}pre{background:#142b38;color:#e4f3f1;padding:20px;border-radius:8px;overflow:auto;line-height:1.6;font-size:14px}code{font-family:ui-monospace,monospace}table{border-collapse:collapse;width:100%;font-size:15px}th,td{text-align:left;border-bottom:1px solid #dbe4e9;padding:12px;vertical-align:top}th{color:var(--accent)}.flow{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.flow span{padding:10px 16px;background:#e9f4f1;border-radius:6px}.note{border-left:3px solid #d49836;padding:6px 16px;background:#fff7e8}li{margin:7px 0}a{color:var(--accent)}@media(max-width:600px){main{padding:24px 16px}section{padding:20px}h1{font-size:29px}}
+</style>
+<main><header><div class="eyebrow">AGENT IM BRIDGE / OPERATIONS</div><h1>可恢复的服务，<br>不可变的运行版本</h1><p class="sub">macOS 用户级部署体系。调试、正式与部署执行器分离，防止机器人构建自身时覆盖正在运行的 JAR；致命异常让整个进程退出，交给 launchd 恢复。</p></header>
+<section><h2>01 · 三个角色</h2><table><tr><th>角色</th><th>职责</th><th>边界</th></tr><tr><td>Bridge JVM</td><td>接收飞书消息、排队、执行模型、回复</td><td>独立版本 classpath 与环境运行锁</td></tr><tr><td>launchd / 启动包装器</td><td>登录后启动、异常重启、记录退出状态、清理进程组</td><td>30 秒重启节流，15 秒退出清理上限</td></tr><tr><td>部署执行器</td><td>排空、切换、健康检查、激活或回滚</td><td>独立 LaunchAgent；不属于模型进程树</td></tr></table><p>机器人发起部署后立即获得部署编号，不同步等待自身任务结束。手动 stop 卸载守护，保持停止。</p></section>
+<section><h2>02 · 环境与版本</h2><pre>~/.agent-im-bridge-kt/
+  environments/{prod,dev}/
+    config.json          # 独立机器人配置
+    runtime.json         # 明确的 JDK / Python / 模型 / 工作目录
+    sessions.json        # 会话，不持久化队列
+    bridge.lock          # 每个环境独立
+    backend/ attachments/ tmp/ logs/ control/ lifecycle/
+  releases/r-&lt;内容哈希&gt;/
+    bin/ lib/ libexec/ manifest.json
+  deployment/{prod,dev}/
+    current previous activated deploy.lock jobs/</pre><p>构建写入 build，发布复制完整产物、核对哈希后封存。JVM 使用发布目录的真实绝对路径；切换版本指针不能改变已运行 JVM 的 classpath。调试环境也使用快照，源代码和构建输出可以继续修改。</p><p class="note">同一系统用户下提供操作隔离，不是恶意进程防护。dev/prod 禁止复用机器人，模型目录及默认工作目录不能重叠；不自动复制正式登录状态给调试环境。</p></section>
+<section><h2>03 · 部署事务</h2><div class="flow"><span>校验产物</span><span>排空旧实例</span><span>停止与切换</span><span>健康检查</span><span>持久化激活</span></div><p>排空覆盖已经接收的消息解析、排队、执行、回复发送与清理。没有模型超时，也没有自动排空超时。新模型请求得到升级提示，表情请求不入队；/status、/help、/pwd、/stop 可用，/cd 暂停。</p><p>新版暂停接收，60 秒内完成就绪检查并稳定 10 秒后激活。激活前失败恢复旧版；激活决定落盘后不再自动回滚，因为新版可能已经接收用户任务。执行器异常退出后由 launchd 重启，并按事务记录恢复。</p><pre>./gradlew test installDist
+./bridgectl publish
+./bridgectl deploy --env prod --release r-&lt;新版本&gt;
+./bridgectl deploy-status &lt;部署编号&gt;
+./bridgectl deploy-force &lt;部署编号&gt;
+./bridgectl deploy-cancel &lt;部署编号&gt;
+./bridgectl rollback --env prod</pre><p>force 明确中断剩余任务并丢弃队列；cancel 仅在停止旧实例前有效。切换允许短暂不可用，不让同一个机器人双实例并行消费消息。</p></section>
+<section><h2>04 · 启动提示与退出诊断</h2><pre>应用启动于19时42分</pre><p>每个进程仅在第一次文字回复前向同一原消息尝试发送一次启动提示。所有聊天共用发送门，其他回复等待该次有限时长的尝试结束。Typing 不触发提示；提示失败不重试、不阻断正常回复。</p><pre>/status
+运行环境：prod
+运行版本：r-…
+应用启动时间：2026-09-10 19:42:03 +08:00
+上次退出时间：2026-09-10 19:41:52 +08:00
+上次退出原因：未捕获异常 NoClassDefFoundError
+退出码：70
+部署状态：空闲
+当前后端：Codex
+正在执行：0/10
+正在排队：0</pre><p>未捕获异常和 JVM 链接错误最小化记录后 halt(70)，不依赖损坏的协程清理。launchd 清理同组子进程并重启。每次启动生成 bootId，保留上一代记录；启动包装器提供与 PID、启动时间及 bootId 对应的退出码或信号。</p><p>不能确认的退出原因明确标记未知；不猜测 OOM，也不把任意 SIGTERM 声称为用户主动操作。日志不包含凭据、用户正文或外部错误正文。崩溃不恢复队列、不自动重跑结果不明的模型任务。</p></section>
+<section><h2>05 · 首次迁移与调试</h2><pre># 旧实例必须先停止；首次迁移保存备份，不复制运行锁
+./bridgectl migrate-legacy --env prod --workspace "$PWD"
+./bridgectl start --env prod --release r-&lt;版本&gt;
+./bridgectl status --env prod
+./bridgectl stop --env prod
+
+# 首次自动打开浏览器，选择或创建独立测试机器人
+./gradlew test installDist
+./bridgectl dev
+# 自动创建模型目录，需要时引导独立登录
+# 默认工作目录：~/.agent-im-bridge-kt/environments/dev/workspace
+# 测试项目代码时，首次可指定另一份 checkout
+# ./bridgectl dev --workspace /path/to/dev-checkout</pre><p>需要 JDK 11+、Python 3.9+ 和已登录的 macOS 用户会话。迁移正式环境时显式登记旧模型目录、工作目录，保留会话映射；不复制正在使用的桌面端数据库。调试模型单独登录。工作目录缺失时，初始化和启动在通过环境隔离检查后自动创建，无需手动 mkdir；已有内容保持不变。首次 dev 在前台终端交互绑定机器人；守护重启不执行授权。工作目录是模型操作文件的默认位置，普通对话测试可使用自动创建的空目录；应用不会自动复制项目代码。损坏配置不会自动覆盖。</p></section>
+<section><h2>06 · 验收与维护</h2><ul><li>离线：./gradlew test installDist，包括 Kotlin 行为与 Python 部署事务测试。</li><li>真实守护：python3 deployment/live_launchd_test.py，临时环境、假后端，不连接飞书。</li><li>故障：线程、协程、async 和清理阶段注入致命异常，检查退出码、重启及子进程清理。</li><li>升级：排空取消、独立升级、重启后的激活保持、候选失败回滚、手动停止不重启。</li><li>版本清理：bridgectl prune --env prod，保留最近三个、当前、上一及运行/部署引用版本。</li></ul><p>管理接口只监听本机回环地址，访问令牌文件权限为 600。日志和生命周期记录位于各自环境目录。备份时保护机器人配置和模型登录状态，不上传整个环境目录。</p></section>
+</main></html>
