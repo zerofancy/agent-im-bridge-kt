@@ -51,6 +51,23 @@ class ReplyContextServiceTest {
         replyContext = ReplyContext(source, AttachmentStore(temp.resolve("files"))),
         sender = ReplySender { _, _ -> CompletableFuture.completedFuture(Unit) })
 
+    @Test fun `post commands and malformed input reply without invoking model`(): Unit = runBlocking {
+        val runner = Runner()
+        val replies = mutableListOf<String>()
+        ChatService(runner, SessionStore(temp.resolve("sessions.json")), ::key,
+            replyContext = ReplyContext(Source(), AttachmentStore(temp.resolve("files"))),
+            sender = ReplySender { _, text -> replies += text; CompletableFuture.completedFuture(Unit) }).use { svc ->
+            svc.accept(route, "{broken", MessageInput("p2p", contentType = "post", malformedPost = true)).await()
+            assertContains(replies.last(), "无法解析")
+            svc.accept(route, "{}", MessageInput("p2p", contentType = "post", commandText = "/status")).await()
+            assertContains(replies.last(), "0/10")
+            assertTrue(runner.prompts.isEmpty())
+            val raw = """{"content":[[{"tag":"code_block","text":"/stop"}]]}"""
+            svc.accept(route, raw, MessageInput("p2p", contentType = "post")).await()
+            assertContains(runner.prompts.single(), raw)
+        }
+    }
+
     @Test fun `stop and close cancel sender lookup before starting model`(): Unit = runBlocking {
         for (close in listOf(false, true)) {
             val runner = Runner()
@@ -118,10 +135,12 @@ class ReplyContextServiceTest {
     }
 
     @Test fun `stop cancels preparing reads or downloads and discards only existing queue`(): Unit = runBlocking {
-        for (download in listOf(false, true)) {
+        for (mode in 0..2) {
+            val download = mode != 0
             val runner = Runner(); val source = Source().apply { block = !download; blockDownload = download }
             service(runner, source).use { svc ->
-                val first = svc.accept(route, "first", MessageInput("p2p", "2"))
+                val first = if (mode == 2) svc.accept(route, """{"content":[[{"tag":"img","image_key":"image"}]]}""", MessageInput("p2p", contentType = "post"))
+                    else svc.accept(route, "first", MessageInput("p2p", "2"))
                 withTimeout(3000) { source.entered.await() }
                 val second = svc.accept(route.copy(messageId = "4"), "discard", MessageInput("p2p", "3"))
                 svc.accept(ReplyRoute("other", "other"), "parallel", MessageInput("group")).await()
@@ -131,7 +150,7 @@ class ReplyContextServiceTest {
                 withTimeout(3000) { first.await(); second.await(); stop.await(); after.await() }
                 assertEquals(2, runner.prompts.size)
                 assertTrue(runner.prompts.last().endsWith("after"))
-                assertEquals(1, source.reads)
+                assertEquals(if (mode == 2) 0 else 1, source.reads)
             }
         }
     }

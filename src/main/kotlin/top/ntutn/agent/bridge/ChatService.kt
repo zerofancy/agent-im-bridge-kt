@@ -62,7 +62,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
 
     fun accept(route: ReplyRoute, prompt: String, input: MessageInput? = null): CompletableFuture<Unit> {
         val work = Work(route, prompt, input)
-        val command = BridgeCommand.parse(prompt)
+        val command = BridgeCommand.parse(if (input?.contentType == "post") input.commandText.orEmpty() else prompt)
         val admission = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             val control = mutex.withLock {
                 if (closed) {
@@ -70,6 +70,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                     return@withLock null
                 }
                 typingReactions?.let { work.activity = RequestActivity(scope, it, route, work.completed) }
+                if (input?.malformedPost == true) return@withLock suspend { send(route, "富文本消息 JSON 无法解析，请重新发送。") }
                 if (command != null) return@withLock prepareControl(work, command)
                 work.ready = running.size < limit && route.chatId !in running && route.chatId !in switching && queue.isEmpty()
                 queue.add(work)

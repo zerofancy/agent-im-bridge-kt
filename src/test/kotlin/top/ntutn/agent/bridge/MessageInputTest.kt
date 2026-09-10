@@ -18,17 +18,49 @@ class MessageInputTest {
 
     private fun message(text: String = "你好", chat: String = "p2p", sender: String = owner,
                         senderType: String = "user", type: String = "text", mention: Boolean = false,
-                        id: String = "om_test", createdAt: String = System.currentTimeMillis().toString()) = run {
+                        id: String = "om_test", createdAt: String = System.currentTimeMillis().toString(), rawContent: String? = null) = run {
         val gson = Gson()
         val payload = mapOf<String, Any>("event" to mapOf<String, Any>(
             "sender" to mapOf<String, Any>("sender_id" to mapOf("open_id" to sender), "sender_type" to senderType),
             "message" to mapOf<String, Any>("message_id" to id, "chat_id" to "oc_test", "chat_type" to chat,
                 "create_time" to createdAt, "update_time" to "1788939999000", "parent_id" to "om_parent",
-                "message_type" to type, "content" to gson.toJson(mapOf("text" to text)),
+                "message_type" to type, "content" to (rawContent ?: gson.toJson(mapOf("text" to text))),
                 "mentions" to if (mention) listOf(mapOf<String, Any>("key" to "@_user_1", "id" to mapOf("open_id" to "ou_bot"), "name" to "Bridge")) else emptyList<Map<String, Any>>())
         ))
         val raw = gson.fromJson(gson.toJson(payload), P2MessageReceiveV1::class.java)
         ChannelNormalizer().normalizeMessage(raw, NormalizeOptions(bot, true, true))
+    }
+
+    @Test fun `posts preserve raw JSON and only text nodes qualify for commands`() {
+        val content = """{"content":[[{"tag":"text","text":"/status","style":["bold"]}]]}"""
+        val post = message(type = "post", rawContent = content)
+        assertEquals(content, extractPrompt(post, owner))
+        assertEquals("/status", extractMessageInput(post).commandText)
+        val broken = message(type = "post", rawContent = "{broken")
+        kotlin.test.assertNotNull(extractPrompt(broken, owner))
+        kotlin.test.assertTrue(extractMessageInput(broken).malformedPost)
+        val image = message(type = "post", rawContent = """{"content":[[{"tag":"img","image_key":"img_test"}]]}""")
+        kotlin.test.assertNotNull(extractPrompt(image, owner))
+        assertNull(extractMessageInput(image).commandText)
+        assertNull(postCommandText("""{"content":[[{"tag":"code_block","text":"/stop"}]]}""", emptyList()))
+        assertNull(extractPrompt(message(type = "post", rawContent = content, sender = "other"), owner))
+        assertNull(extractPrompt(message(type = "post", rawContent = content, chat = "group"), owner))
+        kotlin.test.assertNotNull(extractPrompt(message(type = "post", rawContent = content, chat = "group", mention = true), owner))
+    }
+
+    @Test fun `SDK pipeline forwards image-only and malformed posts and deduplicates`() {
+        val options = channelOptions(config)
+        val accepted = mutableListOf<MessageInput>()
+        val pipeline = SafetyPipeline(SafetyPipelineOptions(options.safety, options.policy, null, bot, null,
+            { msg -> extractPrompt(msg, owner)?.let { accepted += extractMessageInput(msg) } }))
+        try {
+            val image = message(type = "post", rawContent = """{"content":[[{"tag":"img","image_key":"one"}]]}""")
+            pipeline.pushMessage(image)
+            pipeline.pushMessage(image)
+            pipeline.pushMessage(message(type = "post", id = "om_broken", rawContent = "{broken"))
+            assertEquals(2, accepted.size)
+            kotlin.test.assertTrue(accepted.last().malformedPost)
+        } finally { pipeline.dispose() }
     }
 
     @Test fun `metadata uses sender open id and creation time from raw event`() {

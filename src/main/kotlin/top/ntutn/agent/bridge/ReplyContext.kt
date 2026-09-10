@@ -1,7 +1,6 @@
 package top.ntutn.agent.bridge
 
 import java.io.OutputStream
-import com.google.gson.JsonElement
 import com.google.gson.JsonParser
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
@@ -9,7 +8,8 @@ import kotlinx.coroutines.sync.withLock
 
 /** The current instruction stays separate so quoted commands never reach BridgeCommand. */
 data class MessageInput(val chatType: String, val parentId: String? = null,
-                        val sender: MessageSender = MessageSender(), val createTime: String? = null)
+                        val sender: MessageSender = MessageSender(), val createTime: String? = null,
+                        val contentType: String = "text", val commandText: String? = null, val malformedPost: Boolean = false)
 data class QuotedMessage(val id: String, val chatId: String, val parentId: String?, val type: String,
                          val content: String, val deleted: Boolean = false,
                          val sender: MessageSender = MessageSender(), val createTime: String? = null)
@@ -47,11 +47,22 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
 
     suspend fun prepare(route: ReplyRoute, instruction: String, input: MessageInput, sent: Set<String>, names: SenderNameCache? = null): PreparedPrompt {
         val place = if (input.chatType == "p2p") "飞书私聊" else "飞书群聊"
-        val current = messageMetadata(input.sender, input.createTime, names) + "\n" + instruction
-        if (input.parentId.isNullOrBlank())
-            return PreparedPrompt("用户正在【$place】中与你对话，用户指令：\n$current", listOf(route.messageId), null)
         var lease: AttachmentStore.Lease? = null
         try {
+            suspend fun download(messageId: String, key: String, type: String, name: String?): String = try {
+                if (lease == null) lease = files.acquire()
+                withTimeout(30_000) {
+                    lease!!.save(name) { output -> source.download(messageId, key, type, output) }
+                }.toString()
+            } catch (_: TimeoutCancellationException) { currentCoroutineContext().ensureActive(); "【资源下载失败】" }
+            catch (e: CancellationException) { throw e }
+            catch (_: Exception) { "【资源下载失败】" }
+            val body = if (input.contentType == "post") replacePostImages(instruction) { key ->
+                download(route.messageId, key, "image", null)
+            } else instruction
+            val current = messageMetadata(input.sender, input.createTime, names) + "\n" + body
+            if (input.parentId.isNullOrBlank())
+                return PreparedPrompt("用户正在【$place】中与你对话，用户指令：\n$current", listOf(route.messageId), lease)
             val history = mutableListOf<Pair<String, String>>()
             val visited = mutableSetOf(route.messageId)
             var next: String? = input.parentId
@@ -71,14 +82,7 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
                 if (omit) omitted++
                 else {
                     val body = render(message) { key, type, name ->
-                        try {
-                            if (lease == null) lease = files.acquire()
-                            withTimeout(30_000) {
-                                lease!!.save(name) { output -> source.download(message.id, key, type, output) }
-                            }.toString()
-                        } catch (_: TimeoutCancellationException) { currentCoroutineContext().ensureActive(); "【资源下载失败】" }
-                        catch (e: CancellationException) { throw e }
-                        catch (_: Exception) { "【资源下载失败】" }
+                        download(message.id, key, type, name)
                     }
                     val metadata = messageMetadata(message.sender, message.createTime, names)
                     history += message.id to ((if (message.id == input.parentId) "【被回复的消息】\n" else "") + metadata + "\n" + body)
@@ -113,36 +117,11 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
                     append(download(body["file_key"].asString, "file", body.string("file_name")))
                     body.string("image_key")?.takeIf { it.isNotBlank() }?.let { append("\n" + download(it, "image", null)) }
                 }
-                "post" -> {
-                    val post = if (body.has("content")) body else
-                        (body.getAsJsonObject("zh_cn") ?: body.getAsJsonObject("en_us")
-                        ?: body.entrySet().firstOrNull()?.value?.asJsonObject) ?: return "【富文本内容无法读取】"
-                    val lines = mutableListOf<String>()
-                    post.string("title")?.takeIf { it.isNotEmpty() }?.let { lines += it }
-                    for (row in post.getAsJsonArray("content")) {
-                        val text = StringBuilder()
-                        for (element in row.asJsonArray) text.append(renderNode(element, download))
-                        lines += text.toString()
-                    }
-                    lines.joinToString("\n")
-                }
+                "post" -> replacePostImages(message.content) { key -> download(key, "image", null) }
                 else -> "【不支持的历史消息类型：${message.type}】"
             }
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { return "【历史消息内容无法解析】" }
     }
 
-    private suspend fun renderNode(element: JsonElement, download: suspend (String, String, String?) -> String): String {
-        val node = element.asJsonObject
-        return when (node.string("tag")) {
-            "text", "code_block", "md" -> node.string("text") ?: node.string("content").orEmpty()
-            "a" -> "${node.string("text").orEmpty()} (${node.string("href").orEmpty()})"
-            "at" -> "@${node.string("user_name") ?: node.string("user_id").orEmpty()}"
-            "img" -> "\n" + download(node["image_key"].asString, "image", null) + "\n"
-            "media", "file", "audio" -> "\n" + download(node["file_key"].asString, "file", node.string("file_name")) + "\n"
-            "hr" -> "\n---\n"
-            "emotion" -> "【表情】"
-            else -> "【不支持的富文本内容】"
-        }
-    }
 }

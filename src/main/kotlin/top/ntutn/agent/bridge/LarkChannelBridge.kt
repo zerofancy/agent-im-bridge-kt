@@ -15,7 +15,8 @@ import java.security.MessageDigest
 
 fun extractPrompt(message: NormalizedMessage, allowedUserId: String): String? {
     if (message.senderId != allowedUserId || message.messageId.isNullOrBlank() || message.chatId.isNullOrBlank()) return null
-    if (message.rawContentType != "text" || message.resources.isNotEmpty()) return null
+    if (message.rawContentType !in setOf("text", "post")) return null
+    if (message.rawContentType == "text" && message.resources.isNotEmpty()) return null
     when (message.chatType) {
         "p2p" -> Unit
         "group", "topic_group" -> if (!message.isMentionedBot) return null
@@ -23,6 +24,7 @@ fun extractPrompt(message: NormalizedMessage, allowedUserId: String): String? {
     }
     val event = message.raw as? P2MessageReceiveV1 ?: return null
     if (event.event?.sender?.senderType != "user") return null
+    if (message.rawContentType == "post") return event.event.message.content ?: ""
     // Normalized content collapses whitespace. Use the original text to preserve the prompt.
     val content = try {
         JsonParser.parseString(event.event.message.content).asJsonObject["text"].asString
@@ -40,7 +42,9 @@ fun extractMessageInput(message: NormalizedMessage): MessageInput {
     val event = (message.raw as P2MessageReceiveV1).event
     return MessageInput(message.chatType, event.message.parentId,
         MessageSender(event.sender.senderId?.openId, "open_id", event.sender.senderType ?: "unknown"),
-        event.message.createTime)
+        event.message.createTime, contentType = message.rawContentType,
+        commandText = if (message.rawContentType == "post") postCommandText(event.message.content.orEmpty(), message.mentions.filter { it.isBot }.mapNotNull { it.key }) else null,
+        malformedPost = message.rawContentType == "post" && runCatching { parsePost(event.message.content.orEmpty()) }.isFailure)
 }
 
 fun channelOptions(config: BridgeConfig): LarkChannelOptions {

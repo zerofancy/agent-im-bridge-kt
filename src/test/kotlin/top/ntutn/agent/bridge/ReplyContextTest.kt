@@ -126,9 +126,9 @@ class ReplyContextTest {
         try {
             assertEquals(listOf("post:image:image", "post:bad:image", "file:f:file"), source.downloads)
             assertContains(result.text, "【省略了1条历史消息】")
-            assertContains(result.text, "【被回复的消息】\n【发送人：未知发送人】【发送时间：未知】\n标题\n正文\n")
+            assertContains(result.text, "\"title\":\"标题\"")
             assertContains(result.text, "【资源下载失败】")
-            assertContains(result.text, "网站 (https://example.com)")
+            assertContains(result.text, "\"href\":\"https://example.com\"")
             assertFalse(result.text.contains("private external failure"))
             val paths = Regex(Regex.escape(temp.toAbsolutePath().toString()) + "[^\\s]+\\.txt").findAll(result.text).map { Path.of(it.value) }.toList()
             assertEquals(2, paths.size)
@@ -177,11 +177,13 @@ class ReplyContextTest {
             """{"content":[[{"tag":"text","text":"before"},{"tag":"img","image_key":"one"},{"tag":"img","image_key":"two"},{"tag":"text","text":"after"}]]}""")))
         val prepared = context(source).prepare(route, "go", MessageInput("p2p", "post"), emptySet())
         try {
-            val lines = prepared.text.lines()
-            val paths = lines.filter { it.startsWith(temp.toString()) }
+            val body = com.google.gson.JsonParser.parseString(prepared.text.lines().first { it.startsWith("{\"content\"") }).asJsonObject
+            val nodes = body.getAsJsonArray("content")[0].asJsonArray
+            val paths = listOf(1, 2).map { nodes[it].asJsonObject["image_key"].asString }
             assertEquals(2, paths.size)
             paths.forEach { assertTrue(Files.isRegularFile(Path.of(it))) }
-            assertTrue("before" in lines); assertTrue("after" in lines)
+            assertEquals("before", nodes[0].asJsonObject["text"].asString)
+            assertEquals("after", nodes[3].asJsonObject["text"].asString)
         } finally { prepared.release() }
     }
 
