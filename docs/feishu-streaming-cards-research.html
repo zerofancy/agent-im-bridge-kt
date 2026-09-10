@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>飞书机器人流式卡片调研</title><style>
+:root{color-scheme:light;--ink:#182a38;--muted:#596b79;--line:#dce5eb;--accent:#096b68}*{box-sizing:border-box}body{margin:0;background:#f2f6f8;color:var(--ink);font:16px/1.8 system-ui,-apple-system,sans-serif}main{max-width:1050px;margin:auto;padding:48px 26px 80px}h1{font-size:34px;line-height:1.3}h2{margin-top:36px;font-size:23px}h3{font-size:18px}p{margin:12px 0}a{color:var(--accent)}.meta,small{color:var(--muted)}.lead{background:#e3f2ed;border-left:4px solid var(--accent);padding:18px 22px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{background:white;border:1px solid var(--line);border-radius:12px;padding:22px}.badge{color:var(--accent);font-size:13px;font-weight:700}details{background:#f2f5f7;border-radius:8px;padding:10px 14px}summary{cursor:pointer}table{border-collapse:collapse;width:100%;font-size:14px}td,th{text-align:left;vertical-align:top;padding:12px;border-bottom:1px solid var(--line)}th{background:#e8eef1}code{background:#e8eef1;border-radius:3px;padding:2px 4px;overflow-wrap:anywhere}li{margin:7px 0}.flow{padding:18px;background:#182a38;color:white;border-radius:8px}section{scroll-margin-top:20px}@media(max-width:700px){.grid{grid-template-columns:1fr}main{padding:24px 16px}h1{font-size:28px}table{font-size:13px}td,th{padding:8px}}
+</style></head><body><main>
+<p class="meta">agent-im-bridge-kt · 调研日期 2026-09-10 · 仅调研，未调用真实机器人发送接口</p>
+<h1>执行时看进度，完成后读答案</h1>
+<div class="lead"><strong>可以实现，推荐采用飞书 Card JSON 2.0 + CardKit。</strong><p>每轮回复使用一张持续更新的卡片：执行期间展开过程，结束时自动收起过程、展示完整答案。飞书提供了所需的基础组件；主要改造集中在后端事件适配、更新调度和原有回复上下文兼容。完整落地预计 5–8 个工程日，属于中等复杂度。</p></div>
+<p>本文结论来自飞书官方接口文档、当前仓库代码及本机 SDK 源码。基础能力已由文档确认；两种后端的完整过程事件、嵌套组件流式更新与客户端折叠状态的组合效果，仍需 dev 联调验证。这里的“过程”指模型公开进度说明和工具状态，不承诺获取或展示模型内部推理。</p>
+<h2>建议的阅读体验</h2>
+<p>下面是 HTML 交互示意，非飞书实际截图；可点击完成态的过程标题展开。</p>
+<div class="grid"><div class="card"><span class="badge">执行中 · 同一条回复</span><h3>正在处理你的请求</h3><details open><summary>执行过程 · 正在验证</summary><p>✓ 已检查相关实现<br>✓ 已完成修改<br>◌ 正在运行验证</p><p>公开进度说明随事件更新；工具仅显示名称、用途和状态。</p></details><p class="meta">答案生成时在此区域逐步显示。</p></div><div class="card"><span class="badge">完成后 · 原卡片更新</span><h3>已完成修改</h3><p>最终答案直接展示在主区域，包括结论、必要说明和验证结果。</p><details><summary>查看执行过程 · 3 项</summary><p>✓ 检查实现<br>✓ 完成修改<br>✓ 验证通过</p></details><p class="meta">附件继续使用现有文件发送能力。</p></div></div>
+<p>优先更新原卡片，避免“过程消息 + 多条最终文本”占满聊天。即时命令可继续简短文本回复；第一版保留 <code>/stop</code>，暂不增加卡片按钮。</p>
+<h2>飞书原生能力与限制</h2>
+<table><thead><tr><th>需求</th><th>结论与依据</th><th>实现影响</th></tr></thead><tbody>
+<tr><td>逐步显示文本</td><td>CardKit 支持流式更新指定文本组件；开启 <code>streaming_mode</code>。<a href="https://open.feishu.cn/document/cardkit-v1/card-element/content">文本更新接口</a></td><td>每次发送累计全文，旧文本是新文本前缀时追加部分呈现打字效果；不是上传单个 token。</td></tr>
+<tr><td>过程收起、答案展开</td><td><code>collapsible_panel</code> 支持 <code>expanded</code>；可通过整卡更新提交完成态。<a href="https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/card-json-v2-components/containers/collapsible-panel">折叠面板</a>、<a href="https://open.feishu.cn/document/cardkit-v1/card/update">整卡更新</a></td><td>执行时展开，完成时设置 false。无需为基础折叠交互自建业务按钮回调；用户手动展开后的状态与更新相互作用需要实测。</td></tr>
+<tr><td>更新速率</td><td>官方说明单卡操作最高 10 次/秒；文本接口另有 1000 次/分钟、50 次/秒限制。<a href="https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/streaming-updates-openapi-overview">流式更新说明</a>、<a href="https://open.feishu.cn/document/cardkit-v1/card-element/content">接口限额</a></td><td>建议每卡约 1 秒合并更新一次，加应用级限流；10 个并发卡片即约 600 次/分钟，还需给其他操作留余量。</td></tr>
+<tr><td>长任务</td><td>流式模式开启后约 10 分钟自动关闭，可通过配置接口重新开启。<a href="https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/streaming-updates-openapi-overview">流式生命周期</a></td><td>这是卡片模式时限，不是模型任务时限。长时间无输出可保留状态卡，有新内容再恢复流式。</td></tr>
+<tr><td>完成态与转发</td><td>流式期间不能转发；关闭流式后需主动更新自定义摘要。<a href="https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/streaming-updates-openapi-overview">流式约束</a></td><td>结束时关闭流式、折叠过程、写入最终答案和聊天列表摘要，不能残留“生成中”。</td></tr>
+<tr><td>长内容</td><td>接口错误说明含卡片 30KB 体积限制；整卡最多 200 个组件。<a href="https://open.feishu.cn/document/cardkit-v1/card/update">整卡限制</a></td><td>按序列化 UTF-8 体积预算，过程只保留有界摘要；超长答案另发后续卡片或文件。接口字段字符上限不等于可用卡片容量。</td></tr>
+<tr><td>权限与客户端</td><td>CardKit 写操作需 <code>cardkit:card:write</code>；Card 2.0 要求飞书 7.20+。<a href="https://open.feishu.cn/document/cardkit-v1/card/create">创建卡片</a>、<a href="https://open.feishu.cn/document/feishu-cards/card-json-v2-structure">Card 2.0 结构</a></td><td>还需原有 IM 发送权限；dev 应用核实权限并发布生效，客户端进行桌面和手机验证。</td></tr>
+</tbody></table>
+<h2>当前代码需要补什么</h2>
+<table><thead><tr><th>位置</th><th>现状</th><th>建议改造</th></tr></thead><tbody>
+<tr><td><code>AppServerAgentRunner.kt</code></td><td>读取完成的 agentMessage，在 turn 完成后提取 final_answer，兼容无 phase 的最终消息。</td><td>增加公开进度、工具开始/结束、答案增量的统一事件出口。两种后端分别做能力探测与适配；无 delta 时仍能显示状态并最终更新答案。</td></tr>
+<tr><td><code>AppServerClient.kt</code></td><td>共享 RPC 读取与按会话路由。</td><td>保留公共读取生命周期，事件投递到请求所属的呈现器；禁止 RPC 读取协程等待飞书 HTTP。进度可合并，终态不能丢失。</td></tr>
+<tr><td><code>ChatService.kt</code></td><td>ReplySender 返回 Unit，最终文本按块发送。</td><td>增加回复句柄，保存 card_id、message_id、单调递增 sequence；任务结束时等待有技术超时的最终呈现。仍保持 FIFO、槽位和统一发送入口。</td></tr>
+<tr><td><code>LarkChannelBridge.kt</code></td><td>现有统一出口发送文本。</td><td>封装创建 CardKit 实体、以 interactive 消息回复原消息、流式更新、完成态提交及文本降级。</td></tr>
+<tr><td>引用上下文、表情回复、附件</td><td>已有历史消息与资源处理；当前 interactive 内容不能直接按最终答案解析。</td><td>按机器人 message_id 保存可引用的答案快照，并提供持久化或可恢复读取。否则用户引用卡片或对卡片点表情，会丢失机器人原回复内容。附件沿用现有传输链路。</td></tr>
+</tbody></table>
+<p>本机 SDK 2.7.3 已含 CardKit API，但高层 helper 不能直接作为完整流式方案：<code>CardStreamControllerImpl</code> 使用 IM 整卡 patch；<code>RawMessageSender.updateCardElementContent</code> 走组件 patch，并非专用 content 接口。建议封装生成的底层 CardKit API，检查业务成功码、统一限流和错误处理。</p>
+<h2>推荐接入流程</h2>
+<div class="flow">任务开始 → 创建并回复卡片 → 后端事件归一化 → 合并更新过程/答案 → 确认轮次终态 → 关闭流式、提交完成卡片 → 保存可引用答案</div>
+<ol><li><strong>事件适配：</strong>用 Progress、ToolStarted、ToolFinished、AnswerDelta、Terminal 等内部类型隔离后端差异。不能只看到文本 delta 就认作答案；依据 item 与 phase 分类，最终以已完成消息校正。没有明确分类时不提前混入最终答案。</li>
+<li><strong>每轮一个呈现器：</strong>使用归属服务的协程与串行更新队列；不同卡片可并行，同一卡片 sequence 覆盖配置、内容和整卡操作并严格递增。重试同一请求复用其幂等标识，不让迟到的过程更新覆盖完成态。</li>
+<li><strong>有限过程：</strong>只展示公开进度和经筛选的工具摘要，不直接转发完整命令、参数、工具返回值或推理事件。折叠不减少卡片体积；过程需要截断和归并。</li>
+<li><strong>最终收束：</strong>冻结普通更新、按序关闭流式并提交完整最终卡片。为中间失败保存待收束状态，可有限重试；避免高频整卡替换造成阅读位置跳动。</li>
+<li><strong>错误与停止：</strong>卡片更新失败不重跑模型；最终答案可降级为文本。原生停止未确认时显示“停止中”，不能仅凭 interrupt RPC 接受就显示“已停止”。展示技术超时不能变成模型自动超时。</li>
+<li><strong>生命周期：</strong>保留启动提示、原消息路由、Typing 清理、部署排空及 FatalErrorHandler 语义。恢复记录仅用于补齐卡片状态，不重启旧模型轮次；未知终态明确标记未知。</li></ol>
+<p>卡片按钮回调与流式模式有额外约束：官方要求关闭流式后处理相应交互更新。因此首版先用现有 <code>/stop</code>；基础折叠面板与“停止按钮业务回调”应分别验证，不能混为一谈。</p>
+<h2>投入与分阶段范围</h2>
+<p>以下为一名熟悉仓库的工程师的累计工作量估计，包含对应测试；不含飞书应用权限审核等待。后端事件缺失或客户端兼容问题会增加投入。</p>
+<table><thead><tr><th>阶段</th><th>交付范围</th><th>累计估计</th></tr></thead><tbody>
+<tr><td>验证原型</td><td>dev 验证嵌套流式文本、终态折叠、权限与客户端；分别录制脱敏的 Codex/Traex 事件夹具，核对增量和工具事件。</td><td>0.5–1 天</td></tr>
+<tr><td>可用版本</td><td>一轮一卡；公开进度和工具状态更新；最终答案整块呈现；结束自动折叠；兼容引用、表情回复、附件及文本降级。</td><td>3–5 天</td></tr>
+<tr><td>完整版本</td><td>补最终答案流式、双后端适配、全局限流、长任务恢复、重试顺序、停止与关闭竞态、超长内容和客户端联调。</td><td>5–8 天</td></tr>
+</tbody></table>
+<p><strong>建议先做可用版本，再补答案逐字输出。</strong>可读性的主要改善来自“同一卡片更新 + 完成后折叠过程 + 答案突出”，无需等待所有后端的 token 级事件都齐备。</p>
+<h2>验收重点</h2>
+<ul><li>桌面和手机：运行时过程可见，完成自动收起且可以重新展开；检查用户手动折叠后的更新行为、Markdown 与代码块显示。</li><li>后端：Codex、Traex 分别验证公开进度、工具生命周期、答案 phase、无 delta 降级，不展示不该进入最终答案的内容。</li><li>调度：同聊天 FIFO、跨聊天并发上限；高并发限流，sequence 重试和迟到响应不覆盖终态。</li><li>生命周期：正常完成、失败、停止待确认、断线结果未知、部署排空及进程关闭；不遗留持续“生成中”状态。</li><li>现有能力：引用卡片、对卡片发 YES 表情、空正文引用、附件与长答案；验证重启后答案仍可引用。</li><li>故障与长任务：权限不足、创建成功但消息发送失败、HTTP 超时、业务错误码、10 分钟流式到期。消息发送结果不明时避免无条件重发产生重复卡片。</li></ul>
+<p class="meta">本轮仅新增此调研文档，未修改业务代码、申请应用权限、发送测试卡片或部署服务。落地行为改动应执行项目要求的 ./gradlew test installDist，再进行 dev 联调。</p>
+</main></body></html>

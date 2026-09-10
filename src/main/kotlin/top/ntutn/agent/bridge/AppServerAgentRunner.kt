@@ -118,7 +118,9 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
                     catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("${displayName} 中断未获确认 requestId={}；继续等待轮次结束，可用本机 --stop 退出", handle.requestId) }
                 }
                 val messages = linkedMapOf<String, Pair<String?, String>>()
+                val progress = AgentProgressReducer(id, turnId)
                 for (event in events) {
+                    progress.accept(event)?.let(handle.onProgress)
                     val p = event.getAsJsonObject("params") ?: continue
                     when (event.string("method")) {
                         "item/completed" -> if (p.string("turnId") == turnId) {

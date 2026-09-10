@@ -74,7 +74,9 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
     val appDirectory = MessageDigest.getInstance("SHA-256").digest(config.appId.toByteArray())
         .joinToString("") { "%02x".format(it) }
-    val source = LarkMessageSource({ channel.rawClient }) { id, idType ->
+    val cardAnswers = CardAnswerStore((lifecycle?.environment?.directory
+        ?: Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt")).resolve("card-answers/$appDirectory"))
+    val source = LarkMessageSource({ channel.rawClient }, cardAnswers = cardAnswers) { id, idType ->
         channel.botIdentity?.takeIf { it.openId == id || (idType == "app_id" && id == config.appId) }?.name
     }
     val context = ReplyContext(source,
@@ -82,7 +84,7 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         config.appId, source)
     val service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, LarkTypingReactions(config.appId) { channel.rawClient }, lifecycle, initiallyHeld) { route, text ->
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, LarkTypingReactions(config.appId) { channel.rawClient }, lifecycle, initiallyHeld, LarkCardReplies({ channel.rawClient }, cardAnswers)) { route, text ->
         val sent = java.util.concurrent.CompletableFuture<Unit>()
         try {
             channel.send(route.chatId, SendInput.text(text),

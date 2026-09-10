@@ -57,7 +57,15 @@ for line in sys.stdin:
                 child=subprocess.Popen(['sleep','60']); children.append(child)
                 with open(root+'/child','w') as f:f.write(str(child.pid))
             continue
-        if prompt == 'progress':
+        if prompt == 'stream-card':
+            event('item/started',tid,turn,item={'id':'p','type':'agentMessage','phase':'commentary','text':''})
+            event('item/agentMessage/delta',tid,turn,itemId='p',delta='checking')
+            event('item/started',tid,turn,item={'id':'tool','type':'commandExecution','command':'pwd','status':'inProgress'})
+            event('item/completed',tid,turn,item={'id':'tool','type':'commandExecution','status':'completed','exitCode':0})
+            event('item/started',tid,turn,item={'id':'a','type':'agentMessage','phase':'final_answer','text':''})
+            event('item/agentMessage/delta',tid,turn,itemId='a',delta='partial')
+            item(tid,turn,'a','correct final','final_answer')
+        elif prompt == 'progress':
             for i in range(1000): event('item/agentMessage/delta',tid,turn,delta='x'*1000)
             item(tid,turn,'progress','commentary must not leak','commentary')
             item(tid,turn,'answer','final only','final_answer')

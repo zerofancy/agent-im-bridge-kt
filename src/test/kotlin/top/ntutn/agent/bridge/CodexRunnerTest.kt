@@ -8,6 +8,20 @@ import kotlinx.coroutines.*
 
 class CodexRunnerTest {
     @TempDir lateinit var temp: Path
+    @Test fun `both backends publish public streaming snapshots and retain authoritative final`(): Unit = runBlocking {
+        for (backend in BackendId.entries) {
+            val snapshots = mutableListOf<AgentProgress>()
+            val handle = AgentRunHandle().apply { onProgress = { snapshots += it } }
+            AppServerAgentRunner(BackendSpec(backend, fakeAppServer(temp).toString(), temp.resolve("runtime"))).use { runner ->
+                val result = runner.runControlled(handle, "stream-card", null, temp, SandboxMode.READ_ONLY) {}
+                assertEquals("correct final", assertIs<AgentResult.Success>(result).text)
+                assertTrue(snapshots.any { it.answer == "partial" })
+                assertTrue(snapshots.any { it.process.contains("checking") && it.process.contains("执行命令") })
+                assertTrue(snapshots.any { it.process.contains("```\npwd\n```") })
+                assertTrue(snapshots.none { it.toString().contains("must not leak") })
+            }
+        }
+    }
     @Test fun `unicode shell syntax and final output survive RPC`(): Unit = runBlocking {
         CodexRunner(fakeAppServer(temp).toString()).use { runner ->
             runner.checkAvailable()

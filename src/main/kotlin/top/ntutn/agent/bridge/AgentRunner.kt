@@ -13,11 +13,13 @@ sealed class AgentResult {
 }
 
 class AgentRunHandle(val requestId: String = UUID.randomUUID().toString()) {
+    internal var onStopping: () -> Unit = {}
+    internal var onProgress: (AgentProgress) -> Unit = {}
     internal var onSubmitted: suspend (String) -> Unit = {}
     internal val stop = CompletableDeferred<Unit>()
     internal val threadId = CompletableDeferred<String>()
     internal val turnId = CompletableDeferred<String>()
-    fun requestStop() { stop.complete(Unit) }
+    fun requestStop() { if (stop.complete(Unit)) onStopping() }
     val stopRequested: Boolean get() = stop.isCompleted
 }
 
