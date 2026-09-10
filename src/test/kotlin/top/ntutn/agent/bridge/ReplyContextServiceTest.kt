@@ -51,6 +51,18 @@ class ReplyContextServiceTest {
         replyContext = ReplyContext(source, AttachmentStore(temp.resolve("files"))),
         sender = ReplySender { _, _ -> CompletableFuture.completedFuture(Unit) })
 
+    @Test fun `empty reply invokes model with quoted message and no invented command`(): Unit = runBlocking {
+        val runner = Runner()
+        val source = Source().apply { quotedCommand = true }
+        service(runner, source).use { svc ->
+            svc.receive(IncomingMessage(route, "", MessageInput("p2p", "1"))).await()
+        }
+        val prompt = runner.prompts.single()
+        assertContains(prompt, "【被回复的消息】")
+        assertContains(prompt, "/stop")
+        assertContains(prompt, "【本次回复正文为空，用户引用了上述消息。】")
+    }
+
     @Test fun `post commands and malformed input reply without invoking model`(): Unit = runBlocking {
         val runner = Runner()
         val replies = mutableListOf<String>()

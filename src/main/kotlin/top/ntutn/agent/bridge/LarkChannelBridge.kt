@@ -6,6 +6,7 @@ import com.lark.oapi.channel.LarkChannelFactory
 import com.lark.oapi.channel.config.LarkChannelOptions
 import com.lark.oapi.channel.model.ChannelErrorEvent
 import com.lark.oapi.channel.model.NormalizedMessage
+import com.lark.oapi.channel.model.ReactionEvent
 import com.lark.oapi.channel.model.SendInput
 import com.lark.oapi.channel.model.SendOptions
 import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1
@@ -35,7 +36,7 @@ fun extractPrompt(message: NormalizedMessage, allowedUserId: String): String? {
         // Prevent @_user_1 from accidentally matching the prefix of @_user_10.
         text = text.replace(Regex(Regex.escape(key) + "(?![A-Za-z0-9_])"), "")
     }
-    return text.trim().takeIf { it.isNotBlank() }
+    return text.trim().takeIf { it.isNotBlank() || !event.event.message.parentId.isNullOrBlank() }
 }
 
 fun extractMessageInput(message: NormalizedMessage): MessageInput {
@@ -91,8 +92,13 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
     channel.on<NormalizedMessage>("message") { message ->
         extractPrompt(message, config.allowedUserId)?.let { prompt ->
             log.info("收到请求 chatId={} messageId={} chatType={}", message.chatId, message.messageId, message.chatType)
-            service.accept(ReplyRoute(message.chatId, message.messageId), prompt,
-                extractMessageInput(message))
+            service.receive(IncomingMessage(ReplyRoute(message.chatId, message.messageId), prompt,
+                extractMessageInput(message)))
+        }
+    }
+    channel.on<ReactionEvent>("reaction") { event ->
+        extractReaction(event, config.allowedUserId)?.let { reaction ->
+            service.receive(reaction.id) { source.reaction(reaction, config.appId, channel.botIdentity?.openId) }
         }
     }
     channel.on<ChannelErrorEvent>("error") { event -> log.error("通道错误 {}", safeError(event.error)) }

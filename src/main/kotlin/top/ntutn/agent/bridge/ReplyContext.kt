@@ -9,7 +9,8 @@ import kotlinx.coroutines.sync.withLock
 /** The current instruction stays separate so quoted commands never reach BridgeCommand. */
 data class MessageInput(val chatType: String, val parentId: String? = null,
                         val sender: MessageSender = MessageSender(), val createTime: String? = null,
-                        val contentType: String = "text", val commandText: String? = null, val malformedPost: Boolean = false)
+                        val contentType: String = "text", val commandText: String? = null, val malformedPost: Boolean = false,
+                        val inputId: String? = null, val reactionTarget: QuotedMessage? = null)
 data class QuotedMessage(val id: String, val chatId: String, val parentId: String?, val type: String,
                          val content: String, val deleted: Boolean = false,
                          val sender: MessageSender = MessageSender(), val createTime: String? = null)
@@ -60,11 +61,13 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
             val body = if (input.contentType == "post") replacePostImages(instruction) { key ->
                 download(route.messageId, key, "image", null)
             } else instruction
-            val current = messageMetadata(input.sender, input.createTime, names) + "\n" + body
+            val current = messageMetadata(input.sender, input.createTime, names) + "\n" +
+                (if (input.reactionTarget != null) "【用户通过表情回复发送的新消息】\n" else "") +
+                if (body.isBlank() && !input.parentId.isNullOrBlank()) "【本次回复正文为空，用户引用了上述消息。】" else body
             if (input.parentId.isNullOrBlank())
                 return PreparedPrompt("用户正在【$place】中与你对话，用户指令：\n$current", listOf(route.messageId), lease)
             val history = mutableListOf<Pair<String, String>>()
-            val visited = mutableSetOf(route.messageId)
+            val visited = mutableSetOf(input.inputId ?: route.messageId)
             var next: String? = input.parentId
             var omit = false
             var omitted = 0L
@@ -73,7 +76,7 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
                 currentCoroutineContext().ensureActive()
                 if (!visited.add(next)) { missing = true; break }
                 val message = try {
-                    withTimeout(30_000) { source.get(next!!) }.also {
+                    withTimeout(30_000) { input.reactionTarget?.takeIf { it.id == next } ?: source.get(next!!) }.also {
                         check(it.id == next && it.chatId == route.chatId && !it.deleted)
                     }
                 } catch (_: TimeoutCancellationException) { currentCoroutineContext().ensureActive(); missing = true; break }

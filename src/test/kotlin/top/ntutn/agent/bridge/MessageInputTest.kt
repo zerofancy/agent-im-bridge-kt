@@ -18,12 +18,12 @@ class MessageInputTest {
 
     private fun message(text: String = "你好", chat: String = "p2p", sender: String = owner,
                         senderType: String = "user", type: String = "text", mention: Boolean = false,
-                        id: String = "om_test", createdAt: String = System.currentTimeMillis().toString(), rawContent: String? = null) = run {
+                        id: String = "om_test", createdAt: String = System.currentTimeMillis().toString(), rawContent: String? = null, parentId: String = "om_parent") = run {
         val gson = Gson()
         val payload = mapOf<String, Any>("event" to mapOf<String, Any>(
             "sender" to mapOf<String, Any>("sender_id" to mapOf("open_id" to sender), "sender_type" to senderType),
             "message" to mapOf<String, Any>("message_id" to id, "chat_id" to "oc_test", "chat_type" to chat,
-                "create_time" to createdAt, "update_time" to "1788939999000", "parent_id" to "om_parent",
+                "create_time" to createdAt, "update_time" to "1788939999000", "parent_id" to parentId,
                 "message_type" to type, "content" to (rawContent ?: gson.toJson(mapOf("text" to text))),
                 "mentions" to if (mention) listOf(mapOf<String, Any>("key" to "@_user_1", "id" to mapOf("open_id" to "ou_bot"), "name" to "Bridge")) else emptyList<Map<String, Any>>())
         ))
@@ -94,9 +94,26 @@ class MessageInputTest {
         assertNull(extractPrompt(message(chat = "group", sender = "ou_other", mention = true), owner))
         assertNull(extractPrompt(message(senderType = "app"), owner))
         assertNull(extractPrompt(message(type = "file"), owner))
-        assertNull(extractPrompt(message(text = "   \n"), owner))
-        assertNull(extractPrompt(message(text = "@_user_1", chat = "group", mention = true), owner))
+        assertNull(extractPrompt(message(text = "   \n", parentId = ""), owner))
+        assertNull(extractPrompt(message(text = "@_user_1", chat = "group", mention = true, parentId = ""), owner))
         assertNull(extractPrompt(message(chat = "unexpected"), owner))
+    }
+
+    @Test fun `empty replies pass SDK pipeline while empty standalone messages remain ignored`() {
+        val options = channelOptions(config)
+        val accepted = mutableListOf<Pair<String, MessageInput>>()
+        val pipeline = SafetyPipeline(SafetyPipelineOptions(options.safety, options.policy, null, bot, null,
+            { msg -> extractPrompt(msg, owner)?.let { accepted += it to extractMessageInput(msg) } }))
+        try {
+            pipeline.pushMessage(message(text = "", id = "om_empty"))
+            pipeline.pushMessage(message(text = "   \n", id = "om_space"))
+            pipeline.pushMessage(message(text = "@_user_1", chat = "group", mention = true, id = "om_group"))
+            pipeline.pushMessage(message(text = "", parentId = "", id = "om_standalone"))
+            pipeline.pushMessage(message(text = "", sender = "other", id = "om_other"))
+            pipeline.pushMessage(message(text = "", chat = "group", id = "om_not_mentioned"))
+            assertEquals(3, accepted.size)
+            accepted.forEach { (text, input) -> assertEquals("", text); assertEquals("om_parent", input.parentId) }
+        } finally { pipeline.dispose() }
     }
 
     @Test fun `SDK pipeline deduplicates and does not merge distinct messages`() {

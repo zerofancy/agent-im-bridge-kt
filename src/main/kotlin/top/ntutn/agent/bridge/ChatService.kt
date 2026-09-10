@@ -8,6 +8,9 @@ import kotlinx.coroutines.future.asDeferred
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.channels.Channel
 
 
 data class ReplyRoute(val chatId: String, val messageId: String)
@@ -38,6 +41,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
     private val job = SupervisorJob()
     private val scope = CoroutineScope(job + Dispatchers.Default)
     private val senderNames = replyContext?.nameCache(scope)
+    private val sharedTyping = typingReactions?.let { SharedTypingReactions(it) }
     private var closed = false
     private val queue = mutableListOf<Work>()
     private val running = mutableMapOf<String, Work>()
@@ -52,7 +56,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         var task: Job? = null
         var notice: Job? = null
         var stage = Stage.PREPARING
-        val handle = AgentRunHandle(route.messageId)
+        val handle = AgentRunHandle(input?.inputId ?: route.messageId)
         var stopNotice: Job? = null
         var stopCancelled = 0
         var stopBackendFailed = false
@@ -60,16 +64,78 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         fun finish() { activity?.finish() ?: completed.complete(Unit) }
     }
 
-    fun accept(route: ReplyRoute, prompt: String, input: MessageInput? = null): CompletableFuture<Unit> {
+    private data class Incoming(val sequence: Long, val id: String?, val resolve: suspend () -> IncomingMessage?,
+                                val completed: CompletableFuture<Unit>)
+    private val incomingSequence = AtomicLong()
+    private val incomingCount = AtomicInteger()
+    private val incoming = Channel<Incoming>(Channel.UNLIMITED)
+    private val stoppedIncoming = mutableMapOf<String, Long>()
+
+    /** Serialize route lookups with ordinary inputs; controls bypass network preparation. */
+    internal fun receive(message: IncomingMessage): CompletableFuture<Unit> {
+        val command = BridgeCommand.parse(if (message.input.contentType == "post")
+            message.input.commandText.orEmpty() else message.prompt)
+        return if (command != null) accept(message.route, message.prompt, message.input)
+        else receive(null) { message }
+    }
+
+    internal fun receive(id: String?, resolve: suspend () -> IncomingMessage?): CompletableFuture<Unit> {
+        val result = CompletableFuture<Unit>()
+        incomingCount.incrementAndGet()
+        val item = Incoming(incomingSequence.incrementAndGet(), id, resolve, result)
+        if (incoming.trySend(item).isFailure) { incomingCount.decrementAndGet(); result.complete(Unit) }
+        return result
+    }
+
+    init {
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            val seen = linkedSetOf<String>()
+            try {
+                for (item in incoming) {
+                    try {
+                        if (item.id != null && !seen.add(item.id)) { item.completed.complete(Unit); continue }
+                        if (seen.size > 2000) seen.remove(seen.first())
+                        val message = withTimeout(30_000) { item.resolve() }
+                        if (message == null || mutex.withLock {
+                                closed || item.sequence <= (stoppedIncoming[message.route.chatId] ?: 0L)
+                            }) { item.completed.complete(Unit); continue }
+                        admit(message.route, message.prompt, message.input, item.sequence).whenComplete { _, error ->
+                            if (error != null) item.completed.completeExceptionally(error) else item.completed.complete(Unit)
+                        }
+                    } catch (e: CancellationException) {
+                        item.completed.complete(Unit)
+                        if (e !is TimeoutCancellationException) throw e
+                        currentCoroutineContext().ensureActive()
+                        log.warn("消息接收准备超时，未提交模型")
+                    } catch (_: Exception) {
+                        item.completed.complete(Unit)
+                        log.warn("消息接收准备失败，未提交模型")
+                    } finally { incomingCount.decrementAndGet() }
+                }
+            } finally {
+                incoming.close()
+                while (true) {
+                    val item = incoming.tryReceive().getOrNull() ?: break
+                    incomingCount.decrementAndGet()
+                    item.completed.complete(Unit)
+                }
+            }
+        }
+    }
+
+    fun accept(route: ReplyRoute, prompt: String, input: MessageInput? = null): CompletableFuture<Unit> =
+        admit(route, prompt, input, null)
+
+    private fun admit(route: ReplyRoute, prompt: String, input: MessageInput?, incomingOrder: Long?): CompletableFuture<Unit> {
         val work = Work(route, prompt, input)
         val command = BridgeCommand.parse(if (input?.contentType == "post") input.commandText.orEmpty() else prompt)
         val admission = scope.launch(start = CoroutineStart.UNDISPATCHED) {
             val control = mutex.withLock {
-                if (closed) {
+                if (closed || (incomingOrder != null && incomingOrder <= (stoppedIncoming[route.chatId] ?: 0L))) {
                     work.finish()
                     return@withLock null
                 }
-                typingReactions?.let { work.activity = RequestActivity(scope, it, route, work.completed) }
+                sharedTyping?.let { work.activity = RequestActivity(scope, it.forRequest(), route, work.completed) }
                 if (input?.malformedPost == true) return@withLock suspend { send(route, "富文本消息 JSON 无法解析，请重新发送。") }
                 if (command != null) return@withLock prepareControl(work, command)
                 work.ready = running.size < limit && route.chatId !in running && route.chatId !in switching && queue.isEmpty()
@@ -123,6 +189,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             "/pwd" -> { { send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}") } }
             "/stop" -> {
                 val target = running[route.chatId]
+                if (target?.stage != Stage.STOPPING) stoppedIncoming[route.chatId] = incomingSequence.get()
                 val cancelled = if (target?.stage == Stage.STOPPING) emptyList() else queue.filter { it.route.chatId == route.chatId }
                 queue.removeAll(cancelled.toSet())
                 cancelled.forEach { it.notice?.cancel(); it.finish() }
@@ -152,11 +219,14 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 } else {
                     dispatch()
                     reply(if (cancelled.isNotEmpty()) "已取消 ${cancelled.size} 个排队请求，当前没有运行任务。"
-                        else if (route.chatId in switching) "当前正在切换目录，没有运行中的模型任务。" else "当前聊天没有运行或排队任务。")
+                        else if (route.chatId in switching) "当前正在切换目录，没有运行中的模型任务。"
+                        else if (incomingCount.get() > 0) "当前没有运行任务；本聊天此前收到、仍在接收准备中的请求也将取消。"
+                        else "当前聊天没有运行或排队任务。")
                 }
             }
             "/cd" -> {
                 if (command.argument.isEmpty()) reply("请使用 /cd <path>，查看 /help 获取帮助。")
+                else if (incomingCount.get() > 0) reply("正在准备接收到的消息，请稍后再切换目录。")
                 else if (route.chatId in running || route.chatId in switching || queue.any { it.route.chatId == route.chatId })
                     reply("当前聊天忙碌，请等待空闲，或先 /stop 停止任务后再切换目录。")
                 else {

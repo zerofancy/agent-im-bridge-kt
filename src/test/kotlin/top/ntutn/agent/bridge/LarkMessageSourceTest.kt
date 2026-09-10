@@ -29,4 +29,35 @@ class LarkMessageSourceTest {
         source.download("om_parent", "img_key", "image", java.io.ByteArrayOutputStream())
         assertTrue(urls.any { it.contains("/messages/om_parent/resources/img_key") && it.contains("type=image") })
     }
+    @Test fun `reaction resolves own bot message and rejects other senders`(): Unit = runBlocking {
+        var owner = "reaction-app"
+        var senderType = "app"
+        var mode = "p2p"
+        var deleted = false
+        val client = Client.newBuilder("reaction-app", "test-secret").httpTransport(IHttpTransport { request ->
+            RawResponse().apply {
+                statusCode = 200; headers = emptyMap()
+                body = when {
+                    request.reqUrl.contains("tenant_access_token") -> """{"code":0,"tenant_access_token":"test-token","expire":7200}"""
+                    request.reqUrl.contains("/chats/") -> """{"code":0,"data":{"chat_mode":"$mode"}}"""
+                    else -> """{"code":0,"data":{"items":[{"message_id":"om_bot","chat_id":"chat","msg_type":"text","deleted":$deleted,"sender":{"id":"$owner","id_type":"app_id","sender_type":"$senderType"},"body":{"content":"{\"text\":\"continue?\"}"}}]}}"""
+                }.toByteArray()
+            }
+        }).build()
+        val source = LarkMessageSource({ client })
+        val reaction = ReactionInput("rx:1", "om_bot", "allowed", "1", "[Yes]")
+        assertEquals("p2p", source.reaction(reaction, "reaction-app", null)?.input?.chatType)
+        mode = "topic"
+        val resolved = assertNotNull(source.reaction(reaction, "reaction-app", null))
+        assertEquals("topic_group", resolved.input.chatType)
+        assertEquals("om_bot", resolved.route.messageId)
+        assertEquals("rx:1", resolved.input.inputId)
+        assertEquals("om_bot", resolved.input.parentId)
+        owner = "other-app"
+        assertNull(source.reaction(reaction, "reaction-app", null))
+        owner = "reaction-app"; senderType = "user"
+        assertNull(source.reaction(reaction, "reaction-app", null))
+        senderType = "app"; deleted = true
+        assertNull(source.reaction(reaction, "reaction-app", null))
+    }
 }

@@ -3,6 +3,8 @@ package top.ntutn.agent.bridge
 import com.lark.oapi.Client
 import com.lark.oapi.service.im.v1.model.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import java.util.concurrent.CompletableFuture
 
@@ -10,6 +12,58 @@ interface TypingReactions {
     suspend fun add(route: ReplyRoute): String
     /** A missing ID means creation may have succeeded without a usable response. */
     suspend fun remove(route: ReplyRoute, reactionId: String?)
+}
+
+/** Each request owns a lease; overlapping requests on one message share one Typing reaction. */
+internal class SharedTypingReactions(private val delegate: TypingReactions) {
+    private class Entry {
+        var users = 0
+        var closing = false
+        val added = CompletableDeferred<String?>()
+        val removed = CompletableDeferred<Unit>()
+    }
+    private val mutex = Mutex()
+    private val entries = mutableMapOf<ReplyRoute, Entry>()
+
+    fun forRequest(): TypingReactions = object : TypingReactions {
+        private var owned: Entry? = null
+        override suspend fun add(route: ReplyRoute): String {
+            while (true) {
+                var create = false
+                val entry = mutex.withLock {
+                    val entry = entries.getOrPut(route) { create = true; Entry() }
+                    if (!entry.closing) { entry.users++; owned = entry }
+                    entry
+                }
+                if (owned == null) { entry.removed.await(); continue }
+                if (create) {
+                    var id: String? = null
+                    try { id = delegate.add(route) }
+                    finally { entry.added.complete(id) }
+                }
+                return entry.added.await() ?: error("Reaction creation failed")
+            }
+        }
+
+        override suspend fun remove(route: ReplyRoute, reactionId: String?) {
+            val entry = owned ?: return // Cancelled while waiting for the previous removal.
+            val last = mutex.withLock {
+                owned = null
+                entry.users--
+                (entry.users == 0).also { if (it) entry.closing = true }
+            }
+            if (!last) return
+            try { delegate.remove(route, entry.added.await()) }
+            finally {
+                withContext(NonCancellable) {
+                    mutex.withLock {
+                        entries.remove(route, entry)
+                        entry.removed.complete(Unit)
+                    }
+                }
+            }
+        }
+    }
 }
 
 internal class RequestActivity(scope: CoroutineScope, private val reactions: TypingReactions,
