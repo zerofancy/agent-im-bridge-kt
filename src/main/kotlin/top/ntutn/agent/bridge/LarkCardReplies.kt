@@ -138,8 +138,10 @@ internal class LarkCardReplies(private val client: () -> Client, private val ans
         }
     }
     override suspend fun finish(card: CardReference, text: String, process: String, status: String): Boolean {
-        answers.save(card, text)
-        val full = ReplyCard.render(text, bounded(process, 1800), status, false)
+        answers.save(card, if (status == "已终止") "【本次执行已终止，以下为未完成的输出】\n$text" else text)
+        val content = if (status == "已终止") ReplyCard.preview(AgentProgress(process, text), terminated = true)
+            else AgentProgress(bounded(process, 1800), text)
+        val full = ReplyCard.render(content.answer, content.process, status, false)
         val fits = ReplyCard.fits(full)
         val value = if (fits) full else ReplyCard.render("内容较长，完整回复见后续文本消息。", bounded(process, 1000), status, false)
         val api = client().cardkit().v1().card()

@@ -13,14 +13,54 @@ class StreamingReplyTest {
     private open class Api : CardReplies {
         val calls = mutableListOf<String>()
         var final = ""
+        var process = ""
         override suspend fun create(route: ReplyRoute): CardReference {
             calls += "create:${route.messageId}"
             return CardReference("card", "reply", route.chatId)
         }
         override suspend fun progress(card: CardReference, progress: AgentProgress) { calls += "progress:${progress.answer}" }
         override suspend fun finish(card: CardReference, text: String, process: String, status: String): Boolean {
-            calls += "finish:$status"; final = text; return true
+            calls += "finish:$status"; final = text; this.process = process; return true
         }
+    }
+    @Test fun `stop retains streamed answer and process while terminating original card`(): Unit = runBlocking {
+        val api = Api()
+        val reply = StreamingReply(this, api, route, {}, 1)
+        reply.progress(AgentProgress("执行了 pwd", "已经生成的部分答案"))
+        reply.stopping()
+        assertTrue(reply.finish("当前轮已中断，会话保留。", "已终止"))
+        reply.close("unknown", terminated = true)
+        assertEquals("已经生成的部分答案", api.final)
+        assertEquals("执行了 pwd", api.process)
+        assertEquals(listOf("create:original", "finish:已终止"), api.calls)
+    }
+    @Test fun `stop during blocked progress retains output in cancellation cleanup`(): Unit = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val api = object : Api() {
+            override suspend fun progress(card: CardReference, progress: AgentProgress) {
+                entered.complete(Unit); awaitCancellation()
+            }
+        }
+        val reply = StreamingReply(this, api, route, {}, 1)
+        reply.progress(AgentProgress("读取文件", "部分输出")); entered.await()
+        reply.stopping()
+        reply.close("unknown", terminated = true)
+        assertEquals("部分输出", api.final)
+        assertEquals("读取文件", api.process)
+        assertEquals("finish:已终止", api.calls.last())
+    }
+    @Test fun `terminated card preserves answer and process in collapsed expandable panels`() {
+        val card = JsonParser.parseString(ReplyCard.render("部分答案", "执行命令", "已终止", false)).asJsonObject
+        assertEquals("已终止", card.getAsJsonObject("header").getAsJsonObject("title")["content"].asString)
+        assertFalse(card.getAsJsonObject("config")["streaming_mode"].asBoolean)
+        val panels = card.getAsJsonObject("body").getAsJsonArray("elements").drop(1).map { it.asJsonObject }
+        assertEquals(2, panels.size)
+        for (panel in panels) {
+            assertEquals("collapsible_panel", panel["tag"].asString)
+            assertFalse(panel["expanded"].asBoolean)
+        }
+        assertEquals("部分答案", panels[0].getAsJsonArray("elements")[0].asJsonObject["content"].asString)
+        assertEquals("执行命令", panels[1].getAsJsonArray("elements")[0].asJsonObject["content"].asString)
     }
     @Test fun `slow card creation never blocks producer and final supersedes queued deltas`(): Unit = runBlocking {
         val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()

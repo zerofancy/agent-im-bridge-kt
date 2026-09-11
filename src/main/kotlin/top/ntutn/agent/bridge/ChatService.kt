@@ -382,12 +382,12 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             if (work.handle.stopRequested) {
                 // /stop sends its own confirmation as soon as backendEnded completes, independently of cards.
                 presentation?.finish(if (work.stopBackendFailed) "后端异常，本次执行已结束。" else "当前轮已中断，会话保留。",
-                    if (work.stopBackendFailed) "执行失败" else "已停止", 1500)
+                    if (work.stopBackendFailed) "执行失败" else "已终止", 1500)
                 return
             }
             if (result is AgentResult.Failure && result.kind == AgentResult.Kind.STOPPED) {
                 val text = "当前轮已中断，会话保留。"
-                if (presentation?.finish(text, "已停止", 1500) != true) send(route, text)
+                if (presentation?.finish(text, "已终止", 1500) != true) send(route, text)
                 return
             }
             if (result is AgentResult.Failure && result.kind == AgentResult.Kind.STORAGE) {
@@ -429,7 +429,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         } finally {
             withContext(NonCancellable) {
                 work.backendEnded.complete(Unit)
-                try { presentation?.close("回复已结束，执行结果未确认") }
+                try { presentation?.close("回复已结束，执行结果未确认", work.handle.stopRequested && !work.stopBackendFailed) }
                 finally {
                     work.handle.onProgress = {}; work.handle.onStopping = {}
                     try {

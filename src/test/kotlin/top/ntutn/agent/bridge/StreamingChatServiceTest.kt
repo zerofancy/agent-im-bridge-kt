@@ -77,7 +77,7 @@ class StreamingChatServiceTest {
             confirmed.complete(Unit)
             withTimeout(4000) { first.await(); discarded.await(); stop.await(); fresh.await() }
             assertEquals(listOf("first", "fresh"), runner.calls.toList())
-            assertEquals(listOf("已停止", "已完成"), cards.finals.map { it.second })
+            assertEquals(listOf("已终止", "已完成"), cards.finals.map { it.second })
         }
     }
     @Test fun `close cancels in flight card send and does not execute queued work`(): Unit = runBlocking {

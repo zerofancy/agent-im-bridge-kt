@@ -112,6 +112,31 @@ class LarkCardRepliesTest {
         assertTrue(ReplyCard.fits(update))
         assertContains(update, "后续文本")
     }
+    @Test fun `terminated update keeps original card and labels quoted answer unfinished`(): Unit = runBlocking {
+        val wire = Wire(); val store = CardAnswerStore(temp)
+        val api = LarkCardReplies({ wire.client }, store)
+        val ref = api.create(ReplyRoute("chat", "original"))
+        assertTrue(api.finish(ref, "部分答案", "执行了 pwd", "已终止"))
+        assertEquals("/open-apis/cardkit/v1/cards/card", wire.requests.last().first)
+        val card = JsonParser.parseString(wire.requests.last().second.getAsJsonObject("card")["data"].asString).asJsonObject
+        assertEquals("已终止", card.getAsJsonObject("header").getAsJsonObject("title")["content"].asString)
+        assertContains(card.toString(), "部分答案")
+        assertContains(card.toString(), "执行了 pwd")
+        assertContains(store.read("reply", "chat")!!, "未完成")
+        assertEquals(1, wire.requests.count { it.first.endsWith("/original/reply") })
+    }
+    @Test fun `large terminated output remains in card instead of referring to absent followup text`(): Unit = runBlocking {
+        val wire = Wire(); val store = CardAnswerStore(temp)
+        val api = LarkCardReplies({ wire.client }, store)
+        val ref = api.create(ReplyRoute("chat", "original"))
+        val output = "部分答案" + "<".repeat(6000)
+        assertTrue(api.finish(ref, output, "执行了 pwd", "已终止"))
+        val card = wire.requests.last().second.getAsJsonObject("card")["data"].asString
+        assertTrue(ReplyCard.fits(card))
+        assertContains(card, "部分答案")
+        assertFalse(card.contains("后续文本"))
+        assertContains(store.read("reply", "chat")!!, output)
+    }
     @Test fun `business permission failure is recoverable without ambiguous create retry`(): Unit = runBlocking {
         val wire = Wire(); wire.rejectCreate = true
         assertFailsWith<IOException> { LarkCardReplies({ wire.client }, CardAnswerStore(temp)).create(ReplyRoute("chat", "original")) }

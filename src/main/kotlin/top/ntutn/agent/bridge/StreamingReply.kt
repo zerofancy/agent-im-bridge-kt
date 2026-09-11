@@ -28,7 +28,14 @@ internal object ReplyCard {
         "header" to json("title" to json("tag" to "plain_text", "content" to status),
             "template" to if (streaming) "blue" else if (status == "已完成") "green" else "grey"),
         "body" to json("direction" to "vertical", "vertical_spacing" to "12px", "elements" to JsonArray().apply {
-            add(json("tag" to "markdown", "element_id" to "answer", "content" to safeMarkdown(answer.ifBlank { "正在处理，请稍候…" })))
+            val answerElement = json("tag" to "markdown", "element_id" to "answer",
+                "content" to safeMarkdown(answer.ifBlank { if (status == "已终止") "终止前尚未输出答案。" else "正在处理，请稍候…" }))
+            if (status == "已终止") {
+                add(json("tag" to "markdown", "content" to "本次执行已终止，以下保留终止前的输出，内容可能尚未完成。"))
+                add(json("tag" to "collapsible_panel", "element_id" to "answer_panel", "expanded" to false,
+                    "header" to json("title" to json("tag" to "plain_text", "content" to "终止前的输出")),
+                    "elements" to JsonArray().apply { add(answerElement) }))
+            } else add(answerElement)
             add(json("tag" to "collapsible_panel", "element_id" to "process_panel", "expanded" to streaming,
                 "header" to json("title" to json("tag" to "plain_text", "content" to "执行过程")),
                 "border" to json("color" to "grey", "corner_radius" to "8px"), "padding" to "8px",
@@ -55,10 +62,10 @@ internal object ReplyCard {
         }
     }
     fun fits(value: String) = value.toByteArray(Charsets.UTF_8).size <= MAX_BYTES
-    fun preview(progress: AgentProgress): AgentProgress {
+    fun preview(progress: AgentProgress, terminated: Boolean = false): AgentProgress {
         var answer = bounded(progress.answer, 6000)
         var process = bounded(progress.process, 1800)
-        while (!fits(render(answer, process, "正在处理", true))) {
+        while (!fits(render(answer, process, if (terminated) "已终止" else "正在处理", !terminated))) {
             if (answer.length > process.length) answer = bounded(answer, answer.length / 2)
             else process = bounded(process, process.length / 2)
         }
@@ -76,7 +83,6 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
     private var rendered = false
     private var finished = false
     private val terminal = MutableStateFlow<Update?>(null)
-    private var latest = AgentProgress()
     private data class Observed(val progress: AgentProgress = AgentProgress(), val stopping: Boolean = false)
     private val observed = MutableStateFlow(Observed())
     private val worker = scope.launch {
@@ -93,8 +99,11 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
                 while (true) update = updates.tryReceive().getOrNull() ?: break
             }
             update = terminal.value ?: update
-            if (update.final == null) update = update.copy(progress = observed.value.progress)
-            latest = update.progress
+            if (update.final == null) {
+                val state = observed.value
+                update = update.copy(progress = if (state.stopping)
+                    state.progress.copy(process = "正在停止，等待后端确认…\n\n" + state.progress.process) else state.progress)
+            }
             val ref = card
             if (update.final != null) {
                 if (ref != null) try {
@@ -111,18 +120,18 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
     }
 
     fun progress(value: AgentProgress) {
-        val state = observed.updateAndGet { old -> old.copy(progress = if (old.stopping)
-            value.copy(process = "正在停止，等待后端确认…") else value) }
+        val state = observed.updateAndGet { it.copy(progress = value) }
         updates.trySend(Update(state.progress))
     }
     fun stopping() {
-        val state = observed.updateAndGet { it.copy(stopping = true,
-            progress = it.progress.copy(process = "正在停止，等待后端确认…")) }
+        val state = observed.updateAndGet { it.copy(stopping = true) }
         updates.trySend(Update(state.progress))
     }
     suspend fun finish(text: String, status: String = "已完成", timeoutMs: Long = 25_000): Boolean {
         // The runner's final event is authoritative; pending progress is superseded by this terminal update.
-        val update = Update(observed.value.progress, text, status)
+        val progress = observed.value.progress
+        val output = if (status == "已终止") progress.answer else text
+        val update = Update(progress, output, status)
         terminal.value = update
         updates.trySend(update)
         updates.close()
@@ -132,12 +141,17 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
         }
         return rendered
     }
-    suspend fun close(status: String) {
+    suspend fun close(status: String, terminated: Boolean = false) {
         worker.cancelAndJoin()
         updates.close()
         if (!finished) card?.let { ref ->
+            // A stop while waiting for card I/O cancels the worker; retain the latest answer and process here too.
+            val snapshot = terminal.value
+            val progress = observed.value.progress
+            val output = snapshot?.final ?: if (terminated) progress.answer else status
+            val finalStatus = if (terminated) "已终止" else snapshot?.status ?: status
             val cleaned = withTimeoutOrNull(1500) {
-                try { api.finish(ref, terminal.value?.final ?: status, latest.process, terminal.value?.status ?: status) }
+                try { api.finish(ref, output, snapshot?.progress?.process ?: progress.process, finalStatus) }
                 catch (e: CancellationException) { throw e }
                 catch (_: IOException) { log.warn("卡片清理失败 messageId={}", ref.messageId) }
                 true
