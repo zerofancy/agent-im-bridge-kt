@@ -1,6 +1,6 @@
-# 飞书 Agent 持续对话 · Kotlin（Codex / Traex）
+# 飞书 Agent 持续对话 · Kotlin（Codex / Traex / OpenCode）
 
-本机运行的飞书机器人：通过官方链接绑定机器人，将授权用户的私聊及群聊 @ 文本交给本地 Codex 或 Traex CLI，返回最终答案。按后端及聊天保存并续接会话，默认只读分析。
+本机运行的飞书机器人：通过官方链接绑定机器人，将授权用户的私聊及群聊 @ 文本交给本地 Codex、Traex 或 OpenCode CLI，返回最终答案。按后端及聊天保存并续接会话，默认只读分析。
 
 ## 部署与运行（macOS）
 
@@ -188,7 +188,7 @@ Codex / Traex 使用 app-server 的 `item/started`、`item/completed` 和 `item/
 }
 ```
 
-模型目录默认是该环境的 `backend/codex`、`backend/trae` 与 `backend/trae/cli`，可以通过 `codexHome`、`traeHome`、`traeCliHome` 显式配置。守护启动时清除调用者的模型目录环境变量，由 Bridge 为后端设置本环境路径。首次旧环境迁移会显式登记旧路径以保留模型登录与历史。
+模型目录默认是该环境的 `backend/codex`、`backend/trae`、`backend/trae/cli` 与 `backend/opencode`，可以通过 `codexHome`、`traeHome`、`traeCliHome`、`opencodeHome` 显式配置。守护启动时清除调用者的模型目录环境变量，由 Bridge 为后端设置本环境路径。首次旧环境迁移会显式登记旧路径以保留模型登录与历史。
 
 后端只由机器人配置的 `backend` 字段决定；指定可执行文件不会切换后端。每个实例启动独立后端服务，失败不回退、不连接桌面端服务。任务没有自动超时，使用聊天 `/stop` 主动停止。访问模式只由该环境的 `sandboxMode` 决定，重启生效。
 
@@ -250,9 +250,9 @@ Bridge 启动 `opencode serve --hostname 127.0.0.1 --port 0 --pure`，使用随�
 
 ## 会话存储
 
-会话映射保存于 `~/.agent-im-bridge-kt/environments/<环境>/sessions.json`（权限 `600`），包含应用 ID、聊天 ID、后端 ID、规范化工作目录、后端运行时目录、session ID、更新时间及各聊天选择的目录。版本 3 兼容读取 v1/v2 文件，旧数据归入 Codex，首次成功写入时原子升级；降级前请备份会话文件。写入使用单写入锁、临时文件和原子替换；不保存消息正文。完整历史由各后端保存在自身运行时目录。更换应用、后端、工作目录或运行时目录会使用不同绑定。Codex 与 Traex 的聊天目录选择也相互隔离，切回后恢复该后端原有绑定；`/cd` 切换不同目录仍会清除目标旧绑定。
+会话映射保存于 `~/.agent-im-bridge-kt/environments/<环境>/sessions.json`（权限 `600`），包含应用 ID、聊天 ID、后端 ID、规范化工作目录、后端运行时目录、session ID、更新时间及各聊天选择的目录。版本 3 兼容读取 v1/v2 文件，旧数据归入 Codex，首次成功写入时原子升级；降级前请备份会话文件。写入使用单写入锁、临时文件和原子替换；不保存消息正文。完整历史由各后端保存在自身运行时目录。更换应用、后端、工作目录或运行时目录会使用不同绑定。Codex、Traex 与 OpenCode 的聊天目录选择相互隔离，切回后恢复该后端原有绑定；`/cd` 切换不同目录仍会清除目标旧绑定。
 
-每个 Bridge 实例使用独立的 `codex app-server --listen stdio://` 或 `traex app-server --listen stdio://` 服务，不连接 Codex 桌面端服务。先完成 `initialize` / `initialized` 握手，新会话调用 `thread/start`，已有会话调用 `thread/resume`；保存 thread ID 后才使用 `turn/start` 执行请求。旧 exec 的会话绑定仍可续接。最终回复来自当前轮的 `item/completed` 消息，等 `turn/completed` 成功后发送，不发送工具输出或过程消息。每轮显式指定目录、权限和非交互审批策略。CLI 不支持所需协议时明确报错，不回退到 exec。
+每个 Bridge 实例使用独立的 `codex app-server --listen stdio://` 或 `traex app-server --listen stdio://` 服务（OpenCode 使用 `opencode serve --hostname 127.0.0.1 --port 0 --pure`），不连接桌面端服务。先完成 `initialize` / `initialized` 握手，新会话调用 `thread/start`，已有会话调用 `thread/resume`；保存 thread ID 后才使用 `turn/start` 执行请求。旧 exec 的会话绑定仍可续接。最终回复来自当前轮的 `item/completed` 消息，等 `turn/completed` 成功后发送，不发送工具输出或过程消息。每轮显式指定目录、权限和非交互审批策略。CLI 不支持所需协议时明确报错，不回退到 exec。
 
 重启会加载原绑定。手动停止、执行失败和答案发送失败保留绑定，不自动重跑。仅当原生 RPC 明确报告会话不存在、尚未提交本轮时，先通知旧上下文失效，再新建一次。app-server 退出会使受影响任务失败，后续请求可重启服务；连接失效而进程仍存活时，不将任务视为已停止，暂停新执行并提示本机重启。
 
@@ -349,7 +349,7 @@ Traex 真实测试独立启用，使用本机认证，验证重启续聊、两�
 TRAEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.backend.TraexLiveTest --rerun-tasks
 ```
 
-默认离线测试对两种后端运行同一套协议约束，并覆盖配置默认值与持久化、v1/v2 → v3 迁移、跨后端目录隔离、提前停止重试和超长 JSON 行。仅通过本机测试不能替代飞书收发验收。
+默认离线测试对所有后端运行同一套协议约束，并覆盖配置默认值与持久化、v1/v2 → v3 迁移、跨后端目录隔离、提前停止重试和超长 JSON 行。仅通过本机测试不能替代飞书收发验收。
 
 飞书验收：私聊先发送“记住标记 private-随机值”，再问“刚才的标记是什么”；群 A、群 B 分别 @机器人发送不同标记并追问，检查各自回复与日志中的 session ID。退出并重启后再次追问，应保持各自标记。连续发送多条请求检查排队提示与原消息回复路由。补充目录验收：在两个聊天分别 `/cd` 到不同目录，检查 `/pwd` 查询；在一个聊天切回原目录确认上下文新建。配置为 `workspace-write` 并重启，在测试目录请求创建文件，验证编辑及目录恢复。原生中断验收：发送“执行 sleep 60，然后回复完成”，运行中查询 `/status` 并 `/stop`，确认收到停止结果后再发普通请求；日志应包含 `turn/interrupt` 对应的中断请求和 `status=interrupted`，app-server PID 不变。真实飞书收发需要用户完成授权并发送测试消息；本机 CLI 测试不代替飞书端到端验证。
 
