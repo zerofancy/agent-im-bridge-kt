@@ -6,6 +6,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
 import java.nio.file.Path
 import kotlin.test.*
+import top.ntutn.agent.bridge.feishu.CardAnswerStore
 
 class StreamingReplyTest {
     @TempDir lateinit var temp: Path

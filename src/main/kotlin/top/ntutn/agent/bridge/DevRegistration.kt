@@ -4,6 +4,9 @@ import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.system.exitProcess
+import top.ntutn.agent.bridge.storage.BridgeConfig
+import top.ntutn.agent.bridge.storage.ConfigStore
+import top.ntutn.agent.bridge.telegram.TelegramClient
 
 /** Foreground setup for either environment; service managers never invoke authorization. */
 object DevRegistration {

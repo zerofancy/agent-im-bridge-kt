@@ -9,6 +9,8 @@ import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.*
 import kotlinx.coroutines.*
+import top.ntutn.agent.bridge.storage.SessionKey
+import top.ntutn.agent.bridge.storage.SessionStore
 
 class ChatServiceTest {
     @TempDir lateinit var temp: Path

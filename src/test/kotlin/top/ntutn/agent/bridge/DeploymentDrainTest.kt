@@ -6,6 +6,8 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import kotlin.test.*
+import top.ntutn.agent.bridge.storage.SessionKey
+import top.ntutn.agent.bridge.storage.SessionStore
 
 class DeploymentDrainTest {
     @TempDir lateinit var temp: Path

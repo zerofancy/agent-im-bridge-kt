@@ -10,6 +10,8 @@ import java.net.InetSocketAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
+import top.ntutn.agent.bridge.feishu.LarkMessageSource
+import top.ntutn.agent.bridge.feishu.LarkRequests
 
 class StreamingDownloadTest {
     @Test fun `SDK resource streams before response ends and preserves filename`(): Unit = runBlocking {

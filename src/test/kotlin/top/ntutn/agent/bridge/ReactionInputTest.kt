@@ -9,6 +9,9 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
 import kotlin.test.*
+import top.ntutn.agent.bridge.storage.AttachmentStore
+import top.ntutn.agent.bridge.storage.SessionKey
+import top.ntutn.agent.bridge.storage.SessionStore
 
 class ReactionInputTest {
     @TempDir lateinit var temp: Path

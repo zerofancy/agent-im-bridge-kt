@@ -1,33 +1,15 @@
 package top.ntutn.agent.bridge
 
-import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
 import kotlinx.coroutines.*
+import kotlinx.coroutines.future.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.future.await
-import java.nio.file.*
-import java.nio.file.attribute.PosixFilePermissions
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
-
-internal object JsonFiles {
-    private val gson = GsonBuilder().setPrettyPrinting().create()
-    fun directory(path: Path) { Files.createDirectories(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))) }
-    fun read(path: Path): JsonObject? = if (Files.exists(path)) gson.fromJson(Files.readString(path), JsonObject::class.java) else null
-    fun write(path: Path, value: JsonObject) {
-        directory(path.parent)
-        val temp = Files.createTempFile(path.parent, ".atomic-", ".json", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
-        try {
-            Files.writeString(temp, gson.toJson(value))
-            java.nio.channels.FileChannel.open(temp, StandardOpenOption.WRITE).use { it.force(true) }
-            Files.move(temp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        } finally { Files.deleteIfExists(temp) }
-    }
-}
 
 class RuntimeLifecycle(val environment: RuntimeEnvironment) {
     val bootId: String = UUID.randomUUID().toString()

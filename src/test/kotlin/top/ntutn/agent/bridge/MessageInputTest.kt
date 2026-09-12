@@ -10,6 +10,11 @@ import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import top.ntutn.agent.bridge.feishu.channelOptions
+import top.ntutn.agent.bridge.feishu.extractMessageInput
+import top.ntutn.agent.bridge.feishu.extractPrompt
+import top.ntutn.agent.bridge.feishu.postCommandText
+import top.ntutn.agent.bridge.storage.BridgeConfig
 
 class MessageInputTest {
     private val owner = "ou_owner"

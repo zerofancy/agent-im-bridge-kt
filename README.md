@@ -211,7 +211,7 @@ Bridge 启动 `opencode serve --hostname 127.0.0.1 --port 0 --pure`，使用随�
 
 `/stop` 使用原生 abort 并等待本轮结束；连接结果不明时持续占槽、查询状态，不重发提示词。交互式权限请求和 question 工具请求会被拒绝，模型仍可通过普通文本向用户提问。关闭 Bridge 时先请求停止，等待最多 5 秒后清理自身 OpenCode 进程树。
 
-协议参考：[Server API](https://opencode.ai/docs/server/)、[权限](https://opencode.ai/docs/permissions/)。离线测试覆盖执行和停止流程；可运行 `OPENCODE_LIVE_TEST=1 ./gradlew test --tests '*OpenCodeLiveTest'`，使用本机 OpenCode 与临时本地模拟供应商验证真实协议，不使用账号凭证或付费模型。
+协议参考：[Server API](https://opencode.ai/docs/server/)、[权限](https://opencode.ai/docs/permissions/)。离线测试覆盖执行和停止流程；可运行 `OPENCODE_LIVE_TEST=1 ./gradlew test --tests '*backend.OpenCodeLiveTest'`，使用本机 OpenCode 与临时本地模拟供应商验证真实协议，不使用账号凭证或付费模型。
 
 ## 聊天工作目录与编辑权限
 
@@ -330,7 +330,7 @@ LRU 按现有会话隔离维度及实际模型会话 ID 隔离，不写入 `sess
 完整设计与输入示例见 [回复链方案](docs/reply-context.html)。真实只读沙箱附件读取测试可单独运行：
 
 ```bash
-CODEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.AttachmentLiveTest
+CODEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.storage.AttachmentLiveTest
 ```
 
 ## 验证与参考
@@ -340,13 +340,13 @@ CODEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.AttachmentLiveTe
 真实 CLI 测试使用本机已登录的 Codex 账号，验证三个聊天的独立标记、重建 Store/Runner 后续聊、旧 exec 会话迁移，以及两个并行轮次的中断隔离、服务 PID 保持不变和中断后续聊（默认不执行）：
 
 ```bash
-CODEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.CodexLiveTest --rerun-tasks
+CODEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.backend.CodexLiveTest --rerun-tasks
 ```
 
 Traex 真实测试独立启用，使用本机认证，验证重启续聊、两轮并发中断隔离、服务 PID 不变及中断后续聊：
 
 ```bash
-TRAEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.TraexLiveTest --rerun-tasks
+TRAEX_LIVE_TEST=1 ./gradlew test --tests top.ntutn.agent.bridge.backend.TraexLiveTest --rerun-tasks
 ```
 
 默认离线测试对两种后端运行同一套协议约束，并覆盖配置默认值与持久化、v1/v2 → v3 迁移、跨后端目录隔离、提前停止重试和超长 JSON 行。仅通过本机测试不能替代飞书收发验收。

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
+import top.ntutn.agent.bridge.storage.BridgeConfig
 
 class RuntimeEnvironmentTest {
     @TempDir lateinit var temp: Path

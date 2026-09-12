@@ -5,6 +5,9 @@ import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
+import top.ntutn.agent.bridge.feishu.ResourceDownloadException
+import top.ntutn.agent.bridge.storage.AttachmentStore
+import top.ntutn.agent.bridge.storage.SessionKey
 
 class ReplyContextTest {
     @TempDir lateinit var temp: Path

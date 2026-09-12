@@ -7,6 +7,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import java.util.concurrent.CompletableFuture
+import top.ntutn.agent.bridge.feishu.LarkRequests
 
 interface TypingReactions {
     suspend fun add(route: ReplyRoute): String

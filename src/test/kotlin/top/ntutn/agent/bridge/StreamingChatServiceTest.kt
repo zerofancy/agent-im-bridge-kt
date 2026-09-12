@@ -7,6 +7,8 @@ import java.nio.file.Path
 import java.util.Collections
 import java.util.concurrent.CompletableFuture
 import kotlin.test.*
+import top.ntutn.agent.bridge.storage.SessionKey
+import top.ntutn.agent.bridge.storage.SessionStore
 
 class StreamingChatServiceTest {
     @TempDir lateinit var temp: Path

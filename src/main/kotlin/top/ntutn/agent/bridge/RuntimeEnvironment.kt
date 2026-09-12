@@ -3,6 +3,7 @@ package top.ntutn.agent.bridge
 import com.google.gson.JsonObject
 import java.nio.file.Files
 import java.nio.file.Path
+import top.ntutn.agent.bridge.storage.BridgeConfig
 
 /** All mutable runtime paths are selected explicitly, never inherited from a model's environment. */
 data class RuntimeEnvironment(val root: Path, val name: String, val release: String) {

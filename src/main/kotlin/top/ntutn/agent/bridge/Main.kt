@@ -9,6 +9,12 @@ import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
+import top.ntutn.agent.bridge.feishu.createAgentChannel
+import top.ntutn.agent.bridge.storage.ConfigStore
+import top.ntutn.agent.bridge.storage.InstanceLock
+import top.ntutn.agent.bridge.storage.SessionStore
+import top.ntutn.agent.bridge.telegram.TelegramClient
+import top.ntutn.agent.bridge.telegram.createTelegramChannel
 
 // Do not render exception messages, payloads or stacks from external SDKs: they can contain credentials.
 fun safeError(error: Throwable): String {

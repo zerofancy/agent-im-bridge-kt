@@ -5,6 +5,7 @@ import com.lark.oapi.scene.registration.RegisterAppOptions
 import com.lark.oapi.scene.registration.RegisterAppResult
 import java.awt.Desktop
 import java.net.URI
+import top.ntutn.agent.bridge.storage.BridgeConfig
 
 fun registrationConfig(result: RegisterAppResult, fallbackUserId: () -> String?): BridgeConfig {
     val userId = result.userInfo?.openId?.takeIf { it.isNotBlank() } ?: fallbackUserId()

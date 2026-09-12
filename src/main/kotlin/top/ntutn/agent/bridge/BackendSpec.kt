@@ -1,6 +1,7 @@
 package top.ntutn.agent.bridge
 
 import java.nio.file.Path
+import top.ntutn.agent.bridge.backend.RpcFailure
 
 enum class BackendId(val configValue: String, val displayName: String) {
     CODEX("codex", "Codex"), TRAEX("traex", "Traex"), OPENCODE("opencode", "OpenCode");

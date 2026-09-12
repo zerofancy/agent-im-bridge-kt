@@ -7,6 +7,9 @@ import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import kotlin.test.*
+import top.ntutn.agent.bridge.storage.AttachmentStore
+import top.ntutn.agent.bridge.storage.SessionKey
+import top.ntutn.agent.bridge.storage.SessionStore
 
 class ReplyContextServiceTest {
     @TempDir lateinit var temp: Path

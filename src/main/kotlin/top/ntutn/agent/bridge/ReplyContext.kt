@@ -6,6 +6,10 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
+import top.ntutn.agent.bridge.feishu.ResourceDownloadException
+import top.ntutn.agent.bridge.feishu.replacePostImages
+import top.ntutn.agent.bridge.storage.AttachmentStore
+import top.ntutn.agent.bridge.storage.SessionKey
 
 /** The current instruction stays separate so quoted commands never reach BridgeCommand. */
 data class MessageInput(val chatType: String, val parentId: String? = null,
