@@ -182,6 +182,27 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
         }))
     }
 
+    /** An empty list clears this bot's reaction, leaving other participants' reactions intact. */
+    suspend fun setMessageReaction(route: ReplyRoute, emoji: String?) {
+        json(post("setMessageReaction", JsonObject().apply {
+            addProperty("chat_id", route.chatId)
+            addProperty("message_id", route.messageId.toLong())
+            add("reaction", com.google.gson.JsonArray().apply {
+                if (emoji != null) add(JsonObject().apply {
+                    addProperty("type", "emoji")
+                    addProperty("emoji", emoji)
+                })
+            })
+        }))
+    }
+
+    suspend fun deleteMessage(route: ReplyRoute) {
+        json(post("deleteMessage", JsonObject().apply {
+            addProperty("chat_id", route.chatId)
+            addProperty("message_id", route.messageId.toLong())
+        }))
+    }
+
     suspend fun getFile(fileId: String): JsonObject = json(post("getFile", JsonObject().apply {
         addProperty("file_id", fileId)
     })).getAsJsonObject("result")

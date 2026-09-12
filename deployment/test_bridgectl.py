@@ -216,6 +216,8 @@ class DeploymentTests(unittest.TestCase):
         for n in range(6):
             (self.dist/'lib/agent-im-bridge-kt.jar').write_bytes(str(n).encode())
             releases.append(self.m.publish(self.dist))
+            # Explicit ordering: rapid publishes can share a filesystem timestamp.
+            os.utime(self.m.release(releases[-1]), (1_700_000_000 + n, 1_700_000_000 + n))
         b.atomic(self.m.deploydir/'current', releases[0].encode())
         b.atomic(self.m.deploydir/'previous', releases[1].encode())
         job={'id':'00000000-0000-4000-8000-000000000001','old':releases[1],'target':releases[2],'state':'draining'}

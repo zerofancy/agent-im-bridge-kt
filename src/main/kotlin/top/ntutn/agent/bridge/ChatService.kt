@@ -11,6 +11,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.channels.Channel
+import kotlin.time.Duration.Companion.milliseconds
 
 
 data class ReplyRoute(val chatId: String, val messageId: String)
@@ -450,11 +451,15 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         }
     }
 
-    private suspend fun send(route: ReplyRoute, text: String) {
+    private suspend fun send(route: ReplyRoute, text: String) = sendWithNotice(route) {
+        sender.send(route, text).await()
+    }
+
+    internal suspend fun <T> sendWithNotice(route: ReplyRoute, action: suspend () -> T): T {
         currentCoroutineContext().ensureActive()
         if (mutex.withLock { closed }) throw CancellationException("Bridge closed")
         startupNotice?.beforeReply(route, sender)
-        withTimeout(30_000) { sender.send(route, text).await() }
+        return withTimeout(30_000.milliseconds) { action() }
     }
 
     override fun close() {

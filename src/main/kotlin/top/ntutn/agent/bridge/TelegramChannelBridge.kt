@@ -71,9 +71,15 @@ fun createTelegramChannel(
         AttachmentStore(lifecycle?.environment?.attachments ?: Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)),
         config.appId, source)
 
-    val service = ChatService(runner, sessions, { chatId ->
+    lateinit var service: ChatService
+    val reactions = TelegramTypingReactions(client) { route ->
+        service.sendWithNotice(route) {
+            client.sendMessage(route.chatId, "正在处理…", replyToMessageId = route.messageId).messageId.toString()
+        }
+    }
+    service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, TelegramTypingReactions(client), lifecycle, initiallyHeld, null) { route, text ->
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, reactions, lifecycle, initiallyHeld, null) { route, text ->
         client.sendReply(route, text)
     }
 
