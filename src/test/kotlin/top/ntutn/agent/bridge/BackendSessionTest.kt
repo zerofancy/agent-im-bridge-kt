@@ -57,6 +57,30 @@ class BackendSessionTest {
         assertEquals(codexId, restored.get(codex.copy(workspace = codexDir.toString())))
     }
 
+    @Test fun `OpenCode session IDs persist and reload without relaxing UUID backends`(): Unit = runBlocking {
+        val path = temp.resolve("sessions.json")
+        val key = SessionKey("app", "chat", "/work", "/runtime", "opencode")
+        val id = "ses_0123456789abABCDEFGHIJKLMN"
+        val store = SessionStore(path)
+        store.set(key, id)
+        val saved = Files.readString(path)
+        assertEquals(id, SessionStore(path).get(key))
+        for (backend in listOf("codex", "traex")) {
+            assertFailsWith<IllegalArgumentException> { store.set(key.copy(backendId = backend), id) }
+        }
+        for (bad in listOf(UUID.randomUUID().toString(), "ses_", "msg_abc", "ses_abc/def", "ses_abc\n")) {
+            assertFailsWith<IllegalArgumentException> { store.set(key, bad) }
+        }
+        assertEquals(saved, Files.readString(path))
+        val uuid = UUID.randomUUID().toString()
+        store.set(key.copy(backendId = "codex"), uuid)
+        val restored = SessionStore(path)
+        assertEquals(id, restored.get(key))
+        assertEquals(uuid, restored.get(key.copy(backendId = "codex")))
+        Files.writeString(path, Files.readString(path).replace(id, "ses_bad/path"))
+        assertFailsWith<IllegalArgumentException> { SessionStore(path) }
+    }
+
     @Test fun `invalid backend in v3 fails without overwriting file`(): Unit = runBlocking {
         val path = temp.resolve("sessions.json")
         SessionStore(path).set(SessionKey("app", "chat", "/work", "/runtime", "traex"), UUID.randomUUID().toString())

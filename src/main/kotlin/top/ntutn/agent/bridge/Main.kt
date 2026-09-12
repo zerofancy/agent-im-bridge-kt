@@ -35,7 +35,7 @@ fun main(args: Array<String>) {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     var larkChannel: LarkChannel? = null
     var telegramClient: TelegramClient? = null
-    var runner: AppServerAgentRunner? = null
+    var runner: ManagedAgentRunner? = null
     var service: ChatService? = null
     var instance: InstanceLock? = null
     var control: RuntimeControl? = null
@@ -58,7 +58,7 @@ fun main(args: Array<String>) {
         val options = environment.options()
         val sessions = SessionStore(environment.directory.resolve("sessions.json"))
         val backend = environment.backend(BackendId.parse(config.backend), options)
-        runner = AppServerAgentRunner(backend)
+        runner = createAgentRunner(backend, SandboxMode.parse(config.sandboxMode))
         runner.checkAvailable()
         val held = System.getenv("BRIDGE_HOLD") == "1"
         when (config.platform) {

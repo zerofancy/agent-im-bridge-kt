@@ -9,7 +9,7 @@ import kotlinx.coroutines.*
 class CodexRunnerTest {
     @TempDir lateinit var temp: Path
     @Test fun `both backends publish public streaming snapshots and retain authoritative final`(): Unit = runBlocking {
-        for (backend in BackendId.entries) {
+        for (backend in listOf(BackendId.CODEX, BackendId.TRAEX)) {
             val snapshots = mutableListOf<AgentProgress>()
             val handle = AgentRunHandle().apply { onProgress = { snapshots += it } }
             AppServerAgentRunner(BackendSpec(backend, fakeAppServer(temp).toString(), temp.resolve("runtime"))).use { runner ->

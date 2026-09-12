@@ -16,7 +16,7 @@ class BackendTest {
         Files.writeString(file, legacy)
         assertEquals("codex", ConfigStore(file).load()!!.backend)
         assertEquals(legacy, Files.readString(file))
-        for (backend in listOf("traex", "codex")) {
+        for (backend in listOf("traex", "codex", "opencode")) {
             ConfigStore(file).save(BridgeConfig("cli_test", "secret", "ou_owner", "feishu", backend = backend))
             val loaded = ConfigStore(file).load()!!
             assertEquals(backend, loaded.backend)
@@ -60,7 +60,7 @@ class BackendTest {
     }
 
     @Test fun `only selected backend launches with its own environment`(): Unit = runBlocking {
-        for (id in BackendId.entries) {
+        for (id in listOf(BackendId.CODEX, BackendId.TRAEX)) {
             val dir = Files.createDirectory(temp.resolve(id.configValue))
             val binary = fakeAppServer(dir).toString()
             val options = RunOptions(dir, binary = if (id == BackendId.CODEX) binary else "missing-codex",

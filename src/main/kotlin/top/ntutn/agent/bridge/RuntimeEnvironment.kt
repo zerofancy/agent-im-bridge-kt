@@ -15,12 +15,13 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
     fun options(): RunOptions {
         val s = settings
         return RunOptions(Path.of(s["workspace"].asString).toRealPath(), s.string("codexBinary") ?: "codex", true,
-            s["maxConcurrentRuns"]?.asInt ?: 10, s.string("traexBinary") ?: "traex")
+            s["maxConcurrentRuns"]?.asInt ?: 10, s.string("traexBinary") ?: "traex", s.string("opencodeBinary") ?: "opencode")
     }
     fun backend(id: BackendId, options: RunOptions): BackendSpec {
         val s = settings
         fun path(key: String, fallback: String) = canonicalDirectory(Path.of(s.string(key) ?: directory.resolve(fallback).toString()))
         return when (id) {
+            BackendId.OPENCODE -> BackendSpec(id, options.opencodeBinary, path("opencodeHome", "backend/opencode"))
             BackendId.CODEX -> BackendSpec(id, options.binary, path("codexHome", "backend/codex"))
             BackendId.TRAEX -> BackendSpec(id, options.traexBinary, path("traeCliHome", "backend/trae/cli"), path("traeHome", "backend/trae"))
         }.copy(temporaryRoot = temporary)
@@ -37,6 +38,7 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
         fun roots(s: JsonObject, base: Path): List<Path> = listOf(
             Path.of(s["workspace"].asString), Path.of(s.string("codexHome") ?: base.resolve("backend/codex").toString()),
             Path.of(s.string("traeHome") ?: base.resolve("backend/trae").toString()),
+            Path.of(s.string("opencodeHome") ?: base.resolve("backend/opencode").toString()),
             Path.of(s.string("traeCliHome") ?: base.resolve("backend/trae/cli").toString())).map(::real)
         if (theirs != null) require(roots(own, directory).none { a -> roots(theirs, other).any { b -> overlap(a, b) } }) { "调试和正式的模型目录或工作目录重叠" }
         val ownRoots = roots(own, directory)

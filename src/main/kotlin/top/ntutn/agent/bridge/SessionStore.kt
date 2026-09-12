@@ -108,10 +108,14 @@ class SessionStore(private val path: Path) {
     }
 
     private fun validate(entry: SessionEntry) {
-        BackendId.parse(entry.key.backendId)
+        val backend = BackendId.parse(entry.key.backendId)
         require(entry.key.appId.isNotBlank() && entry.key.chatId.isNotBlank())
         require(Path.of(entry.key.workspace).isAbsolute && Path.of(entry.key.runtimeRoot).isAbsolute)
-        require(validSessionId(entry.sessionId) && entry.updatedAt > 0)
+        val validId = when (backend) {
+            BackendId.OPENCODE -> openCodeId(entry.sessionId, "ses")
+            BackendId.CODEX, BackendId.TRAEX -> validSessionId(entry.sessionId)
+        }
+        require(validId && entry.updatedAt > 0)
     }
 
     private fun persist(next: Map<SessionKey, SessionEntry>, nextDirectories: Map<ChatKey, WorkspaceEntry>) {

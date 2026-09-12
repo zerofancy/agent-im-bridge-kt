@@ -39,3 +39,14 @@ interface AgentRunner : AutoCloseable {
         }
     }
 }
+
+/** Runtime-owned backends expose startup and health independently of individual chats. */
+interface ManagedAgentRunner : AgentRunner {
+    fun checkAvailable()
+    suspend fun healthy(): Boolean
+}
+
+fun createAgentRunner(backend: BackendSpec, sandboxMode: SandboxMode): ManagedAgentRunner = when (backend.id) {
+    BackendId.OPENCODE -> OpenCodeRunner(backend, sandboxMode)
+    else -> AppServerAgentRunner(backend)
+}

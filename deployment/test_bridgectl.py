@@ -14,6 +14,35 @@ if sys.platform == 'darwin':
     import plistlib
 
 class DeploymentTests(unittest.TestCase):
+    def test_opencode_login_uses_environment_state_without_inherited_secrets(self):
+        from types import SimpleNamespace
+        settings = {'workspace': str(self.root / 'workspace'), 'opencodeBinary': '/fake/opencode'}
+        b.atomic(self.m.directory / 'config.json', {'backend': 'opencode'})
+        seen = []
+        def login(argv, **kwargs):
+            seen.append(argv)
+            self.assertEqual(str(self.m.directory / 'backend/opencode/data'), kwargs['env']['XDG_DATA_HOME'])
+            self.assertNotIn('OPENCODE_CONFIG', kwargs['env'])
+            self.assertNotIn('OPENAI_API_KEY', kwargs['env'])
+            return SimpleNamespace(returncode=0)
+        with patch.object(self.m, 'validate', return_value=settings), patch('sys.stdin.isatty', return_value=True), \
+                patch.dict(os.environ, {'OPENCODE_CONFIG': '/other/config', 'OPENAI_API_KEY': 'do-not-inherit'}), \
+                patch.object(b.subprocess, 'run', side_effect=login):
+            self.m.login_model()
+        self.assertEqual([['/fake/opencode', 'auth', 'login']], seen)
+
+    def test_opencode_root_is_part_of_environment_isolation(self):
+        from types import SimpleNamespace
+        workspace = self.root / 'opencode-work'
+        b.atomic(self.m.directory / 'runtime.json', {'workspace': str(workspace), 'java': '/usr/bin/java',
+                 'opencodeHome': str(self.root / 'shared-opencode')})
+        b.atomic(self.m.directory / 'config.json', {'appId': 'dev-bot'})
+        b.atomic(self.root / 'environments/prod/runtime.json', {'workspace': str(self.root / 'peer-work'),
+                 'opencodeHome': str(self.root / 'shared-opencode')})
+        with patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "11"', stdout='')):
+            with self.assertRaisesRegex(ValueError, '重叠'):
+                self.m.validate()
+
     def test_interactive_dev_binds_then_creates_model_directories(self):
         from types import SimpleNamespace
         args = SimpleNamespace(workspace=None, release='snapshot', distribution=self.dist, java='/usr/bin/java')

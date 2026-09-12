@@ -7,7 +7,8 @@ import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import java.nio.file.Path
 
-open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
+open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
+    init { require(backend.id != BackendId.OPENCODE) }
     override val displayName: String get() = backend.displayName
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val mutex = Mutex()
@@ -29,9 +30,9 @@ open class AppServerAgentRunner(val backend: BackendSpec) : AgentRunner {
 
     internal suspend fun processId(): Long? = connectionMutex.withLock { client?.process?.pid() }
 
-    internal suspend fun healthy(): Boolean = connectionMutex.withLock { client?.healthy() == true }
+    override suspend fun healthy(): Boolean = connectionMutex.withLock { client?.healthy() == true }
 
-    fun checkAvailable(): Unit = runBlocking {
+    override fun checkAvailable(): Unit = runBlocking {
         try { connection(); Unit }
         catch (e: CancellationException) { throw e }
         catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); throw IllegalArgumentException("${displayName} app-server 启动或握手失败，请检查 --${backend.id.configValue}-bin、CLI 版本及配置；不再支持 exec 回退。") }

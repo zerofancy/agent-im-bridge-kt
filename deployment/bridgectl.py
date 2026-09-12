@@ -281,6 +281,7 @@ class Manager:
         def overlap(a, b): return a == b or a in b.parents or b in a.parents
         def paths(s, base):
             return [Path(s['workspace']).resolve(), Path(s.get('codexHome', base / 'backend/codex')).resolve(),
+                    Path(s.get('opencodeHome', base / 'backend/opencode')).resolve(),
                     Path(s.get('traeHome', base / 'backend/trae')).resolve(), Path(s.get('traeCliHome', base / 'backend/trae/cli')).resolve()]
         if overlap(self.directory.resolve(), other.resolve()): raise ValueError('环境状态目录重叠')
         roots = paths(settings, self.directory)
@@ -519,6 +520,7 @@ class Manager:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         settings = {'workspace': str(workspace), 'java': java, 'python': str(Path(sys.executable).resolve()),
                     'codexBinary': shutil.which('codex') or 'codex', 'traexBinary': shutil.which('traex') or 'traex',
+                    'opencodeBinary': shutil.which('opencode') or 'opencode',
                     'path': os.environ.get('PATH', '/usr/bin:/bin')}
         if legacy:
             settings.update(codexHome=str(Path(os.environ.get('CODEX_HOME') or Path.home() / '.codex').resolve()),
@@ -532,7 +534,7 @@ class Manager:
         self.model_directories(settings)
 
     def model_directories(self, settings):
-        for key, fallback in (('codexHome', 'backend/codex'), ('traeHome', 'backend/trae'), ('traeCliHome', 'backend/trae/cli')):
+        for key, fallback in (('opencodeHome', 'backend/opencode'), ('codexHome', 'backend/codex'), ('traeHome', 'backend/trae'), ('traeCliHome', 'backend/trae/cli')):
             Path(settings.get(key, self.directory / fallback)).mkdir(parents=True, exist_ok=True, mode=0o700)
         (self.directory / 'tmp').mkdir(parents=True, exist_ok=True, mode=0o700)
 
@@ -571,7 +573,25 @@ class Manager:
     def login_model(self):
         settings = self.validate()
         self.model_directories(settings)
-        if read(self.directory / 'config.json').get('backend', 'codex') != 'codex': return
+        backend = read(self.directory / 'config.json').get('backend', 'codex')
+        if backend == 'opencode':
+            home = Path(settings.get('opencodeHome', self.directory / 'backend/opencode'))
+            env = {k: v for k, v in os.environ.items() if k in (
+                'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LC_ALL', 'LC_CTYPE',
+                'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+                'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy', 'SSL_CERT_FILE', 'SSL_CERT_DIR')}
+            for key, child in (('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'),
+                               ('XDG_CACHE_HOME', 'cache'), ('XDG_STATE_HOME', 'state')):
+                env[key] = str(home / child)
+            env.update(TMPDIR=str(self.directory / 'tmp'), TMP=str(self.directory / 'tmp'), TEMP=str(self.directory / 'tmp'))
+            auth = read(home / 'data/opencode/auth.json', {})
+            if auth: return
+            if not sys.stdin.isatty(): raise ValueError('请在前台终端运行 bridgectl dev 完成 OpenCode 独立登录')
+            print(f'请登录 {self.env} 的独立 OpenCode 环境。', flush=True)
+            if subprocess.run([settings.get('opencodeBinary', 'opencode'), 'auth', 'login'], env=env, cwd=home).returncode:
+                raise RuntimeError('OpenCode 登录未完成，请在前台终端重试')
+            return
+        if backend != 'codex': return
         env = os.environ.copy()
         env.update(CODEX_HOME=str(Path(settings.get('codexHome', self.directory / 'backend/codex'))),
                    TMPDIR=str(self.directory / 'tmp'), TMP=str(self.directory / 'tmp'), TEMP=str(self.directory / 'tmp'))
