@@ -2,13 +2,16 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import plistlib
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('bridge_manager', Path(__file__).with_name('bridgectl.py'))
 b = importlib.util.module_from_spec(spec); spec.loader.exec_module(b)
+
+if sys.platform == 'darwin':
+    import plistlib
 
 class DeploymentTests(unittest.TestCase):
     def test_interactive_dev_binds_then_creates_model_directories(self):
@@ -90,6 +93,82 @@ class DeploymentTests(unittest.TestCase):
             self.assertEqual('production-release', prod.read_text())
             self.assertFalse((Path(root) / 'deployment/dev/current').exists())
 
+    def test_prod_wizard_preserves_dev_and_reuses_binding_after_login_failure(self):
+        from types import SimpleNamespace
+        prod = b.Manager(self.root, 'prod')
+        peer = self.m.directory / 'config.json'
+        b.atomic(peer, {'appId': 'dev-bot'})
+        before = peer.read_bytes()
+        def authorize(argv, **kwargs):
+            self.assertEqual(str(peer), argv[5])
+            b.atomic(Path(argv[4]), {'appId': 'prod-bot'})
+            return SimpleNamespace(returncode=0)
+        args = ['bridgectl', 'init', '--env', 'prod', '--root', str(self.root), '--release', 'snapshot']
+        with patch('sys.argv', args), patch('sys.stdin.isatty', return_value=True), \
+                patch.object(b.Manager, 'verify', return_value=self.dist), \
+                patch.object(b.subprocess, 'run', side_effect=authorize) as registration, \
+                patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "11"', stdout='')), \
+                patch.object(b.Manager, 'login_model', side_effect=[RuntimeError('login cancelled'), None]), \
+                patch.object(b.Manager, 'start') as start, patch.object(b.Manager, 'stop') as stop:
+            with self.assertRaisesRegex(RuntimeError, 'login cancelled'): b.main()
+            saved = (prod.directory / 'config.json').read_bytes()
+            b.main()
+            self.assertEqual(1, registration.call_count)
+            self.assertEqual(saved, (prod.directory / 'config.json').read_bytes())
+            start.assert_not_called(); stop.assert_not_called()
+        self.assertEqual(before, peer.read_bytes())
+        self.assertTrue((prod.directory / 'backend/codex').is_dir())
+        self.assertIsNone(prod.current())
+
+    def test_prod_wizard_rejects_peer_bot_and_cleans_staging(self):
+        from types import SimpleNamespace
+        prod = b.Manager(self.root, 'prod')
+        b.atomic(self.m.directory / 'config.json', {'appId': 'dev-bot'})
+        def authorize(argv, **kwargs):
+            b.atomic(Path(argv[4]), {'appId': 'dev-bot'})
+            return SimpleNamespace(returncode=0)
+        args = SimpleNamespace(workspace=None, release='snapshot', distribution=self.dist, java='/usr/bin/java')
+        with patch('sys.stdin.isatty', return_value=True), patch.object(prod, 'verify', return_value=self.dist), \
+                patch.object(b.subprocess, 'run', side_effect=authorize):
+            with self.assertRaisesRegex(ValueError, '相同机器人'): prod.setup_interactive(args)
+        self.assertFalse((prod.directory / 'config.json').exists())
+        self.assertFalse((prod.directory / 'runtime.json').exists())
+        self.assertEqual([], list(prod.directory.glob('.setup-*')))
+
+    def test_prod_wizard_rejects_nonterminal_and_partial_configuration(self):
+        from types import SimpleNamespace
+        prod = b.Manager(self.root, 'prod')
+        with patch('sys.stdin.isatty', return_value=False), patch.object(prod, 'publish') as publish:
+            with self.assertRaisesRegex(ValueError, '终端'): prod.setup_interactive(SimpleNamespace())
+            publish.assert_not_called()
+        path = prod.directory / 'runtime.json'
+        b.atomic(path, {'workspace': 'keep'})
+        before = path.read_bytes()
+        with self.assertRaisesRegex(ValueError, '不完整'): prod.setup_interactive(SimpleNamespace())
+        self.assertEqual(before, path.read_bytes())
+
+    def test_prod_login_uses_prod_home(self):
+        from types import SimpleNamespace
+        prod = b.Manager(self.root, 'prod')
+        b.atomic(prod.directory / 'config.json', {'appId': 'prod-bot'})
+        settings = {'codexBinary': '/fake/codex'}
+        def login(argv, **kwargs):
+            self.assertEqual(str(prod.directory / 'backend/codex'), kwargs['env']['CODEX_HOME'])
+            return SimpleNamespace(returncode=0 if argv[-1] == 'login' else 1)
+        with patch.object(prod, 'validate', return_value=settings), patch.object(b.subprocess, 'run', side_effect=login):
+            prod.login_model()
+
+    def test_dev_command_still_starts_after_setup(self):
+        args = ['bridgectl', 'dev', '--root', str(self.root), '--release', 'snapshot']
+        with patch('sys.argv', args), patch('sys.stdin.isatty', return_value=True), \
+                patch.object(b.Manager, 'setup_dev'), patch.object(b.Manager, 'validate'), \
+                patch.object(b.Manager, 'login_dev'), patch.object(b.Manager, 'verify'), \
+                patch.object(b.SystemdManager, 'is_loaded', return_value=False), \
+                patch.object(b.LaunchdManager, 'is_loaded', return_value=False), \
+                patch.object(b.Manager, 'start') as start, patch.object(b.Manager, 'wait_ready'):
+            b.main()
+            start.assert_called_once_with('snapshot')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name); self.m = b.Manager(self.root)
@@ -155,6 +234,8 @@ class DeploymentTests(unittest.TestCase):
         self.assertFalse(any(a[0]=='stop' for a in actions))
 
     def test_plist_keeps_group_and_uses_argument_arrays(self):
+        if sys.platform != 'darwin':
+            self.skipTest('macOS only test')
         p = plistlib.loads(self.m.launch_plist('test', ['/path with spaces/python', 'worker'], self.root / 'logs/out.log'))
         self.assertEqual(30, p['ThrottleInterval']); self.assertEqual(15, p['ExitTimeOut'])
         self.assertFalse(p['AbandonProcessGroup']); self.assertEqual('/path with spaces/python', p['ProgramArguments'][0])
@@ -220,5 +301,74 @@ class DeploymentTests(unittest.TestCase):
         self.m.perform(job['id'])
         self.assertIn(('stop', 'upgrade'), actions)
         self.assertNotIn(('rpc', 'drain'), actions)
+
+
+class ServiceManagerTests(unittest.TestCase):
+    """测试平台抽象层和服务管理器"""
+
+    def test_platform_detection(self):
+        """测试平台检测返回正确的服务管理器"""
+        manager = b.get_service_manager('gui/1000')
+        if sys.platform == 'darwin':
+            self.assertIsInstance(manager, b.LaunchdManager)
+        elif sys.platform == 'linux':
+            self.assertIsInstance(manager, b.SystemdManager)
+
+    def test_systemd_unit_generation(self):
+        """测试systemd单元文件生成"""
+        if sys.platform != 'linux':
+            self.skipTest('Linux only test')
+        manager = b.SystemdManager()
+        unit = manager._generate_unit('test.service', ['/usr/bin/python3', 'worker'], Path('/tmp/test.log'), True)
+        self.assertIn('[Unit]', unit)
+        self.assertIn('[Service]', unit)
+        self.assertIn('[Install]', unit)
+        self.assertIn('ExecStart="/usr/bin/python3" "worker"', unit)
+        self.assertIn('Restart=always', unit)
+
+    def test_systemd_unit_generation_no_restart(self):
+        """测试systemd单元文件生成（不重启）"""
+        if sys.platform != 'linux':
+            self.skipTest('Linux only test')
+        manager = b.SystemdManager()
+        unit = manager._generate_unit('test.service', ['/usr/bin/python3', 'worker'], Path('/tmp/test.log'), False)
+        self.assertIn('Restart=no', unit)
+
+    def test_systemd_load_writes_plain_unit_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('pathlib.Path.home', return_value=Path(tmpdir)), patch.object(b, 'run'):
+                manager = b.SystemdManager()
+                manager.load('test', ['/usr/bin/python3', 'worker'], Path(tmpdir) / 'test.log')
+                unit = (manager.unit_dir / 'test.service').read_text()
+                import configparser
+                parsed = configparser.ConfigParser(interpolation=None)
+                parsed.read_string(unit)
+                self.assertEqual(parsed['Service']['ExecStart'], '"/usr/bin/python3" "worker"')
+                self.assertEqual(parsed['Install']['WantedBy'], 'default.target')
+
+    def test_deploy_executor_restarts_only_on_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('pathlib.Path.home', return_value=Path(tmpdir)), patch.object(b, 'run'):
+                manager = b.SystemdManager()
+                manager.load_deploy('deploy', ['/usr/bin/python3', 'worker'], Path(tmpdir) / 'deploy.log')
+                unit = (manager.unit_dir / 'deploy.service').read_text()
+                self.assertIn('Restart=on-failure', unit)
+                self.assertIn('StartLimitIntervalSec=0', unit)
+
+    def test_systemd_arguments_preserve_spaces_and_expansions(self):
+        self.assertEqual('"/path with spaces/python"', b.systemd_quote('/path with spaces/python', command=True))
+        self.assertEqual('"$$HOME/%%n"', b.systemd_quote('$HOME/%n', command=True))
+        self.assertEqual('"HOME=/path with spaces"', b.systemd_quote('HOME=/path with spaces'))
+
+    def test_systemd_unit_dir_creation(self):
+        """测试systemd单元目录创建"""
+        if sys.platform != 'linux':
+            self.skipTest('Linux only test')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('pathlib.Path.home', return_value=Path(tmpdir)):
+                manager = b.SystemdManager()
+                self.assertTrue(manager.unit_dir.exists())
+                self.assertEqual(manager.unit_dir, Path(tmpdir) / '.config' / 'systemd' / 'user')
+
 
 if __name__ == '__main__': unittest.main()

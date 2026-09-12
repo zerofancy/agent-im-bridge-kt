@@ -11,7 +11,8 @@ import org.slf4j.LoggerFactory
 data class MessageInput(val chatType: String, val parentId: String? = null,
                         val sender: MessageSender = MessageSender(), val createTime: String? = null,
                         val contentType: String = "text", val commandText: String? = null, val malformedPost: Boolean = false,
-                        val inputId: String? = null, val reactionTarget: QuotedMessage? = null)
+                        val inputId: String? = null, val reactionTarget: QuotedMessage? = null,
+                        val quotedMessages: List<QuotedMessage> = emptyList(), val platformName: String = "飞书")
 data class QuotedMessage(val id: String, val chatId: String, val parentId: String?, val type: String,
                          val content: String, val deleted: Boolean = false,
                          val sender: MessageSender = MessageSender(), val createTime: String? = null,
@@ -50,7 +51,7 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
     suspend fun cleanup() = files.cleanup()
 
     suspend fun prepare(route: ReplyRoute, instruction: String, input: MessageInput, sent: Set<String>, names: SenderNameCache? = null): PreparedPrompt {
-        val place = if (input.chatType == "p2p") "飞书私聊" else "飞书群聊"
+        val place = input.platformName + if (input.chatType == "p2p") "私聊" else "群聊"
         var lease: AttachmentStore.Lease? = null
         try {
             suspend fun download(messageId: String, key: String, type: String, name: String?): String = try {
@@ -79,7 +80,7 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
                 (if (input.reactionTarget != null) "【用户通过表情回复发送的新消息】\n" else "") +
                 if (body.isBlank() && !input.parentId.isNullOrBlank()) "【本次回复正文为空，用户引用了上述消息。】" else body
             if (input.parentId.isNullOrBlank())
-                return PreparedPrompt("用户正在【$place】中与你对话，用户指令：\n$current", listOf(route.messageId), lease)
+                return PreparedPrompt("用户正在【$place】中与你对话，用户指令：\n$current", listOf(input.inputId ?: route.messageId), lease)
             val history = mutableListOf<Pair<String, String>>()
             val visited = mutableSetOf(input.inputId ?: route.messageId)
             var next: String? = input.parentId
@@ -90,7 +91,7 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
                 currentCoroutineContext().ensureActive()
                 if (!visited.add(next)) { missing = true; break }
                 val message = try {
-                    withTimeout(30_000) { input.reactionTarget?.takeIf { it.id == next } ?: source.get(next!!) }.also {
+                    withTimeout(30_000) { input.reactionTarget?.takeIf { it.id == next } ?: input.quotedMessages.firstOrNull { it.id == next } ?: source.get(next!!) }.also {
                         check(it.id == next && it.chatId == route.chatId && !it.deleted)
                     }
                 } catch (_: TimeoutCancellationException) { currentCoroutineContext().ensureActive(); missing = true; break }
@@ -116,7 +117,7 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
                 append(ordered.joinToString("\n\n") { it.second })
                 append("\n\n用户指令如下：\n$current")
             }
-            return PreparedPrompt(text, ordered.map { it.first } + route.messageId, lease)
+            return PreparedPrompt(text, ordered.map { it.first } + (input.inputId ?: route.messageId), lease)
         } catch (e: Throwable) {
             try { withContext(NonCancellable) { lease?.release() } }
             catch (cleanup: Exception) { e.addSuppressed(cleanup) }

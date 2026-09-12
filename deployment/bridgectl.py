@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Immutable releases and user launchd jobs. Never runs deployment inside the Bridge process tree."""
+"""Immutable releases and user-level service jobs. Never runs deployment inside the Bridge process tree."""
 import argparse
 import contextlib
 import fcntl
@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import plistlib
 import re
 import shutil
 import signal
@@ -17,6 +16,9 @@ import tempfile
 import time
 import urllib.request
 import uuid
+
+if sys.platform == 'darwin':
+    import plistlib
 
 TERMINAL = {'succeeded', 'cancelled', 'rolled-back', 'failed'}
 
@@ -66,6 +68,144 @@ def sha(path):
     return h.hexdigest()
 
 
+class ServiceManager:
+    """平台无关的守护进程管理接口"""
+
+    def is_loaded(self, label):
+        raise NotImplementedError
+
+    def load(self, label, argv, log, keep=True):
+        raise NotImplementedError
+
+    def unload(self, label):
+        raise NotImplementedError
+
+    def enable(self, label):
+        raise NotImplementedError
+
+    def disable(self, label):
+        raise NotImplementedError
+
+
+class LaunchdManager(ServiceManager):
+    """macOS launchd 服务管理"""
+
+    def __init__(self, domain):
+        self.domain = domain
+
+    def is_loaded(self, label):
+        return run(['launchctl', 'print', self.domain + '/' + label], check=False).returncode == 0
+
+    def load(self, label, argv, log, keep=True):
+        log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for p in [log, log.with_suffix('.err.log')]:
+            fd = os.open(p, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600); os.close(fd)
+        plist_data = plistlib.dumps({'Label': label, 'ProgramArguments': argv, 'RunAtLoad': True,
+            'KeepAlive': keep, 'ThrottleInterval': 30, 'ExitTimeOut': 15, 'AbandonProcessGroup': False,
+            'WorkingDirectory': str(Path.cwd()), 'Umask': 63,
+            'StandardOutPath': str(log), 'StandardErrorPath': str(log.with_suffix('.err.log'))})
+        path = Path.home() / 'Library/LaunchAgents' / (label + '.plist')
+        atomic(path, plist_data)
+        run(['launchctl', 'enable', self.domain + '/' + label])
+        run(['launchctl', 'bootstrap', self.domain, path])
+
+    def unload(self, label):
+        run(['launchctl', 'disable', self.domain + '/' + label], check=False)
+        run(['launchctl', 'bootout', self.domain + '/' + label], check=False)
+
+    def enable(self, label):
+        run(['launchctl', 'enable', self.domain + '/' + label])
+
+    def disable(self, label):
+        run(['launchctl', 'disable', self.domain + '/' + label])
+
+    def load_deploy(self, label, argv, log):
+        log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for p in [log, log.with_suffix('.err.log')]:
+            fd = os.open(p, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600); os.close(fd)
+        plist_data = plistlib.dumps({'Label': label, 'ProgramArguments': argv, 'RunAtLoad': True,
+            'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 30, 'ExitTimeOut': 15,
+            'AbandonProcessGroup': False, 'WorkingDirectory': str(Path.cwd()), 'Umask': 63,
+            'StandardOutPath': str(log), 'StandardErrorPath': str(log.with_suffix('.err.log'))})
+        path = Path.home() / 'Library/LaunchAgents' / (label + '.plist')
+        atomic(path, plist_data)
+        run(['launchctl', 'bootstrap', self.domain, path])
+
+
+def systemd_quote(value, command=False):
+    # systemd command lines are not shell scripts; quote each argument independently.
+    value = str(value).replace('%', '%%')
+    if command:
+        value = value.replace('$', '$$')
+    return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t') + '"'
+
+
+class SystemdManager(ServiceManager):
+    """Linux systemd 用户级服务管理"""
+
+    def __init__(self):
+        self.unit_dir = Path.home() / '.config' / 'systemd' / 'user'
+        self.unit_dir.mkdir(parents=True, exist_ok=True)
+
+    def is_loaded(self, label):
+        return run(['systemctl', '--user', 'is-active', label + '.service'], check=False).returncode == 0
+
+    def load(self, label, argv, log, keep=True, restart=None):
+        unit = self._generate_unit(label, argv, log, keep, restart)
+        path = self.unit_dir / (label + '.service')
+        atomic(path, unit.encode('utf-8'))
+        run(['systemctl', '--user', 'daemon-reload'])
+        run(['systemctl', '--user', 'enable', label + '.service'])
+        run(['systemctl', '--user', 'start', label + '.service'])
+
+    def unload(self, label):
+        run(['systemctl', '--user', 'stop', label + '.service'], check=False)
+        run(['systemctl', '--user', 'disable', label + '.service'], check=False)
+
+    def enable(self, label):
+        run(['systemctl', '--user', 'enable', label + '.service'])
+
+    def disable(self, label):
+        run(['systemctl', '--user', 'disable', label + '.service'])
+
+    def load_deploy(self, label, argv, log):
+        self.load(label, argv, log, keep=False, restart="on-failure")
+
+    def _generate_unit(self, label, argv, log, keep, restart=None):
+        log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for p in [log, log.with_suffix('.err.log')]:
+            fd = os.open(p, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600); os.close(fd)
+        exec_start = ' '.join(systemd_quote(x, command=True) for x in argv)
+        return f"""[Unit]
+Description=Agent IM Bridge ({label})
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart={exec_start}
+WorkingDirectory={str(Path.cwd()).replace("%", "%%")}
+StandardOutput=append:{log}
+StandardError=append:{log.with_suffix('.err.log')}
+Restart={restart or ('always' if keep else 'no')}
+RestartSec=5
+Environment={systemd_quote("HOME=" + str(Path.home()))}
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def get_service_manager(domain):
+    """根据平台返回对应的服务管理器"""
+    if sys.platform == 'darwin':
+        return LaunchdManager(domain)
+    elif sys.platform == 'linux':
+        return SystemdManager()
+    else:
+        raise RuntimeError(f'不支持的平台: {sys.platform}')
+
+
 class Manager:
     def __init__(self, root, env='dev'):
         self.root = Path(root).expanduser().resolve()
@@ -76,6 +216,7 @@ class Manager:
         self.label = 'top.ntutn.agent.bridge.' + hashlib.sha256(str(self.root).encode()).hexdigest()[:12] + '.' + env
         self.domain = 'gui/' + str(os.getuid())
         self.plist = Path.home() / 'Library/LaunchAgents' / (self.label + '.plist')
+        self.service = get_service_manager(self.domain)
 
     def release(self, name):
         if not name or not re.fullmatch(r'[A-Za-z0-9._-]+', name) or name in ('.', '..'): raise ValueError('无效发布版本')
@@ -180,6 +321,7 @@ class Manager:
                 '--root', str(self.root), '--env', self.env] + list(extra)
 
     def launch_plist(self, label, argv, log, keep=True):
+        """仅用于macOS launchd，生成plist数据"""
         log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         for p in [log, log.with_suffix('.err.log')]:
             fd = os.open(p, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600); os.close(fd)
@@ -191,23 +333,17 @@ class Manager:
     def start(self, release=None, held=False):
         release = release or self.current()
         self.verify(release); self.validate()
-        if run(['launchctl', 'print', self.domain + '/' + self.label], check=False).returncode == 0:
-            raise RuntimeError('实例已由 launchd 管理；升级请使用 deploy')
+        if self.service.is_loaded(self.label):
+            raise RuntimeError('实例已由服务管理器管理；升级请使用 deploy')
         if held: (self.deploydir / 'activated').unlink(missing_ok=True)
         args = self.args(release, '_launch', '--release', release)
         if held: args.append('--held')
-        atomic(self.plist, self.launch_plist(self.label, args, self.directory / 'logs/bridge.log'))
-        run(['launchctl', 'enable', self.domain + '/' + self.label])
-        run(['launchctl', 'bootstrap', self.domain, self.plist])
+        self.service.load(self.label, args, self.directory / 'logs/bridge.log')
 
     def stop(self, reason='stop'):
         with contextlib.suppress(Exception): self.rpc('reason/' + reason)
         old = read(self.directory / 'lifecycle/current.json')
-        run(['launchctl', 'disable', self.domain + '/' + self.label], check=False)
-        result = run(['launchctl', 'bootout', self.domain + '/' + self.label], check=False)
-        if result.returncode and run(['launchctl', 'print', self.domain + '/' + self.label], check=False).returncode == 0:
-            raise RuntimeError('launchd 未能停止实例')
-        # launchd owns the process group, never send signals to a PID from stale metadata.
+        self.service.unload(self.label)
         until = time.monotonic() + 20
         while old and alive(old['pid']):
             current = read(self.directory / 'lifecycle/current.json')
@@ -236,10 +372,9 @@ class Manager:
                    'state': 'prepared', 'createdAt': time.time()}
             atomic(self.deploydir / 'jobs' / (job['id'] + '.json'), job)
             label = self.label + '.deploy.' + job['id']
-            path = Path.home() / 'Library/LaunchAgents' / (label + '.plist')
             args = self.args(target, '_deploy', '--job', job['id'])
-            atomic(path, self.launch_plist(label, args, self.directory / 'logs' / ('deploy-' + job['id'] + '.log'), {'SuccessfulExit': False}))
-            try: run(['launchctl', 'bootstrap', self.domain, path])
+            try:
+                self.service.load_deploy(label, args, self.directory / 'logs' / ('deploy-' + job['id'] + '.log'))
             except Exception:
                 job['state'] = 'failed'; job['error'] = '无法启动独立部署执行器'; atomic(self.deploydir / 'jobs' / (job['id'] + '.json'), job); raise
             return job['id']
@@ -267,7 +402,7 @@ class Manager:
                         except (OSError, RuntimeError, ValueError):
                             # A crash loses the in-memory queue; the current guarded release may be restarting.
                             previous = read(self.directory / 'lifecycle/current.json', {})
-                            loaded = run(['launchctl', 'print', self.domain + '/' + self.label], check=False).returncode == 0
+                            loaded = self.service.is_loaded(self.label)
                             if not loaded and not alive(previous.get('pid')): break
                         time.sleep(.5)
                     # Persist intent before changing launchd or pointers; retrying stop is safe.
@@ -291,7 +426,8 @@ class Manager:
                     self.rpc('activate')
                     # Persist non-held restart arguments without restarting the healthy JVM.
                     args = self.args(job['target'], '_launch', '--release', job['target'])
-                    atomic(self.plist, self.launch_plist(self.label, args, self.directory / 'logs/bridge.log'))
+                    if sys.platform == 'darwin':
+                        atomic(self.plist, self.launch_plist(self.label, args, self.directory / 'logs/bridge.log'))
                     atomic(self.deploydir / 'activated', {'release': job['target'], 'job': job_id})
                     state('succeeded')
                 if job['state'] == 'rolling-back': self.recover_old(job, state)
@@ -331,9 +467,10 @@ class Manager:
         activated = read(self.deploydir / 'activated', {})
         held = held and activated.get('release') != release
         env = {k: v for k, v in os.environ.items() if k not in ('CODEX_HOME', 'TRAE_HOME', 'TRAECLI_HOME', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH')}
+        default_path = '/usr/local/bin:/usr/bin:/bin' if sys.platform == 'linux' else '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
         env.update(BRIDGE_ROOT=str(self.root), BRIDGE_ENV=self.env, BRIDGE_RELEASE=release,
                    BRIDGE_HOLD='1' if held else '0', TMPDIR=str(self.directory / 'tmp'),
-                   PATH=settings.get('path', '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'))
+                   PATH=settings.get('path', default_path))
         classpath = ':'.join(str(f) for f in sorted((p / 'lib').glob('*.jar')))
         argv = [settings['java'], '-Djava.io.tmpdir=' + str(self.directory / 'tmp'), '-cp', classpath, 'top.ntutn.agent.bridge.MainKt']
         child = subprocess.Popen(argv, env=env, cwd=settings['workspace'], stdin=subprocess.DEVNULL)
@@ -373,7 +510,8 @@ class Manager:
         return removed
 
     def init(self, workspace, config_path, java, legacy=False):
-        if (self.directory / 'config.json').exists(): raise ValueError('环境已存在，不覆盖')
+        if any((self.directory / name).exists() for name in ('config.json', 'runtime.json')):
+            raise ValueError('环境已存在，不覆盖')
         config = read(Path(config_path))
         if not config: raise ValueError('缺少机器人配置')
         workspace = Path(workspace).resolve()
@@ -400,14 +538,19 @@ class Manager:
 
     def setup_dev(self, args):
         if self.env != 'dev': raise ValueError('交互初始化仅用于 dev')
+        self.setup_interactive(args)
+
+    def setup_interactive(self, args):
+        command = './bridgectl dev' if self.env == 'dev' else './bridgectl init --env prod'
+        peer = 'prod' if self.env == 'dev' else 'dev'
         configured = [(self.directory / name).exists() for name in ('config.json', 'runtime.json')]
         if all(configured): return
-        if any(configured): raise ValueError('dev 配置不完整，请检查环境配置；不会覆盖已有文件')
+        if any(configured): raise ValueError(f'{self.env} 配置不完整，请检查环境配置；不会覆盖已有文件')
         if not sys.stdin.isatty():
-            raise ValueError('请在终端运行 ./bridgectl dev 交互绑定测试机器人；自动化可先使用 init --env dev 导入配置')
-        print('首次启动 dev：将在浏览器中选择或创建测试机器人，请勿选择正式机器人。', flush=True)
+            raise ValueError(f'请在终端运行 {command} 交互绑定机器人；自动化可先使用 init --env {self.env} --config <配置文件> --workspace <工作目录> 导入配置')
+        print(f'初始化 {self.env}：选择或创建独立机器人，请勿选择 {peer} 的机器人。', flush=True)
         workspace = Path(args.workspace).expanduser().resolve() if args.workspace else self.directory / 'workspace'
-        print('测试模型的默认工作目录：' + str(workspace) + '（自动创建）', flush=True)
+        print('模型的默认工作目录：' + str(workspace) + '（自动创建）', flush=True)
         release = args.release or self.publish(args.distribution)
         snapshot = self.verify(release)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -416,13 +559,16 @@ class Manager:
             classpath = ':'.join(str(f) for f in sorted((snapshot / 'lib').glob('*.jar')))
             env = {k: v for k, v in os.environ.items() if k not in ('JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH')}
             result = subprocess.run([args.java, '-cp', classpath, 'top.ntutn.agent.bridge.DevRegistration',
-                str(config), str(self.root / 'environments/prod/config.json')], env=env)
-            if result.returncode: raise RuntimeError('机器人绑定未完成，请重新运行 ./bridgectl dev')
+                str(config), str(self.root / 'environments' / peer / 'config.json')], env=env, stdin=sys.stdin)
+            if result.returncode: raise RuntimeError(f'机器人绑定未完成，请重新运行 {command}')
             self.init(workspace, config, args.java)
         args.release = release
-        print('测试机器人已绑定；配置仅保存在 dev 环境。', flush=True)
+        print(f'机器人已绑定；配置仅保存在 {self.env} 环境。发布版本：{release}', flush=True)
 
     def login_dev(self):
+        self.login_model()
+
+    def login_model(self):
         settings = self.validate()
         self.model_directories(settings)
         if read(self.directory / 'config.json').get('backend', 'codex') != 'codex': return
@@ -432,9 +578,10 @@ class Manager:
         binary = settings['codexBinary']
         status = subprocess.run([binary, 'login', 'status'], env=env, capture_output=True, timeout=25)
         if status.returncode == 0: return
-        print('请登录 dev 的独立模型环境（不会复制或修改 prod 登录状态）。', flush=True)
+        print(f'请登录 {self.env} 的独立模型环境（不会复制或修改其他环境登录状态）。', flush=True)
         if subprocess.run([binary, 'login'], env=env).returncode:
-            raise RuntimeError('模型登录未完成；下次运行 ./bridgectl dev 将继续登录')
+            command = './bridgectl dev' if self.env == 'dev' else f'./bridgectl init --env {self.env}'
+            raise RuntimeError(f'模型登录未完成；下次运行 {command} 将继续登录')
 
 
 def main():
@@ -461,14 +608,23 @@ def main():
             m.setup_dev(args)
             m.validate()
             if sys.stdin.isatty(): m.login_dev()
-    if args.command == 'publish': print(m.publish(args.distribution))
+    elif args.command == 'publish': print(m.publish(args.distribution))
     elif args.command == 'prune':
         # Lock both environments in fixed order so no deployment can acquire a soon-to-be-deleted version.
         with locked(m.root / 'deployment/prod/deploy.lock'), locked(m.root / 'deployment/dev/deploy.lock'), locked(m.root / 'deployment/publish.lock'):
             print(json.dumps(m.prune()))
     elif args.command == 'init':
-        if not args.config or not args.workspace: parser.error('init 需要 --config 和 --workspace')
-        m.init(args.workspace, args.config, args.java); print('环境已初始化；请在独立模型目录登录')
+        with locked(m.deploydir / 'deploy.lock'):
+            if m.active_job(): raise RuntimeError('部署中，请使用部署控制命令')
+            if args.config:
+                if not args.workspace: parser.error('导入配置需要 --workspace')
+                m.init(args.workspace, args.config, args.java)
+                print('环境已初始化；请在独立模型目录登录')
+            else:
+                if not sys.stdin.isatty(): parser.error('交互初始化需要前台终端；自动化请提供 --config 和 --workspace')
+                m.setup_interactive(args)
+                m.login_model()
+                print(f'{m.env} 初始化完成；服务尚未启动。')
     elif args.command == 'migrate-legacy':
         if args.env != 'prod' or not args.workspace: parser.error('迁移需要 --env prod 和 --workspace')
         with locked(m.root / 'bridge.lock', record_lock=True):
@@ -495,14 +651,14 @@ def main():
         try: status = m.rpc()
         except Exception: status = {'running':False, 'lifecycle':read(m.directory / 'lifecycle/current.json'), 'release':m.current()}
         status['deployment'] = m.active_job(); print(json.dumps(status, ensure_ascii=False, indent=2))
-    else:
+    if args.command in ('dev', 'start', 'stop'):
         with locked(m.deploydir / 'deploy.lock'):
             if m.active_job(): raise RuntimeError('部署中，请使用部署控制命令')
             if args.command == 'stop': m.stop(); print('已停止，守护已卸载')
             else:
                 release = args.release or (m.publish(args.distribution) if args.command == 'dev' else m.current())
                 m.verify(release)
-                if run(['launchctl', 'print', m.domain + '/' + m.label], check=False).returncode == 0:
+                if m.service.is_loaded(m.label):
                     raise RuntimeError('环境已运行；请使用 deploy 升级')
                 atomic(m.deploydir / 'current', release.encode())
                 m.start(release); m.wait_ready(release); print('已连接 environment=' + m.env + ' release=' + release)

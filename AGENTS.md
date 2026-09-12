@@ -40,11 +40,12 @@
 
 ## 部署与环境隔离
 
-- macOS 正式运行由用户级 launchd 守护，使用 `bridgectl`；不要直接执行 build/install 的 JVM 启动脚本，也不要用 nohup 绕过守护。
+- macOS 正式运行由用户级 launchd 守护，Linux 由用户级 systemd 守护，使用 `bridgectl`；不要直接执行 build/install 的 JVM 启动脚本，也不要用 nohup 绕过守护。
 - `dev` 与 `prod` 的机器人、配置、模型状态、锁、附件、日志和默认工作目录必须独立。正式操作显式指定 `--env prod`；不得把调试凭据或状态提升到正式环境。
-- 发布目录为不可变快照，JVM classpath 必须使用真实版本目录，不能包含 current 链接。升级通过独立 launchd 部署执行器异步完成，机器人任务只提交部署编号，不同步等待自身排空。
+- 发布目录为不可变快照，JVM classpath 必须使用真实版本目录，不能包含 current 链接。升级通过独立部署执行器异步完成，机器人任务只提交部署编号，不同步等待自身排空。
 - 未捕获内部异常和 JVM Error 使用统一 FatalErrorHandler 退出整个进程，不在损坏的 JVM 中强行恢复槽位。明确的外部操作失败仍在边界转换为可恢复失败；禁止用宽泛 catch 隐藏内部编程异常。
 - 启动提示整个进程最多尝试一次；所有文字回复走统一发送入口。生命周期记录不得输出消息正文或外部错误正文，无法确定的退出原因标记未知。
-- `./gradlew test installDist` 包含部署单元测试。真实 launchd 故障注入只使用 `deployment/live_launchd_test.py` 的临时环境，不在正式机器人上注入崩溃。
+- `./gradlew test installDist` 包含部署单元测试。真实故障注入只使用 `deployment/live_launchd_test.py`（macOS）或 `deployment/live_systemd_test.py`（Linux）的临时环境，不在正式机器人上注入崩溃。
+- systemd 服务文件位于 `~/.config/systemd/user/`，与 launchd plist 保持相同的生命周期管理。
 
-- 首次 `bridgectl dev` 在前台终端交互选择或创建测试机器人，自动准备工作目录和模型目录，并按需引导独立模型登录；不要求用户手写配置。launchd 重启不得触发交互授权，损坏配置不得自动覆盖。
+- 首次 `bridgectl dev` 在前台终端交互选择或创建测试机器人，自动准备工作目录和模型目录，并按需引导独立模型登录；不要求用户手写配置。守护重启不得触发交互授权，损坏配置不得自动覆盖。

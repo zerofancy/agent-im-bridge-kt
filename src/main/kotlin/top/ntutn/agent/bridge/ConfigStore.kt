@@ -10,12 +10,26 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.attribute.PosixFilePermissions
 
 class BridgeConfig(val appId: String, val appSecret: String, val allowedUserId: String, val tenant: String, val sandboxMode: String = "read-only", val backend: String = "codex") {
+    val platform: String get() = when (tenant) {
+        "feishu", "lark" -> "feishu"
+        "telegram" -> "telegram"
+        else -> "unknown"
+    }
+
     fun validate() {
         SandboxMode.parse(sandboxMode)
         BackendId.parse(backend)
-        require(appId.startsWith("cli_") && appSecret.isNotBlank()) { "应用配置不完整，请重新绑定。" }
-        require(allowedUserId.startsWith("ou_") && allowedUserId.length > 3) { "需要有效的用户 open_id（ou_ 开头）。" }
-        require(tenant in setOf("feishu", "lark")) { "tenant 必须为 feishu 或 lark。" }
+        when (tenant) {
+            "feishu", "lark" -> {
+                require(appId.startsWith("cli_") && appSecret.isNotBlank()) { "飞书应用配置不完整，请重新绑定。" }
+                require(allowedUserId.startsWith("ou_") && allowedUserId.length > 3) { "需要有效的用户 open_id（ou_ 开头）。" }
+            }
+            "telegram" -> {
+                require(appId.isNotBlank()) { "需要 Telegram Bot Token。" }
+                require(allowedUserId.isNotBlank()) { "需要 Telegram 用户 ID（数字）。" }
+            }
+            else -> error("tenant 必须为 feishu/lark/telegram。")
+        }
     }
     // Deliberately not a data class: generated toString must never expose credentials.
 }

@@ -15,6 +15,61 @@
 ./bridgectl status --env prod
 ```
 
+## 部署与运行（Linux）
+
+需要 JDK 11+、Python 3.9+，以及 systemd 用户级服务支持。正式服务由用户级 systemd 守护，调试与正式使用不同机器人、配置、会话、运行锁、模型目录、附件和默认工作目录。
+
+### 前置条件
+
+1. 确保 systemd 用户服务可用：
+   ```bash
+   systemctl --user status
+   ```
+
+2. 如果显示 "Failed to connect to bus"，需要启用用户级 systemd：
+   ```bash
+   sudo loginctl enable-linger $(whoami)
+   ```
+
+3. 确保 JAVA_HOME 环境变量已设置，或 java 命令在 PATH 中可用。
+
+### 部署命令
+
+与 macOS 相同：
+```bash
+./gradlew test installDist
+./bridgectl publish
+# 输出 r-<内容哈希>，以下命令使用该版本
+./bridgectl migrate-legacy --env prod --workspace "$PWD"
+./bridgectl start --env prod --release r-<内容哈希>
+./bridgectl status --env prod
+```
+
+### systemd 特有操作
+
+查看服务日志：
+```bash
+journalctl --user -u top.ntutn.agent.bridge.*.prod -f
+```
+
+查看服务状态：
+```bash
+systemctl --user status top.ntutn.agent.bridge.*.prod
+```
+
+重启服务：
+```bash
+systemctl --user restart top.ntutn.agent.bridge.*.prod
+```
+
+### 注意事项
+
+- systemd 用户级服务不需要 root 权限
+- 服务文件位于 `~/.config/systemd/user/`
+- 日志通过 `journalctl --user` 查看，而不是文件日志
+- 需要 `loginctl enable-linger` 确保用户登出后服务继续运行
+- Linux 下 PATH 默认值不包含 `/opt/homebrew/bin`
+
 `migrate-legacy` 仅用于首次迁移：核对旧实例锁已释放，备份旧配置与会话映射后迁移，不复制运行锁；保留原工作目录和模型状态目录以续接历史，不复制桌面端模型状态数据库。已初始化的环境拒绝覆盖。配置中的 JDK、Python 和后端可执行文件使用明确路径；守护不依赖交互式 shell 配置。
 
 后续升级：构建、发布得到新版本，再提交独立部署任务。提交立即返回部署编号，机器人可以在自己的任务中提交升级而不等待自身结束。
@@ -32,6 +87,26 @@
 升级默认停止接收新模型任务，排空已经接收的解析、排队、执行和发送任务；没有自动排空超时。排空中即时查询和 `/stop` 可用，`/cd` 拒绝，新消息提示稍后重试。新版以暂停接收方式启动，60 秒内完成连接检查并连续稳定 10 秒后激活；激活前失败自动恢复旧版。激活决定持久化后不再自动回滚，避免丢弃新版已经接收的任务；独立执行器中断后恢复事务。
 
 正式和调试 JVM 都从 `~/.agent-im-bridge-kt/releases/<版本>/lib` 的真实绝对路径启动。产物目录封存且校验内容哈希；`build` 只是构建中间产物，不能直接运行，也不能原地覆盖发布目录。`prune --env prod` 会保留最近三个版本、当前/上一版本和运行/部署引用的版本。
+
+### 首次交互初始化正式环境
+
+在本机前台终端执行，无需手写机器人配置：
+
+```bash
+./gradlew test installDist
+./bridgectl init --env prod
+```
+
+向导使用构建产物发布的不可变快照，选择平台并引导绑定独立机器人；飞书可在授权页面选择或创建应用。误选 dev 机器人会拒绝初始化。默认创建 `~/.agent-im-bridge-kt/environments/prod/workspace` 和 prod 独立模型目录，并按需引导 Codex 登录，不复制 dev 凭据或模型状态。可用 `--workspace /absolute/path` 指定与 dev 分离的工作目录，用 `--release r-版本` 指定已有快照。
+
+取消绑定不会留下配置；模型登录取消后，再运行同一命令会复用已保存配置并继续登录。已有配置不覆盖，损坏配置报错。新配置默认只读。初始化完成不会启动服务；使用向导输出的发布版本启动：
+
+```bash
+./bridgectl start --env prod --release r-实际版本号
+./bridgectl status --env prod
+```
+
+自动化仍可使用 `init --env prod --config <机器人配置.json> --workspace <独立目录>` 导入；该方式不触发交互登录。守护启动和重启也不会触发向导。
 
 ### 调试环境
 
