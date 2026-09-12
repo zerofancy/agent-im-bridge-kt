@@ -33,9 +33,14 @@ data class TelegramMessage(
     val entities: List<TelegramEntity> = emptyList()
 )
 
+data class TelegramGenerationStopped(val chat: TelegramChat, val draftId: Long)
+
+internal class TelegramApiException(val status: Int, val retryAfter: Long = 1) : IOException("Telegram API HTTP $status")
+
 data class TelegramUpdate(
     val updateId: Long,
-    val message: TelegramMessage? = null
+    val message: TelegramMessage? = null,
+    val stoppedGeneration: TelegramGenerationStopped? = null
 )
 
 class TelegramClient(private val botToken: String, apiRoot: String = "https://api.telegram.org") : AutoCloseable {
@@ -57,7 +62,11 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
         return try {
             val updateId = json["update_id"].asLong
             val message = json.getAsJsonObject("message")?.let { parseMessage(it) }
-            TelegramUpdate(updateId, message)
+            val stopped = json.getAsJsonObject("stopped_message_generation")?.let {
+                val chat = it.getAsJsonObject("chat")
+                TelegramGenerationStopped(TelegramChat(chat["id"].asLong, chat["type"].asString, null), it["draft_id"].asLong)
+            }
+            TelegramUpdate(updateId, message, stopped)
         } catch (e: Exception) {
             log.warn("解析 Telegram update 失败 type={}", e.javaClass.simpleName)
             null
@@ -75,7 +84,8 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
                 if (it.has("last_name")) it["last_name"].asString else null,
                 if (it.has("username")) it["username"].asString else null)
         }
-        val text = if (json.has("text")) json["text"].asString else null
+        val text = if (json.has("text")) json["text"].asString
+            else json.getAsJsonObject("rich_message")?.let { telegramRichPlainText(it) }
         val date = json["date"].asLong
         val replyTo = if (json.has("reply_to_message")) parseMessage(json.getAsJsonObject("reply_to_message")) else null
         val entities = json.getAsJsonArray("entities")?.map {
@@ -86,7 +96,7 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
         return TelegramMessage(messageId, chat, from, text, date, replyTo, entities)
     }
 
-    fun startPolling(onUpdate: (TelegramUpdate, TelegramUser) -> Unit) {
+    fun startPolling(onUpdate: suspend (TelegramUpdate, TelegramUser) -> Unit) {
         pollingJob = scope.launch {
             var bot: TelegramUser? = null
             while (isActive) {
@@ -108,6 +118,51 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
         }
     }
 
+    /** Independent from polling; cancellation and cleanup belong to this client. */
+    fun startMenuRegistration(backendName: String): Job = scope.launch {
+        registerMenu(backendName)
+    }
+
+    internal suspend fun registerMenu(backendName: String, retryDelayMillis: Long = 1_000,
+                                      timeoutMillis: Long = 10_000) {
+        repeat(3) { attempt ->
+            var retryMillis = retryDelayMillis
+            try {
+                withTimeout(timeoutMillis) {
+                    val commands = com.google.gson.JsonArray().apply {
+                        for (command in BridgeCommand.definitions(backendName)) add(JsonObject().apply {
+                            addProperty("command", command.name.removePrefix("/"))
+                            addProperty("description", if (command.arguments.isEmpty()) command.description
+                                else "${command.name} ${command.arguments} — ${command.description}")
+                        })
+                    }
+                    json(post("setMyCommands", JsonObject().apply {
+                        add("commands", commands)
+                        add("scope", JsonObject().apply { addProperty("type", "default") })
+                        addProperty("language_code", "")
+                    }))
+                    json(post("setChatMenuButton", JsonObject().apply {
+                        add("menu_button", JsonObject().apply { addProperty("type", "commands") })
+                    }))
+                }
+                log.info("Telegram 命令菜单已同步")
+                return
+            } catch (e: TimeoutCancellationException) {
+                currentCoroutineContext().ensureActive()
+                log.warn("Telegram 菜单同步超时 attempt={}", attempt + 1)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                log.warn("Telegram 菜单同步失败 attempt={} type={}", attempt + 1, e.javaClass.simpleName)
+                if (e is TelegramApiException) {
+                    if (e.status in 400..499 && e.status != 429) return
+                    if (e.status == 429) retryMillis = e.retryAfter * 1_000
+                }
+            }
+            if (attempt < 2) delay(retryMillis)
+        }
+    }
+
     fun stopPolling() {
         pollingJob?.cancel()
         pollingJob = null
@@ -124,7 +179,13 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
                 override fun onResponse(call: Call, response: Response) {
                     try {
                         val result = response.use {
-                            if (!it.isSuccessful) throw IOException("Telegram API HTTP ${it.code}")
+                            if (!it.isSuccessful) {
+                                val retryAfter = if (it.code == 429) try {
+                                    JsonParser.parseString(it.body?.string()).asJsonObject
+                                        .getAsJsonObject("parameters")?.get("retry_after")?.asLong ?: 1L
+                                } catch (_: RuntimeException) { 1L } else 1L
+                                throw TelegramApiException(it.code, retryAfter.coerceIn(1, 3600))
+                            }
                             consume(it)
                         }
                         continuation.resume(result)
@@ -148,7 +209,7 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
 
     suspend fun getUpdates(): List<TelegramUpdate> {
         val request = Request.Builder()
-            .url("$baseUrl/getUpdates?offset=$offset&timeout=60&allowed_updates=[\"message\"]").build()
+            .url("$baseUrl/getUpdates?offset=$offset&timeout=60&allowed_updates=[\"message\",\"stopped_message_generation\"]").build()
         val result = json(request).getAsJsonArray("result")
         val updates = result.mapNotNull { parseUpdate(it.asJsonObject) }
         if (result.size() > 0) offset = result.last().asJsonObject["update_id"].asLong + 1
@@ -173,6 +234,34 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
             })
         }
         return parseMessage(json(post("sendMessage", body)).getAsJsonObject("result"))
+    }
+
+    suspend fun sendRichDraft(chatId: String, draftId: Long, rich: JsonObject) = withTimeout(10_000) {
+        json(post("sendRichMessageDraft", JsonObject().apply {
+            addProperty("chat_id", chatId.toLong())
+            addProperty("draft_id", draftId)
+            add("rich_message", rich)
+            addProperty("can_stop", true)
+            addProperty("keep_on_stop", true)
+        }))
+        Unit
+    }
+
+    suspend fun sendRichMessage(route: ReplyRoute, rich: JsonObject): TelegramMessage = withTimeout(10_000) {
+        parseMessage(json(post("sendRichMessage", JsonObject().apply {
+            addProperty("chat_id", route.chatId)
+            add("rich_message", rich)
+            add("reply_parameters", JsonObject().apply { addProperty("message_id", route.messageId.toLong()) })
+        })).getAsJsonObject("result"))
+    }
+
+    suspend fun editMessage(route: ReplyRoute, rich: JsonObject?, text: String) = withTimeout(10_000) {
+        json(post("editMessageText", JsonObject().apply {
+            addProperty("chat_id", route.chatId)
+            addProperty("message_id", route.messageId.toLong())
+            if (rich == null) addProperty("text", text) else add("rich_message", rich)
+        }))
+        Unit
     }
 
     suspend fun sendChatAction(chatId: String, action: String = "typing") {

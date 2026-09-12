@@ -7,9 +7,16 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.updateAndGet
 import org.slf4j.LoggerFactory
 import java.io.IOException
+import kotlin.time.Duration.Companion.milliseconds
+
+/** A non-idempotent send may already have reached the server; do not replay it as plain text. */
+internal class ReplyDeliveryUncertain : IOException("Reply delivery could not be confirmed")
 
 /** Implementations own external I/O, safe retries and durable quote snapshots. */
 interface CardReplies {
+    val refreshIntervalMs: Long? get() = null
+    suspend fun refresh(card: CardReference) {}
+    suspend fun release(card: CardReference) {}
     suspend fun create(route: ReplyRoute): CardReference
     suspend fun progress(card: CardReference, progress: AgentProgress)
     suspend fun finish(card: CardReference, text: String, process: String, status: String): Boolean
@@ -82,6 +89,7 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
     private var card: CardReference? = null // Accessed by worker, then by close only after join.
     private var rendered = false
     private var finished = false
+    private var deliveryFailure: ReplyDeliveryUncertain? = null
     private val terminal = MutableStateFlow<Update?>(null)
     private data class Observed(val progress: AgentProgress = AgentProgress(), val stopping: Boolean = false)
     private val observed = MutableStateFlow(Observed())
@@ -92,7 +100,17 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
             card = api.create(route)
         } catch (e: CancellationException) { throw e }
         catch (_: IOException) { enabled = false; log.warn("流式卡片创建失败，最终回复将使用文本 messageId={}", route.messageId) }
-        for (initial in updates) {
+        while (true) {
+            val refresh = if (enabled && card != null) api.refreshIntervalMs else null
+            val received = if (refresh == null) updates.receiveCatching()
+                else withTimeoutOrNull(refresh) { updates.receiveCatching() }
+            if (received == null) {
+                try { api.refresh(card!!) }
+                catch (e: CancellationException) { throw e }
+                catch (_: IOException) { enabled = false }
+                continue
+            }
+            val initial = received.getOrNull() ?: break
             var update = terminal.value ?: initial
             if (update.final == null) {
                 delay(intervalMs)
@@ -110,6 +128,7 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
                     rendered = api.finish(ref, update.final, update.progress.process, update.status)
                     finished = true
                 } catch (e: CancellationException) { throw e }
+                catch (e: ReplyDeliveryUncertain) { finished = true; deliveryFailure = e }
                 catch (_: IOException) { log.warn("卡片收束失败，最终回复将使用文本 messageId={}", route.messageId) }
                 break
             }
@@ -139,24 +158,27 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
             log.warn("卡片收束等待超时 messageId={} timeoutMs={}", route.messageId, timeoutMs)
             worker.cancelAndJoin()
         }
+        deliveryFailure?.let { throw it }
         return rendered
     }
     suspend fun close(status: String, terminated: Boolean = false) {
         worker.cancelAndJoin()
         updates.close()
-        if (!finished) card?.let { ref ->
-            // A stop while waiting for card I/O cancels the worker; retain the latest answer and process here too.
-            val snapshot = terminal.value
-            val progress = observed.value.progress
-            val output = snapshot?.final ?: if (terminated) progress.answer else status
-            val finalStatus = if (terminated) "已终止" else snapshot?.status ?: status
-            val cleaned = withTimeoutOrNull(1500) {
-                try { api.finish(ref, output, snapshot?.progress?.process ?: progress.process, finalStatus) }
-                catch (e: CancellationException) { throw e }
-                catch (_: IOException) { log.warn("卡片清理失败 messageId={}", ref.messageId) }
-                true
+        try {
+            if (!finished) card?.let { ref ->
+                // A stop while waiting for card I/O cancels the worker; retain the latest answer and process here too.
+                val snapshot = terminal.value
+                val progress = observed.value.progress
+                val output = snapshot?.final ?: if (terminated) progress.answer else status
+                val finalStatus = if (terminated) "已终止" else snapshot?.status ?: status
+                val cleaned = withTimeoutOrNull(1500.milliseconds) {
+                    try { api.finish(ref, output, snapshot?.progress?.process ?: progress.process, finalStatus) }
+                    catch (e: CancellationException) { throw e }
+                    catch (_: IOException) { log.warn("卡片清理失败 messageId={}", ref.messageId) }
+                    true
+                }
+                if (cleaned == null) log.warn("卡片清理超时 messageId={} timeoutMs=1500", ref.messageId)
             }
-            if (cleaned == null) log.warn("卡片清理超时 messageId={} timeoutMs=1500", ref.messageId)
-        }
+        } finally { card?.let { api.release(it) } }
     }
 }

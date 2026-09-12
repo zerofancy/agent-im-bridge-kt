@@ -12,7 +12,8 @@ data class MessageInput(val chatType: String, val parentId: String? = null,
                         val sender: MessageSender = MessageSender(), val createTime: String? = null,
                         val contentType: String = "text", val commandText: String? = null, val malformedPost: Boolean = false,
                         val inputId: String? = null, val reactionTarget: QuotedMessage? = null,
-                        val quotedMessages: List<QuotedMessage> = emptyList(), val platformName: String = "飞书")
+                        val quotedMessages: List<QuotedMessage> = emptyList(), val platformName: String = "飞书",
+                        val stopRequestId: String? = null)
 data class QuotedMessage(val id: String, val chatId: String, val parentId: String?, val type: String,
                          val content: String, val deleted: Boolean = false,
                          val sender: MessageSender = MessageSender(), val createTime: String? = null,

@@ -71,6 +71,7 @@ fun createTelegramChannel(
         AttachmentStore(lifecycle?.environment?.attachments ?: Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)),
         config.appId, source)
 
+    val cards = TelegramCardReplies(client)
     lateinit var service: ChatService
     val reactions = TelegramTypingReactions(client) { route ->
         service.sendWithNotice(route) {
@@ -79,11 +80,15 @@ fun createTelegramChannel(
     }
     service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, reactions, lifecycle, initiallyHeld, null) { route, text ->
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, reactions, lifecycle, initiallyHeld, cards) { route, text ->
         client.sendReply(route, text)
     }
 
+    client.startMenuRegistration(backend.displayName)
     client.startPolling { update, bot ->
+        update.stoppedGeneration?.let { event ->
+            cards.stoppedInput(event, config.allowedUserId)?.let { service.receive(it) }
+        }
         FatalErrorHandler.boundary {
             extractTelegramPrompt(update, config.allowedUserId, bot)?.let { prompt ->
                 val message = update.message!!

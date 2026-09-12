@@ -225,6 +225,9 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             "/pwd" -> { { send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}") } }
             "/stop" -> {
                 val target = running[route.chatId]
+                // Native stop buttons must not cancel a newer request or its queue.
+                if (work.input?.stopRequestId != null && target?.handle?.requestId != work.input.stopRequestId)
+                    return suspend { }
                 if (target?.stage != Stage.STOPPING) stoppedIncoming[route.chatId] = incomingSequence.get()
                 val cancelled = if (target?.stage == Stage.STOPPING) emptyList() else queue.filter { it.route.chatId == route.chatId }
                 queue.removeAll(cancelled.toSet())
