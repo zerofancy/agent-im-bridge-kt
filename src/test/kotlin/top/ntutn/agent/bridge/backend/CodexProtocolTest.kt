@@ -55,7 +55,7 @@ open class CodexProtocolTest {
             assertFalse(requests(temp).any { it.string("method") == "turn/start" })
             handle.requestStop(); delay(100); assertFalse(task.isCompleted)
             release.complete(Unit)
-            assertEquals(AgentResult.Kind.STOPPED, assertIs<AgentResult.Failure>(task.await()).kind)
+            assertEquals(AgentResult.Kind.STOPPED, assertIs<AgentResult.Failure>(withTimeout(5000) { task.await() }).kind)
             assertEquals(AgentResult.Kind.STORAGE, assertIs<AgentResult.Failure>(r.run("x") { throw IllegalStateException() }).kind)
             assertFalse(requests(temp).any { it.string("method") == "turn/start" })
         }

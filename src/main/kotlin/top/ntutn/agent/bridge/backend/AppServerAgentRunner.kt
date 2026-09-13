@@ -80,6 +80,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                 return@coroutineScope failure(AgentResult.Kind.PROTOCOL)
             observed = id
             handle.threadId.complete(id)
+            // Finish persisting the binding before honoring stop; never submit a turn after that stop.
             try { onSession(id) } catch (e: CancellationException) { throw e }
             catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); return@coroutineScope failure(AgentResult.Kind.STORAGE) }
             if (handle.stopRequested) return@coroutineScope failure(AgentResult.Kind.STOPPED)
