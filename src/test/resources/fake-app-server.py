@@ -11,7 +11,10 @@ def result(req, value):
 def event(method, tid, turn_id, **values):
     send({'method': method, 'params': dict(threadId=tid, turnId=turn_id, **values)})
 def completed(tid, turn, status):
-    event('turn/completed', tid, turn, turn={'id':turn, 'status':status})
+    if os.environ.get('TRAECLI_HOME') == root+'/runtime' and status == 'completed':
+        send({'method':'thread/status/changed','params':{'threadId':tid,'status':{'type':'idle'}}})
+    else:
+        event('turn/completed', tid, turn, turn={'id':turn, 'status':status})
 def item(tid, turn, name, text, phase=None):
     event('item/completed', tid, turn, item={'id':name,'type':'agentMessage','text':text,'phase':phase})
 with open(root+'/environment','w') as f: json.dump({k:os.environ.get(k) for k in ('CODEX_HOME','TRAE_HOME','TRAECLI_HOME')},f)

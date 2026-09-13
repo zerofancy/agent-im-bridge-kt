@@ -121,7 +121,14 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                     catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("${displayName} 中断未获确认 requestId={}；继续等待轮次结束，可用本机 --stop 退出", handle.requestId) }
                 }
                 val messages = linkedMapOf<String, Pair<String?, String>>()
+                var sawAuthoritativeAgentMessage = false
                 val progress = AgentProgressReducer(id, turnId)
+                fun finishSuccessOrEmpty(): AgentResult {
+                    val final = messages.values.filter { it.first == "final_answer" }
+                    val answer = (if (final.isNotEmpty()) final.joinToString("\n\n") { it.second }
+                        else messages.values.lastOrNull { it.first == null }?.second.orEmpty()).trim()
+                    return if (answer.isEmpty()) failure(AgentResult.Kind.EMPTY) else AgentResult.Success(answer, id)
+                }
                 for (event in events) {
                     progress.accept(event)?.let(handle.onProgress)
                     val p = event.getAsJsonObject("params") ?: continue
@@ -131,6 +138,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                             if (item.string("type") == "agentMessage") {
                                 val itemId = item.string("id") ?: continue
                                 messages[itemId] = item.string("phase") to item.string("text").orEmpty()
+                                if (item.string("phase") == "final_answer") sawAuthoritativeAgentMessage = true
                             }
                         }
                         "turn/completed" -> {
@@ -140,10 +148,14 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                             log.info("${displayName} 轮次结束 requestId={} sessionId={} turnId={} status={}", handle.requestId, id, turnId, status)
                             if (handle.stopRequested || status == "interrupted") return@coroutineScope failure(AgentResult.Kind.STOPPED)
                             if (status != "completed") return@coroutineScope failure(AgentResult.Kind.EXECUTION)
-                            val final = messages.values.filter { it.first == "final_answer" }
-                            val answer = (if (final.isNotEmpty()) final.joinToString("\n\n") { it.second }
-                                else messages.values.lastOrNull { it.first == null }?.second.orEmpty()).trim()
-                            return@coroutineScope if (answer.isEmpty()) failure(AgentResult.Kind.EMPTY) else AgentResult.Success(answer, id)
+                            return@coroutineScope finishSuccessOrEmpty()
+                        }
+                        "thread/status/changed" -> if (backend.id == BackendId.TRAEX && p.string("threadId") == id) {
+                            val status = p.getAsJsonObject("status")?.string("type") ?: continue
+                            if (status != "idle" || !sawAuthoritativeAgentMessage) continue
+                            log.info("${displayName} 线程空闲收尾 requestId={} sessionId={} turnId={} status={}", handle.requestId, id, turnId, status)
+                            if (handle.stopRequested) return@coroutineScope failure(AgentResult.Kind.STOPPED)
+                            return@coroutineScope finishSuccessOrEmpty()
                         }
                     }
                 }
@@ -165,7 +177,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
         while (true) {
             try {
                 server.request("turn/interrupt", json("threadId" to threadId, "turnId" to turnId))
-                return // Accepted is not terminal; execute continues listening for turn/completed.
+                return // Accepted is not terminal; execute continues listening for the backend terminal event.
             } catch (error: RpcFailure) {
                 val elapsedMs = (System.nanoTime() - started) / 1_000_000
                 if (!backend.isInactiveTurn(error) || elapsedMs + retryDelay >= 30_000) throw error

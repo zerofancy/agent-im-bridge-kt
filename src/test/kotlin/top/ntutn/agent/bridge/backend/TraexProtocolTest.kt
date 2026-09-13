@@ -84,6 +84,13 @@ class TraexProtocolTest : CodexProtocolTest() {
         }
     }
 
+    @Test fun `thread idle after final answer completes traex turn without turn completed event`(): Unit = runBlocking {
+        runner().use { r ->
+            assertEquals("hello", assertIs<AgentResult.Success>(r.run("hello")).text)
+            assertTrue(requests(temp).any { it.string("method") == "turn/start" })
+        }
+    }
+
     @Test fun `status help and failure identify configured backend`(): Unit = runBlocking {
         val messages = mutableListOf<String>()
         ChatService(runner(), SessionStore(temp.resolve("sessions.json")),
