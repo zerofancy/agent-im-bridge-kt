@@ -112,6 +112,49 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual([['/fake/codex', 'login', 'status'], ['/fake/codex', 'login']], seen)
         self.assertTrue((self.m.directory / 'config.json').exists())
 
+    def test_traex_login_uses_created_isolated_homes_and_verifies_models(self):
+        from types import SimpleNamespace
+        settings = {'traexBinary': '/fake/traex'}
+        b.atomic(self.m.directory / 'config.json', {'appId': 'dev-bot', 'backend': 'traex'})
+        seen = []
+        def login(argv, **kwargs):
+            self.assertEqual(str(self.m.directory / 'backend/trae'), kwargs['env']['TRAE_HOME'])
+            self.assertEqual(str(self.m.directory / 'backend/trae/cli'), kwargs['env']['TRAECLI_HOME'])
+            seen.append(argv)
+            if argv[-2:] == ['login', 'status']: return SimpleNamespace(returncode=1)
+            return SimpleNamespace(returncode=0)
+        with patch.object(self.m, 'validate', return_value=settings), patch('sys.stdin.isatty', return_value=True), \
+                patch.object(b.subprocess, 'run', side_effect=login):
+            self.m.login_model()
+        self.assertEqual([['/fake/traex', 'login', 'status'], ['/fake/traex', 'login'], ['/fake/traex', 'debug', 'models']], seen)
+
+    def test_traex_login_failure_resumes_on_next_run(self):
+        from types import SimpleNamespace
+        settings = {'traexBinary': '/fake/traex'}
+        b.atomic(self.m.directory / 'config.json', {'appId': 'dev-bot', 'backend': 'traex'})
+        seen = []
+        def login(argv, **kwargs):
+            seen.append(argv)
+            return SimpleNamespace(returncode=1 if argv[-1] == 'login' else 1)
+        with patch.object(self.m, 'validate', return_value=settings), patch('sys.stdin.isatty', return_value=True), \
+                patch.object(b.subprocess, 'run', side_effect=login):
+            with self.assertRaisesRegex(RuntimeError, 'Traex 登录未完成'):
+                self.m.login_model()
+        self.assertEqual([['/fake/traex', 'login', 'status'], ['/fake/traex', 'login']], seen)
+
+    def test_traex_login_requires_models_after_successful_login(self):
+        from types import SimpleNamespace
+        settings = {'traexBinary': '/fake/traex'}
+        b.atomic(self.m.directory / 'config.json', {'appId': 'dev-bot', 'backend': 'traex'})
+        def login(argv, **kwargs):
+            if argv[-2:] == ['login', 'status']: return SimpleNamespace(returncode=1)
+            if argv[-2:] == ['debug', 'models']: return SimpleNamespace(returncode=1)
+            return SimpleNamespace(returncode=0)
+        with patch.object(self.m, 'validate', return_value=settings), patch('sys.stdin.isatty', return_value=True), \
+                patch.object(b.subprocess, 'run', side_effect=login):
+            with self.assertRaisesRegex(RuntimeError, '无法读取可用模型'):
+                self.m.login_model()
+
     def test_init_creates_missing_workspace_and_preserves_existing_contents(self):
         workspace = self.root / 'new-parent' / 'workspace'
         config = self.root / 'bot.json'

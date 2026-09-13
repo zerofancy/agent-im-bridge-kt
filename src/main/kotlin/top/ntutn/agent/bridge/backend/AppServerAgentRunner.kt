@@ -73,7 +73,11 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
             if (handle.stopRequested) return@coroutineScope failure(AgentResult.Kind.STOPPED)
             val thread = try { server.request(if (sessionId == null) "thread/start" else "thread/resume", params) }
             catch (e: RpcFailure) {
-                return@coroutineScope failure(if (sessionId != null && backend.isMissingSession(e, sessionId)) AgentResult.Kind.SESSION_MISSING else AgentResult.Kind.PROTOCOL)
+                return@coroutineScope failure(
+                    if (sessionId != null && backend.isMissingSession(e, sessionId)) AgentResult.Kind.SESSION_MISSING
+                    else if (backend.id == BackendId.TRAEX) AgentResult.Kind.EXECUTION
+                    else AgentResult.Kind.PROTOCOL
+                )
             }
             val id = thread.getAsJsonObject("thread")?.string("id")
             if (id == null || !validSessionId(id) || (sessionId != null && id != sessionId))

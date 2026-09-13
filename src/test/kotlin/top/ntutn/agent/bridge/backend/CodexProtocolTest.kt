@@ -12,6 +12,7 @@ import top.ntutn.agent.bridge.storage.SessionStore
 
 open class CodexProtocolTest {
     protected open val backendId = BackendId.CODEX
+    protected open val nonMissingThreadStartFailureKind = AgentResult.Kind.PROTOCOL
     @TempDir lateinit var temp: Path
     private val id = "11111111-1111-4111-8111-111111111111"
     protected fun runner() = AppServerAgentRunner(BackendSpec(backendId, fakeAppServer(temp).toString(), temp.resolve("runtime"), temp.resolve("shared")))
@@ -42,7 +43,7 @@ open class CodexProtocolTest {
     @Test fun `only exact pre-turn missing RPC allows fallback`(): Unit = runBlocking {
         runner().use {
             assertEquals(AgentResult.Kind.SESSION_MISSING, assertIs<AgentResult.Failure>(it.run("x", "00000000-0000-4000-8000-000000000000")).kind)
-            assertEquals(AgentResult.Kind.PROTOCOL, assertIs<AgentResult.Failure>(it.run("x", "00000000-0000-4000-8000-000000000001")).kind)
+            assertEquals(nonMissingThreadStartFailureKind, assertIs<AgentResult.Failure>(it.run("x", "00000000-0000-4000-8000-000000000001")).kind)
             assertFalse(requests(temp).any { it.string("method") == "turn/start" })
         }
     }

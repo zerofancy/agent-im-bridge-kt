@@ -11,6 +11,7 @@ import top.ntutn.agent.bridge.storage.SessionStore
 // Run the same interruption, persistence, sandbox and transport contract against both backends.
 class TraexProtocolTest : CodexProtocolTest() {
     override val backendId = BackendId.TRAEX
+    override val nonMissingThreadStartFailureKind = AgentResult.Kind.EXECUTION
 
     private suspend fun waitInterrupts(count: Int) = withTimeout(5_000) {
         while (requests(temp).count { it.string("method") == "turn/interrupt" } < count) delay(10)
@@ -108,6 +109,7 @@ class TraexProtocolTest : CodexProtocolTest() {
         assertTrue(messages.any { it.contains("当前后端：Traex") })
         assertTrue(messages.any { it.contains("请求 Traex 中断") })
         assertTrue(messages.any { it.contains("Traex 执行失败") })
+        assertFalse(messages.any { it.contains("Traex 会话协议异常") })
         assertFalse(messages.any { it.contains("Codex") })
     }
 }

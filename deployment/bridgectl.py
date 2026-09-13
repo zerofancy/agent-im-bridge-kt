@@ -591,6 +591,22 @@ class Manager:
             if subprocess.run([settings.get('opencodeBinary', 'opencode'), 'auth', 'login'], env=env, cwd=home).returncode:
                 raise RuntimeError('OpenCode 登录未完成，请在前台终端重试')
             return
+        if backend == 'traex':
+            env = os.environ.copy()
+            env.update(TRAE_HOME=str(Path(settings.get('traeHome', self.directory / 'backend/trae'))),
+                       TRAECLI_HOME=str(Path(settings.get('traeCliHome', self.directory / 'backend/trae/cli'))),
+                       TMPDIR=str(self.directory / 'tmp'), TMP=str(self.directory / 'tmp'), TEMP=str(self.directory / 'tmp'))
+            binary = settings.get('traexBinary', 'traex')
+            status = subprocess.run([binary, 'login', 'status'], env=env, capture_output=True, timeout=25)
+            if status.returncode == 0: return
+            print(f'请登录 {self.env} 的独立 Traex 环境（不会复制或修改其他环境登录状态）。', flush=True)
+            if subprocess.run([binary, 'login'], env=env).returncode:
+                command = './bridgectl dev' if self.env == 'dev' else f'./bridgectl init --env {self.env}'
+                raise RuntimeError(f'Traex 登录未完成；下次运行 {command} 将继续登录')
+            models = subprocess.run([binary, 'debug', 'models'], env=env, capture_output=True, timeout=25)
+            if models.returncode != 0:
+                raise RuntimeError('Traex 登录后仍无法读取可用模型，请检查独立环境登录状态和模型配置')
+            return
         if backend != 'codex': return
         env = os.environ.copy()
         env.update(CODEX_HOME=str(Path(settings.get('codexHome', self.directory / 'backend/codex'))),
