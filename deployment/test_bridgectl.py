@@ -63,6 +63,29 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(before, prod.read_bytes())
         self.assertEqual('dev-bot', b.read(self.m.directory / 'config.json')['appId'])
 
+    def test_interactive_dev_preserves_selected_backend_in_saved_config(self):
+        from types import SimpleNamespace
+        args = SimpleNamespace(workspace=None, release='snapshot', distribution=self.dist, java='/usr/bin/java')
+        prod = self.root / 'environments/prod/config.json'
+        b.atomic(prod, {'appId': 'prod-bot'})
+        def authorize(argv, **kwargs):
+            b.atomic(Path(argv[4]), {
+                'appId': 'dev-bot',
+                'appSecret': 'secret',
+                'allowedUserId': 'ou_owner',
+                'tenant': 'feishu',
+                'backend': 'traex',
+                'sandboxMode': 'read-only',
+            })
+            return SimpleNamespace(returncode=0)
+        with patch('sys.stdin.isatty', return_value=True), patch.object(self.m, 'verify', return_value=self.dist), \
+                patch.object(b.subprocess, 'run', side_effect=authorize), \
+                patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "11"', stdout='')):
+            self.m.setup_dev(args)
+        saved = b.read(self.m.directory / 'config.json')
+        self.assertEqual('traex', saved['backend'])
+        self.assertEqual('read-only', saved['sandboxMode'])
+
     def test_cancelled_registration_leaves_dev_unconfigured(self):
         from types import SimpleNamespace
         args = SimpleNamespace(workspace=None, release='snapshot', distribution=self.dist, java='/usr/bin/java')

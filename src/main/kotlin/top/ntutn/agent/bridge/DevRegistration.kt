@@ -19,6 +19,10 @@ object DevRegistration {
             require(!Files.exists(destination))
             val console = System.console()
             val platform = console?.readLine("选择平台 (feishu/telegram，默认 feishu): ")?.trim()?.takeIf { it.isNotBlank() } ?: "feishu"
+            val backend = parseBackendSelection(console?.readLine("选择后端 (codex/traex/opencode，默认 codex): "))
+            if (backend.id == BackendId.OPENCODE) {
+                println("OpenCode 仅支持 danger-full-access，已为该环境设置完整访问权限。")
+            }
             val config = when (platform) {
                 "feishu" -> register(false)
                 "telegram" -> registerTelegram()
@@ -32,7 +36,7 @@ object DevRegistration {
                 System.err.println("选中了另一环境的机器人；请重新运行初始化，选择或创建独立机器人。另一环境未改动。")
                 exitProcess(1)
             }
-            ConfigStore(destination).save(config)
+            ConfigStore(destination).save(config.withBackend(backend))
             // The short-lived setup process must not wait for SDK connection-pool threads.
             exitProcess(0)
         } catch (e: Exception) {
@@ -42,6 +46,20 @@ object DevRegistration {
         }
     }
 }
+
+internal data class BackendSelection(val id: BackendId, val sandboxMode: SandboxMode)
+
+internal fun parseBackendSelection(input: String?): BackendSelection {
+    val value = input?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: BackendId.CODEX.configValue
+    return when (BackendId.parse(value)) {
+        BackendId.CODEX -> BackendSelection(BackendId.CODEX, SandboxMode.READ_ONLY)
+        BackendId.TRAEX -> BackendSelection(BackendId.TRAEX, SandboxMode.READ_ONLY)
+        BackendId.OPENCODE -> BackendSelection(BackendId.OPENCODE, SandboxMode.FULL_ACCESS)
+    }
+}
+
+internal fun BridgeConfig.withBackend(selection: BackendSelection) =
+    BridgeConfig(appId, appSecret, allowedUserId, tenant, selection.sandboxMode.cliValue, selection.id.configValue)
 
 fun registerTelegram(): BridgeConfig {
     val console = System.console()
