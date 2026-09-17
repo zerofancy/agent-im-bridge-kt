@@ -13,6 +13,8 @@ class ReplyContextTest {
     @TempDir lateinit var temp: Path
     private val route = ReplyRoute("chat", "current")
     private fun text(id: String, parent: String? = null) = QuotedMessage(id, "chat", parent, "text", """{"text":"内容$id\\n第二行"}""")
+    private fun interactive(id: String, parent: String? = null, content: String) =
+        QuotedMessage(id, "chat", parent, "interactive", """{"content":${content.quoteJson()}}""")
     private class Source(val messages: Map<String, QuotedMessage>) : MessageSource {
         val downloads = mutableListOf<String>()
         val reads = mutableListOf<String>()
@@ -25,6 +27,18 @@ class ReplyContextTest {
         }
     }
     private fun context(source: MessageSource) = ReplyContext(source, AttachmentStore(temp.resolve("files")))
+    private fun String.quoteJson() = buildString {
+        append('"')
+        for (ch in this@quoteJson) when (ch) {
+            '\\' -> append("\\\\")
+            '"' -> append("\\\"")
+            '\n' -> append("\\n")
+            '\r' -> append("\\r")
+            '\t' -> append("\\t")
+            else -> append(ch)
+        }
+        append('"')
+    }
 
     @Test fun `quoted forwards expand nested history and download each owning message resource`(): Unit = runBlocking {
         val file = QuotedMessage("file-child", "original-chat", null, "file",
@@ -52,6 +66,42 @@ class ReplyContextTest {
             val paths = Files.walk(temp.resolve("files")).use { stream -> stream.filter { Files.isRegularFile(it) }.collect(java.util.stream.Collectors.toList()) }
             assertTrue(paths.any { Files.readString(it) == "data" })
         } finally { result.release() }
+    }
+
+    @Test fun `interactive quoted messages forward visible card text instead of unsupported marker`(): Unit = runBlocking {
+        val card = """
+            {
+              "type": "template",
+              "data": {
+                "template_id": "ctp_x",
+                "template_variable": {
+                  "title": "发布提醒",
+                  "summary": { "content": "请处理告警" },
+                  "button": { "text": "查看详情" }
+                }
+              }
+            }
+        """.trimIndent()
+        val source = Source(mapOf("card" to interactive("card", content = card)))
+        val prepared = context(source).prepare(route, "帮我看一下", MessageInput("p2p", "card"), emptySet())
+        assertContains(prepared.text, "【卡片消息】")
+        assertContains(prepared.text, "发布提醒")
+        assertContains(prepared.text, "请处理告警")
+        assertContains(prepared.text, "查看详情")
+        assertFalse(prepared.text.contains("不支持的历史消息类型：interactive"))
+    }
+
+    @Test fun `interactive messages inside merged forward are expanded into readable text`(): Unit = runBlocking {
+        val card = """{"header":{"title":{"tag":"plain_text","content":"审批通知"}},"body":{"elements":[{"tag":"markdown","content":"审批已通过"}]}}"""
+        val child = interactive("card-child", content = card).copy(sender = MessageSender("card-app", type = "app", name = "机器人"))
+        val forward = QuotedMessage("forward", "chat", null, "merge_forward", "", forwarded = listOf(child))
+        val source = Source(mapOf("forward" to forward))
+        val prepared = context(source).prepare(route, "转发里有什么", MessageInput("p2p", "forward"), emptySet())
+        assertContains(prepared.text, "【转发消息 1】")
+        assertContains(prepared.text, "【卡片消息】")
+        assertContains(prepared.text, "审批通知")
+        assertContains(prepared.text, "审批已通过")
+        assertFalse(prepared.text.contains("不支持的历史消息类型：interactive"))
     }
 
     @Test fun `cancelling forwarded attachment preparation removes partial download`(): Unit = runBlocking {

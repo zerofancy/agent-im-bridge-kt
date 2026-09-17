@@ -159,10 +159,53 @@ class ReplyContext(private val source: MessageSource, private val files: Attachm
                     body.string("image_key")?.takeIf { it.isNotBlank() }?.let { append("\n" + download(owner, it, "image", null)) }
                 }
                 "post" -> replacePostImages(message.content) { key -> download(owner, key, "image", null) }
+                "interactive" -> renderInteractive(body)
                 else -> "【不支持的历史消息类型：${message.type}】"
             }
         } catch (e: CancellationException) { throw e }
         catch (_: Exception) { return "【历史消息内容无法解析】" }
+    }
+
+    private fun renderInteractive(body: com.google.gson.JsonObject): String {
+        val raw = body.string("text")?.takeIf { it.isNotBlank() }
+            ?: body.string("content")?.takeIf { it.isNotBlank() }
+            ?: return "【卡片消息】"
+        val card = runCatching { JsonParser.parseString(raw) }.getOrNull()
+        if (card == null) return "【卡片消息】\n$raw"
+        val lines = linkedSetOf<String>()
+        fun walk(node: com.google.gson.JsonElement?) {
+            when {
+                node == null || node.isJsonNull -> Unit
+                node.isJsonArray -> node.asJsonArray.forEach(::walk)
+                node.isJsonPrimitive -> if (node.asJsonPrimitive.isString) {
+                    val text = node.asString.normalizeCardText()
+                    if (text.isNotEmpty()) lines += text
+                }
+                node.isJsonObject -> {
+                    val obj = node.asJsonObject
+                    obj.entrySet().forEach { (key, value) ->
+                        if (key in CARD_TEXT_KEYS) walk(value)
+                        else if (value.isJsonObject || value.isJsonArray) walk(value)
+                    }
+                }
+            }
+        }
+        walk(card)
+        return if (lines.isEmpty()) "【卡片消息】" else "【卡片消息】\n" + lines.joinToString("\n")
+    }
+
+    private fun String.normalizeCardText(): String {
+        val cleaned = replace("\r\n", "\n").trim()
+        if (cleaned.isEmpty()) return ""
+        if (cleaned.startsWith("{") || cleaned.startsWith("[")) return ""
+        if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) return ""
+        return cleaned
+    }
+
+    private companion object {
+        val CARD_TEXT_KEYS = setOf(
+            "content", "text", "title", "name", "label", "placeholder", "hint", "value"
+        )
     }
 
 }
