@@ -325,6 +325,14 @@ class Manager:
             same_root = False
         return bool(same_root and os.environ.get('BRIDGE_ENV') == self.env and release == self.current())
 
+    def drained(self, job, status):
+        if status.get('pending', 0) == 0:
+            return True
+        if not job.get('selfInitiated'):
+            return False
+        return (status.get('queued', 0) == 0 and status.get('incoming', 0) == 0
+                and status.get('running', 0) <= 1 and status.get('pending', 0) <= 2)
+
     def args(self, release, command, *extra):
         settings = self.validate()
         return [settings['python'], str(self.release(release) / 'libexec/bridgectl.py'), command,
@@ -410,7 +418,7 @@ class Manager:
                             s = self.rpc('drain')
                             # Environment provenance cannot identify the remaining request.
                             # The initiating chat must return its job ID and finish replying too.
-                            if s['pending'] == 0: break
+                            if self.drained(job, s): break
                         except (OSError, RuntimeError, ValueError):
                             # A crash loses the in-memory queue; the current guarded release may be restarting.
                             previous = read(self.directory / 'lifecycle/current.json', {})

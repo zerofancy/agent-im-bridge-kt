@@ -399,35 +399,55 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn(('stop', 'upgrade'), actions)
         self.assertNotIn(('rpc', 'drain'), actions)
 
-    def test_deploy_waits_for_all_requests_regardless_of_origin(self):
-        for self_initiated in (False, True):
-            with self.subTest(self_initiated=self_initiated):
-                job, actions = self.fake()
-                job['selfInitiated'] = self_initiated
-                b.atomic(self.m.job_path(job['id']), job)
-                # The initiator finishes first, leaving another chat running.
-                # Even after model execution ends, its reply is still outstanding.
-                statuses = iter([
-                    {'pending': 2, 'running': 2, 'queued': 0, 'incoming': 0},
-                    {'pending': 1, 'running': 1, 'queued': 0, 'incoming': 0},
-                    {'pending': 1, 'running': 0, 'queued': 0, 'incoming': 0},
-                    {'pending': 0, 'running': 0, 'queued': 0, 'incoming': 0},
-                ])
+    def test_self_initiated_deploy_can_proceed_when_only_request_left_is_itself(self):
+        job, actions = self.fake()
+        job['selfInitiated'] = True
+        b.atomic(self.m.job_path(job['id']), job)
+        statuses = iter([
+            {'pending': 3, 'running': 2, 'queued': 0, 'incoming': 0},
+            {'pending': 2, 'running': 1, 'queued': 0, 'incoming': 0},
+        ])
 
-                def rpc(action='status'):
-                    actions.append(('rpc', action))
-                    if action == 'drain':
-                        self.assertNotIn(('stop', 'upgrade'), actions)
-                        return next(statuses)
-                    return {}
+        def rpc(action='status'):
+            actions.append(('rpc', action))
+            if action == 'drain':
+                self.assertNotIn(('stop', 'upgrade'), actions)
+                return next(statuses)
+            return {}
 
-                self.m.rpc = rpc
-                with patch.object(b.time, 'sleep', return_value=None):
-                    self.m.perform(job['id'])
-                final = b.read(self.m.job_path(job['id']))
-                self.assertEqual('succeeded', final['state'])
-                self.assertEqual(4, actions.count(('rpc', 'drain')))
-                self.assertIn(('stop', 'upgrade'), actions)
+        self.m.rpc = rpc
+        with patch.object(b.time, 'sleep', return_value=None):
+            self.m.perform(job['id'])
+        final = b.read(self.m.job_path(job['id']))
+        self.assertEqual('succeeded', final['state'])
+        self.assertEqual(2, actions.count(('rpc', 'drain')))
+        self.assertIn(('stop', 'upgrade'), actions)
+
+    def test_non_self_initiated_deploy_still_waits_for_real_pending_work(self):
+        job, actions = self.fake()
+        job['selfInitiated'] = False
+        b.atomic(self.m.job_path(job['id']), job)
+        statuses = iter([
+            {'pending': 3, 'running': 2, 'queued': 0, 'incoming': 0},
+            {'pending': 2, 'running': 1, 'queued': 0, 'incoming': 0},
+            {'pending': 1, 'running': 0, 'queued': 0, 'incoming': 0},
+            {'pending': 0, 'running': 0, 'queued': 0, 'incoming': 0},
+        ])
+
+        def rpc(action='status'):
+            actions.append(('rpc', action))
+            if action == 'drain':
+                self.assertNotIn(('stop', 'upgrade'), actions)
+                return next(statuses)
+            return {}
+
+        self.m.rpc = rpc
+        with patch.object(b.time, 'sleep', return_value=None):
+            self.m.perform(job['id'])
+        final = b.read(self.m.job_path(job['id']))
+        self.assertEqual('succeeded', final['state'])
+        self.assertEqual(4, actions.count(('rpc', 'drain')))
+        self.assertIn(('stop', 'upgrade'), actions)
 
 
 class ServiceManagerTests(unittest.TestCase):
