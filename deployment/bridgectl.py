@@ -316,6 +316,15 @@ class Manager:
             if j['state'] not in TERMINAL: return j
         return None
 
+    def self_initiated(self):
+        root = os.environ.get('BRIDGE_ROOT')
+        release = os.environ.get('BRIDGE_RELEASE')
+        try:
+            same_root = root and Path(root).expanduser().resolve() == self.root
+        except Exception:
+            same_root = False
+        return bool(same_root and os.environ.get('BRIDGE_ENV') == self.env and release == self.current())
+
     def args(self, release, command, *extra):
         settings = self.validate()
         return [settings['python'], str(self.release(release) / 'libexec/bridgectl.py'), command,
@@ -370,7 +379,7 @@ class Manager:
         with locked(self.deploydir / 'deploy.lock'):
             if self.active_job(): raise RuntimeError('已有部署事务，请查询或取消')
             job = {'id': str(uuid.uuid4()), 'env': self.env, 'old': self.current(), 'target': target,
-                   'state': 'prepared', 'createdAt': time.time()}
+                   'state': 'prepared', 'createdAt': time.time(), 'selfInitiated': self.self_initiated()}
             atomic(self.deploydir / 'jobs' / (job['id'] + '.json'), job)
             label = self.label + '.deploy.' + job['id']
             args = self.args(target, '_deploy', '--job', job['id'])
@@ -399,6 +408,8 @@ class Manager:
                         if path.with_suffix('.force').exists(): break
                         try:
                             s = self.rpc('drain')
+                            # Environment provenance cannot identify the remaining request.
+                            # The initiating chat must return its job ID and finish replying too.
                             if s['pending'] == 0: break
                         except (OSError, RuntimeError, ValueError):
                             # A crash loses the in-memory queue; the current guarded release may be restarting.
