@@ -120,7 +120,10 @@ open class CodexProtocolTest {
             val task=async { r.run("broken") };waitTurns(1);delay(200)
             assertTrue(task.isActive)
             assertIs<AgentResult.Failure>(r.run("next"))
-            withContext(Dispatchers.IO) { r.close() }; task.join()
+            withTimeout(10_000) {
+                withContext(Dispatchers.IO) { r.close() }
+                task.join()
+            }
         } finally { r.close() }
     }
     @Test fun `stop before start response waits for turn id and interrupts once`(): Unit = runBlocking {

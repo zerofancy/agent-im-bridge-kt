@@ -71,8 +71,10 @@ class TraexProtocolTest : CodexProtocolTest() {
             handle.requestStop(); delay(2_100)
             assertEquals(count, requests(temp).count { it.string("method") == "turn/interrupt" })
             assertTrue(task.isActive)
-            withContext(Dispatchers.IO) { r.close() }
-            task.join()
+            withTimeout(10_000) {
+                withContext(Dispatchers.IO) { r.close() }
+                task.join()
+            }
         } finally { r.close() }
     }
 

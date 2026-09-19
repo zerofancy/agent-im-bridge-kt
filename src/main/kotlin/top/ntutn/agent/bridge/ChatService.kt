@@ -479,18 +479,22 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
     override fun close() {
         // AutoCloseable is the synchronous application boundary; never call from our own scope.
         runBlocking {
-            val cancelled = mutex.withLock {
+            val (queued, runningNow) = mutex.withLock {
                 if (closed) return@runBlocking
                 closed = true
-                (queue + running.values).also { queue.clear() }
+                val queued = queue.toList()
+                val runningNow = running.values.toList()
+                queue.clear()
+                queued to runningNow
             }
-            cancelled.forEach { it.handle.requestStop(); it.task?.cancel() }
+            queued.forEach { it.handle.requestStop(); it.task?.cancel() }
+            runningNow.forEach { it.handle.requestStop() }
             try {
                 withContext(Dispatchers.IO) { runner.close() }
             } finally {
                 job.cancel()
                 job.join()
-                cancelled.forEach { it.finish() }
+                (queued + runningNow).forEach { it.finish() }
             }
         }
     }

@@ -196,12 +196,11 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
             active.keys.forEach { it.requestStop() }
             active.values.toList()
         }
-        try { withTimeoutOrNull(5000) { tasks.joinAll() } }
-        finally {
-            scope.cancel()
-            try { connectionMutex.withLock { client?.close(); client = null } }
-            finally { scope.cancel(); scope.coroutineContext.job.join() }
-        }
+        val current = connectionMutex.withLock { client.also { client = null } }
+        current?.close()
+        withTimeoutOrNull(5000) { tasks.joinAll() }
+        scope.cancel()
+        scope.coroutineContext.job.join()
     }
 }
 

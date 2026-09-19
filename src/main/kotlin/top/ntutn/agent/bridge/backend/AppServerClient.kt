@@ -9,6 +9,8 @@ import kotlinx.coroutines.future.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
+import java.io.Closeable
+import java.util.concurrent.TimeUnit
 
 internal class RpcFailure(val code: Int?, val diagnostic: String?) : Exception("Agent RPC rejected")
 internal class TransportFailure : Exception("Agent app-server connection unavailable; restart Bridge")
@@ -69,11 +71,15 @@ internal class AppServerClient private constructor(val process: Process, private
         }
         scope.launch {
             process.onExit().await()
-            breakTransport()
-            state.withLock { listeners.values.forEach { it.close(TransportFailure()) }; listeners.clear() }
-            exited.complete(Unit)
+            finishExit()
             log.info("${displayName} app-server 已退出 pid={} exitCode={}", process.pid(), process.exitValue())
         }
+    }
+
+    private suspend fun finishExit() {
+        breakTransport()
+        state.withLock { listeners.values.forEach { it.close(TransportFailure()) }; listeners.clear() }
+        exited.complete(Unit)
     }
 
     private suspend fun breakTransport() {
@@ -125,12 +131,22 @@ internal class AppServerClient private constructor(val process: Process, private
 
     suspend fun close() = withContext(NonCancellable + Dispatchers.IO) {
         val handles = process.toHandle().descendants().use { it.toArray().map { h -> h as ProcessHandle } }.reversed() + process.toHandle()
+        closeQuietly(writer)
+        closeQuietly(process.outputStream)
+        closeQuietly(process.inputStream)
+        closeQuietly(process.errorStream)
         handles.filter { it.isAlive }.forEach { it.destroy() }
-        withTimeoutOrNull(1000) { while (handles.any { it.isAlive }) delay(25) }
-        handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
-        process.onExit().await()
-        exited.await()
+        if (!process.waitFor(1, TimeUnit.SECONDS)) {
+            handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                log.warn("${displayName} app-server 关闭超时 pid={}；测试或关闭流程继续执行", process.pid())
+            }
+        }
+        finishExit()
         scope.cancel()
-        scope.coroutineContext.job.join()
+    }
+
+    private fun closeQuietly(closeable: Closeable?) {
+        try { closeable?.close() } catch (_: Exception) { }
     }
 }

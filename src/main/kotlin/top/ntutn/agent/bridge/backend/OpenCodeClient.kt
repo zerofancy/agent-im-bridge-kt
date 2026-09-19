@@ -10,6 +10,7 @@ import kotlinx.coroutines.future.await
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.Closeable
 import java.io.IOException
 import java.nio.file.Files
 import java.util.UUID
@@ -81,9 +82,13 @@ internal class OpenCodeClient private constructor(val process: Process, private 
         }
         scope.launch {
             process.onExit().await()
-            endpoint.completeExceptionally(IOException("OpenCode exited before startup"))
-            exited.complete(Unit)
+            finishExit()
         }
+    }
+
+    private fun finishExit() {
+        endpoint.completeExceptionally(IOException("OpenCode exited before startup"))
+        exited.complete(Unit)
     }
 
     suspend fun initialize() {
@@ -161,16 +166,24 @@ internal class OpenCodeClient private constructor(val process: Process, private 
     suspend fun close() = withContext(NonCancellable + Dispatchers.IO) {
         try {
             val handles = process.descendants().use { it.toArray().map { h -> h as ProcessHandle } }.reversed() + process.toHandle()
+            closeQuietly(process.outputStream)
+            closeQuietly(process.inputStream)
+            closeQuietly(process.errorStream)
             handles.filter { it.isAlive }.forEach { it.destroy() }
-            withTimeoutOrNull(1000) { while (handles.any { it.isAlive }) delay(25) }
-            handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
-            process.onExit().await()
+            if (!process.waitFor(1, TimeUnit.SECONDS)) {
+                handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
+                process.waitFor(5, TimeUnit.SECONDS)
+            }
+            finishExit()
         } finally {
             http.dispatcher.cancelAll()
             scope.cancel()
-            scope.coroutineContext.job.join()
             http.connectionPool.evictAll()
             http.dispatcher.executorService.shutdown()
         }
+    }
+
+    private fun closeQuietly(closeable: Closeable?) {
+        try { closeable?.close() } catch (_: Exception) { }
     }
 }

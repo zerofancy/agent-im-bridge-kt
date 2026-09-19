@@ -199,8 +199,9 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
             active.keys.forEach { it.requestStop() }
             active.values.toList()
         }
+        val current = connectionMutex.withLock { client.also { client = null } }
+        current?.close()
         withTimeoutOrNull(5_000) { tasks.joinAll() }
-        connectionMutex.withLock { client?.close(); client = null }
         scope.cancel()
         scope.coroutineContext.job.join()
     }
