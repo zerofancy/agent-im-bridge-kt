@@ -39,6 +39,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                   private val typingReactions: TypingReactions? = null,
                   private val lifecycle: RuntimeLifecycle? = null,
                   initiallyHeld: Boolean = false,
+                  private val configControls: ConfigControls? = null,
                   private val cardReplies: CardReplies? = null,
                   private val sender: ReplySender) : AutoCloseable {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
@@ -226,6 +227,11 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 reply((lifecycle?.status().orEmpty()) + "部署状态：${if (draining) "排空或等待激活" else "空闲"}\n当前后端：${runner.displayName}\n正在执行：${running.size}/$limit\n正在排队：${queue.size}\n当前聊天：$state\n当前聊天排队：${queue.count { it.route.chatId == route.chatId }}")
             }
             "/pwd" -> { { send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}") } }
+            "/config" -> {
+                val controls = configControls
+                if (controls == null) reply("当前平台暂不支持配置卡片。")
+                else suspend { controls.show(route) }
+            }
             "/stop" -> {
                 val target = running[route.chatId]
                 // Native stop buttons must not cancel a newer request or its queue.
@@ -467,6 +473,8 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         startupNotice?.beforeReply(route, sender)
         return withTimeout(30_000.milliseconds) { action() }
     }
+
+    internal fun launchManaged(block: suspend CoroutineScope.() -> Unit): Job = scope.launch(block = block)
 
     override fun close() {
         // AutoCloseable is the synchronous application boundary; never call from our own scope.

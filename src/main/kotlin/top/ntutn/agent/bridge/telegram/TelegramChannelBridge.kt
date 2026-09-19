@@ -85,7 +85,8 @@ fun createTelegramChannel(
     }
     service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, reactions, lifecycle, initiallyHeld, cards) { route, text ->
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, reactions, lifecycle, initiallyHeld,
+        cardReplies = cards) { route, text ->
         client.sendReply(route, text)
     }
 

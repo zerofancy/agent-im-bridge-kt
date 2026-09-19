@@ -113,4 +113,19 @@ class ControlCommandTest {
             assertEquals(listOf("/plan keep  spaces\nand lines", "/spec", "/cdrom"), calls)
         } finally { reply.complete(Unit); svc.close() }
     }
+
+    @Test fun `config command is immediate control and does not enter model queue`(): Unit = runBlocking {
+        val calls = Collections.synchronizedList(mutableListOf<String>())
+        val shown = Collections.synchronizedList(mutableListOf<ReplyRoute>())
+        val svc = ChatService(runner { calls.add(it); AgentResult.Success("ok") }, SessionStore(temp.resolve("sessions.json")), ::key,
+            configControls = object : ConfigControls {
+                override suspend fun show(route: ReplyRoute) { shown += route }
+            },
+            sender = sender)
+        try {
+            svc.accept(route("a", "config"), "/config").await()
+            assertTrue(calls.isEmpty())
+            assertEquals(listOf(route("a", "config")), shown)
+        } finally { svc.close() }
+    }
 }

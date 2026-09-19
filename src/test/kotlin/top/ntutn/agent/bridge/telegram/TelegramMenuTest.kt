@@ -48,7 +48,7 @@ class TelegramMenuTest {
             assertEquals("default", body.getAsJsonObject("scope")["type"].asString)
             assertEquals("", body["language_code"].asString)
             val commands = body.getAsJsonArray("commands").map { it.asJsonObject }
-            assertEquals(listOf("status", "pwd", "cd", "stop", "help"), commands.map { it["command"].asString })
+            assertEquals(listOf("status", "pwd", "config", "cd", "stop", "help"), commands.map { it["command"].asString })
             for (command in commands) {
                 val name = "/" + command["command"].asString
                 assertNotNull(BridgeCommand.parse(name))

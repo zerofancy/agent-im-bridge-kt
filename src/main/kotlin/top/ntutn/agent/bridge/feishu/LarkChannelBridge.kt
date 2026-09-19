@@ -3,18 +3,22 @@ package top.ntutn.agent.bridge.feishu
 import top.ntutn.agent.bridge.*
 import top.ntutn.agent.bridge.storage.AttachmentStore
 import top.ntutn.agent.bridge.storage.BridgeConfig
+import top.ntutn.agent.bridge.storage.ConfigStore
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionStore
 import com.google.gson.JsonParser
 import com.lark.oapi.channel.LarkChannel
 import com.lark.oapi.channel.LarkChannelFactory
 import com.lark.oapi.channel.config.LarkChannelOptions
+import com.lark.oapi.channel.model.CardActionEvent
 import com.lark.oapi.channel.model.ChannelErrorEvent
 import com.lark.oapi.channel.model.NormalizedMessage
 import com.lark.oapi.channel.model.ReactionEvent
 import com.lark.oapi.channel.model.SendInput
 import com.lark.oapi.channel.model.SendOptions
+import com.lark.oapi.event.cardcallback.model.P2CardActionTrigger
 import com.lark.oapi.service.im.v1.model.P2MessageReceiveV1
+import kotlinx.coroutines.future.await
 import org.slf4j.LoggerFactory
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -87,9 +91,38 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
     val context = ReplyContext(source,
         AttachmentStore(lifecycle?.environment?.attachments ?: Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)),
         config.appId, source)
+    val environment = lifecycle?.environment
+    val configControls = environment?.let {
+        val delayedUpdater = DelayedCardUpdater(
+            FeishuOpenApiClient(
+                feishuOpenBaseUrl(config),
+                SdkTenantTokenProvider(sdkOpenApiConfig(config))
+            )
+        )
+        val controller = InstanceConfigCardController(
+            it,
+            options,
+            backend.id,
+            SandboxMode.parse(config.sandboxMode),
+            ConfigStore(InstanceConfigCardController.configPath(it)),
+            sendCard = { route, card ->
+                configCardRequest("send", route.messageId) {
+                    channel.send(route.chatId, SendInput.card(card),
+                        SendOptions.newBuilder().replyTo(route.messageId).build()).await()
+                }
+                Unit
+            },
+            updateCard = { action, card ->
+                val token = action.callbackToken ?: throw IllegalStateException("delay update failed: code=missing_callback_token")
+                configCardRequest("update", action.messageId) { delayedUpdater.update(token, card) }
+                Unit
+            }
+        )
+        controller
+    }
     val service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, LarkTypingReactions(config.appId) { channel.rawClient }, lifecycle, initiallyHeld, LarkCardReplies({ channel.rawClient }, cardAnswers)) { route, text ->
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, LarkTypingReactions(config.appId) { channel.rawClient }, lifecycle, initiallyHeld, configControls, LarkCardReplies({ channel.rawClient }, cardAnswers)) { route, text ->
         val sent = java.util.concurrent.CompletableFuture<Unit>()
         try {
             channel.send(route.chatId, SendInput.text(text),
@@ -116,6 +149,25 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         FatalErrorHandler.boundary {
             extractReaction(event, config.allowedUserId)?.let { reaction ->
                 service.receive(reaction.id) { source.reaction(reaction, config.appId, channel.botIdentity?.openId) }
+            }
+        }
+    }
+    channel.on<CardActionEvent>("cardAction") { event ->
+        FatalErrorHandler.boundary {
+            if (event.operatorId != config.allowedUserId || configControls == null) return@boundary
+            log.info("收到配置卡片动作 messageId={} actionTag={} actionName={} actionValueKeys={}",
+                event.messageId, event.actionTag, event.actionName, event.actionValue.keys.sorted())
+            val callbackToken = ((event.raw as? P2CardActionTrigger)?.event?.token).takeUnless { it.isNullOrBlank() }
+            service.launchManaged {
+                configControls.handle(ConfigActionInput(
+                    event.messageId,
+                    event.chatId,
+                    event.operatorId,
+                    event.actionName,
+                    event.actionOption,
+                    event.actionValue,
+                    callbackToken
+                ))
             }
         }
     }
