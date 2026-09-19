@@ -287,6 +287,8 @@ class DeploymentTests(unittest.TestCase):
     def test_legacy_migration_respects_posix_record_lock(self):
         import subprocess
         import sys
+        if sys.platform == 'win32':
+            self.skipTest('POSIX fcntl only test')
         lock = self.root / 'bridge.lock'
         child = subprocess.Popen([sys.executable, '-c',
             'import fcntl,sys; f=open(sys.argv[1],"w"); fcntl.lockf(f,fcntl.LOCK_EX); print("locked",flush=True); sys.stdin.read()', str(lock)],
@@ -455,11 +457,13 @@ class ServiceManagerTests(unittest.TestCase):
 
     def test_platform_detection(self):
         """测试平台检测返回正确的服务管理器"""
-        manager = b.get_service_manager('gui/1000')
+        manager = b.get_service_manager('gui/1000', '/tmp/root')
         if sys.platform == 'darwin':
             self.assertIsInstance(manager, b.LaunchdManager)
         elif sys.platform == 'linux':
             self.assertIsInstance(manager, b.SystemdManager)
+        elif sys.platform == 'win32':
+            self.assertIsInstance(manager, b.WindowsServiceManager)
 
     def test_systemd_unit_generation(self):
         """测试systemd单元文件生成"""
@@ -516,6 +520,97 @@ class ServiceManagerTests(unittest.TestCase):
                 manager = b.SystemdManager()
                 self.assertTrue(manager.unit_dir.exists())
                 self.assertEqual(manager.unit_dir, Path(tmpdir) / '.config' / 'systemd' / 'user')
+
+
+    def test_windows_quote_preserves_paths_and_quotes_spaces(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        self.assertEqual(r'C:\Python\python.exe', b._win_quote(r'C:\Python\python.exe'))
+        self.assertEqual(r'"C:\Program Files\python.exe"', b._win_quote(r'C:\Program Files\python.exe'))
+
+    def test_windows_xml_generation_has_restart_throttle_and_service_account(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = b.WindowsServiceManager(tmpdir)
+            xml = mgr._generate_xml('svc', [r'C:\Program Files\python.exe', 'worker', 'arg with space'],
+                                    Path(tmpdir, 'logs/out.log'), password='secret')
+            self.assertIn(r'<executable>C:\Program Files\python.exe</executable>', xml)
+            self.assertIn('worker', xml)
+            self.assertIn('arg with space', xml)
+            self.assertIn('<onfailure action="restart" delay="3 sec"/>', xml)
+            self.assertIn('<stoptimeout>15 sec</stoptimeout>', xml)
+            self.assertIn('<password>secret</password>', xml)
+            self.assertIn('<logpath>', xml)
+
+    def test_windows_is_loaded_only_true_when_running(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        from types import SimpleNamespace
+        with patch.object(b, 'run') as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout='STATE : 4 RUNNING')
+            self.assertTrue(b.WindowsServiceManager('/r').is_loaded('svc'))
+            run.return_value = SimpleNamespace(returncode=0, stdout='STATE : 1 STOPPED')
+            self.assertFalse(b.WindowsServiceManager('/r').is_loaded('svc'))
+            run.return_value = SimpleNamespace(returncode=1, stdout='')
+            self.assertFalse(b.WindowsServiceManager('/r').is_loaded('svc'))
+
+    def test_windows_load_installs_when_not_registered_and_strips_password_from_disk(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = b.WindowsServiceManager(tmpdir)
+            calls = []
+            def fake_run(argv, check=True):
+                calls.append(argv)
+                if argv[0] == 'sc.exe':
+                    return SimpleNamespace(returncode=1, stdout='')  # 未注册
+                return SimpleNamespace(returncode=0, stdout='')
+            with patch.object(b, 'run', side_effect=fake_run), \
+                    patch.object(b.shutil, 'which', return_value='C:/winsw/WinSW.exe'), \
+                    patch.object(b.shutil, 'copy2'), \
+                    patch.object(b.getpass, 'getpass', return_value='pw'), \
+                    patch.object(b.ctypes.windll.shell32, 'IsUserAnAdmin', return_value=True):
+                mgr.load('svc', ['python', 'worker'], Path(tmpdir, 'logs/out.log'))
+            self.assertTrue(any(c and c[-1] == 'install' for c in calls))
+            self.assertTrue(any(c and c[-1] == 'start' for c in calls))
+            xml = (mgr.dir / 'svc.xml').read_text(encoding='utf-8')
+            self.assertNotIn('pw', xml)
+
+    def test_windows_load_updates_xml_when_registered_without_reinstall_or_password(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mgr = b.WindowsServiceManager(tmpdir)
+            calls = []
+            def fake_run(argv, check=True):
+                calls.append(argv)
+                if argv[0] == 'sc.exe':
+                    return SimpleNamespace(returncode=0, stdout='')  # 已注册
+                return SimpleNamespace(returncode=0, stdout='')
+            with patch.object(b, 'run', side_effect=fake_run), \
+                    patch.object(b.shutil, 'which') as which, \
+                    patch.object(b.shutil, 'copy2') as copy2, \
+                    patch.object(b.getpass, 'getpass') as getpass, \
+                    patch.object(b.ctypes.windll.shell32, 'IsUserAnAdmin', return_value=True):
+                mgr.load('svc', ['python', 'worker'], Path(tmpdir, 'logs/out.log'))
+            getpass.assert_not_called()
+            copy2.assert_not_called()
+            which.assert_not_called()
+            self.assertTrue(any(c and c[-1] == 'start' for c in calls))
+
+    def test_windows_missing_winsw_hints_install(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(b, 'run', return_value=SimpleNamespace(returncode=1, stdout='')), \
+                    patch.object(b.shutil, 'which', return_value=None), \
+                    patch.object(b.ctypes.windll.shell32, 'IsUserAnAdmin', return_value=True):
+                with self.assertRaisesRegex(RuntimeError, 'WinSW'):
+                    b.WindowsServiceManager(tmpdir).load('svc', ['python', 'worker'], Path(tmpdir, 'out.log'))
 
 
 if __name__ == '__main__': unittest.main()

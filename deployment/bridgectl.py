@@ -6,6 +6,7 @@ try:
     import fcntl  # POSIX 文件锁
 except ImportError:  # Windows：无 fcntl，locked() 使用 msvcrt 字节范围锁
     fcntl = None
+import ctypes
 import getpass
 import hashlib
 import json
@@ -219,23 +220,120 @@ WantedBy=default.target
 """
 
 
+def _win_quote(value):
+    value = str(value)
+    needs = any(c in value for c in ' \t"&^<>|')
+    return '"' + value.replace('"', '\\"') + '"' if needs else value
+
+
+def _xml_escape(value):
+    return (str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
+
+
 class WindowsServiceManager(ServiceManager):
-    """Windows 服务化管理占位（阶段 2 使用 NSSM）。当前仅支持 bridgectl dev 前台运行。"""
+    """Windows WinSW 系统服务管理（install/uninstall 需管理员；运行账户为当前用户）。"""
 
-    def _unsupported(self, *args, **kwargs):
-        raise RuntimeError('Windows 服务化管理尚未实现（NSSM，见 docs/windows-porting-plan.md 阶段 2）；当前请使用 bridgectl dev 前台运行')
+    WINSW_RELEASES = 'https://github.com/winsw/winsw/releases'
+    WINGET_INSTALL = 'winget install WinSW'
 
-    is_loaded = load = unload = enable = disable = load_deploy = _unsupported
+    def __init__(self, root):
+        self.root = Path(root)
+        self.dir = self.root / 'deployment' / 'winsw'
+
+    def _require_admin(self):
+        try:
+            if ctypes.windll.shell32.IsUserAnAdmin(): return
+        except Exception:
+            pass
+        raise RuntimeError('Windows 服务管理需要管理员权限，请用管理员 PowerShell 重跑。')
+
+    def _locate_winsw(self):
+        found = shutil.which('WinSW.exe') or shutil.which('winsw.exe')
+        if found: return Path(found)
+        local = self.dir / 'WinSW.exe'
+        if local.is_file(): return local
+        raise RuntimeError('未检测到 WinSW.exe。请先安装后重跑：\n  下载: ' + self.WINSW_RELEASES + '\n  或:   ' + self.WINGET_INSTALL)
+
+    def _exe(self, label):
+        return self.dir / (label + '.exe')
+
+    def _xml(self, label):
+        return self.dir / (label + '.xml')
+
+    def _is_registered(self, label):
+        return run(['sc.exe', 'query', label], check=False).returncode == 0
+
+    def is_loaded(self, label):
+        r = run(['sc.exe', 'query', label], check=False)
+        return r.returncode == 0 and 'RUNNING' in r.stdout.upper()
+
+    def _generate_xml(self, label, argv, log, password=None):
+        log.parent.mkdir(parents=True, exist_ok=True)
+        arguments = ' '.join(_win_quote(a) for a in argv[1:])
+        user = getpass.getuser()
+        pw = _xml_escape(password) if password is not None else ''
+        return f"""<service>
+  <id>{_xml_escape(label)}</id>
+  <name>Agent IM Bridge ({_xml_escape(label)})</name>
+  <description>Agent IM Bridge 守护服务</description>
+  <executable>{_xml_escape(argv[0])}</executable>
+  <arguments>{_xml_escape(arguments)}</arguments>
+  <workingdirectory>{_xml_escape(str(self.root))}</workingdirectory>
+  <logpath>{_xml_escape(str(log.parent))}</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>8</keepFiles>
+  </log>
+  <onfailure action="restart" delay="3 sec"/>
+  <stoptimeout>15 sec</stoptimeout>
+  <serviceaccount>
+    <username>{_xml_escape(user)}</username>
+    <password>{pw}</password>
+  </serviceaccount>
+</service>
+"""
+
+    def load(self, label, argv, log, keep=True):
+        self._require_admin()
+        self.dir.mkdir(parents=True, exist_ok=True)
+        if not self._is_registered(label):
+            winsw = self._locate_winsw()
+            shutil.copy2(winsw, self._exe(label))
+            password = getpass.getpass(f'请输入服务账户 {getpass.getuser()} 的密码（用于注册 Windows 服务）: ')
+            self._xml(label).write_text(self._generate_xml(label, argv, log, password), encoding='utf-8')
+            try:
+                run([self._exe(label), 'install'])
+            finally:
+                # 不在磁盘 XML 中留存服务密码
+                self._xml(label).write_text(self._generate_xml(label, argv, log), encoding='utf-8')
+        else:
+            # 已注册：仅更新 XML（新 release 的 arguments），无需重新输入密码
+            self._xml(label).write_text(self._generate_xml(label, argv, log), encoding='utf-8')
+        run([self._exe(label), 'stop'], check=False)
+        run([self._exe(label), 'start'])
+
+    def unload(self, label):
+        # 与 launchd bootout 对齐：停止但保留注册，后续 start 无需重新输入密码
+        run([self._exe(label), 'stop'], check=False)
+
+    def enable(self, label):
+        run(['sc.exe', 'config', label, 'start=', 'auto'])
+
+    def disable(self, label):
+        run(['sc.exe', 'config', label, 'start=', 'demand'])
+
+    def load_deploy(self, label, argv, log):
+        self.load(label, argv, log)
 
 
-def get_service_manager(domain):
+def get_service_manager(domain, root=None):
     """根据平台返回对应的服务管理器"""
     if sys.platform == 'darwin':
         return LaunchdManager(domain)
     elif sys.platform == 'linux':
         return SystemdManager()
     elif sys.platform == 'win32':
-        return WindowsServiceManager()
+        return WindowsServiceManager(root)
     else:
         raise RuntimeError(f'不支持的平台: {sys.platform}')
 
@@ -250,7 +348,7 @@ class Manager:
         self.label = 'top.ntutn.agent.bridge.' + hashlib.sha256(str(self.root).encode()).hexdigest()[:12] + '.' + env
         self.domain = 'gui/' + (str(os.getuid()) if hasattr(os, 'getuid') else getpass.getuser())
         self.plist = Path.home() / 'Library/LaunchAgents' / (self.label + '.plist')
-        self.service = get_service_manager(self.domain)
+        self.service = get_service_manager(self.domain, self.root)
 
     def release(self, name):
         if not name or not re.fullmatch(r'[A-Za-z0-9._-]+', name) or name in ('.', '..'): raise ValueError('无效发布版本')
