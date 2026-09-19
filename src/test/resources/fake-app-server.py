@@ -11,24 +11,24 @@ def result(req, value):
 def event(method, tid, turn_id, **values):
     send({'method': method, 'params': dict(threadId=tid, turnId=turn_id, **values)})
 def completed(tid, turn, status):
-    if os.environ.get('TRAECLI_HOME') == root+'/runtime' and status == 'completed':
+    if os.environ.get('TRAECLI_HOME') == os.path.join(root, 'runtime') and status == 'completed':
         send({'method':'thread/status/changed','params':{'threadId':tid,'status':{'type':'idle'}}})
     else:
         event('turn/completed', tid, turn, turn={'id':turn, 'status':status})
 def item(tid, turn, name, text, phase=None):
     event('item/completed', tid, turn, item={'id':name,'type':'agentMessage','text':text,'phase':phase})
-with open(root+'/environment','w') as f: json.dump({k:os.environ.get(k) for k in ('CODEX_HOME','TRAE_HOME','TRAECLI_HOME')},f)
-with open(root+'/pid','w') as f: f.write(str(os.getpid()))
+with open(os.path.join(root, 'environment'),'w') as f: json.dump({k:os.environ.get(k) for k in ('CODEX_HOME','TRAE_HOME','TRAECLI_HOME')},f)
+with open(os.path.join(root, 'pid'),'w') as f: f.write(str(os.getpid()))
 for line in sys.stdin:
     req = json.loads(line)
-    with open(root+'/requests','a') as f: f.write(json.dumps(req)+'\n')
+    with open(os.path.join(root, 'requests'),'a') as f: f.write(json.dumps(req)+'\n')
     method = req.get('method')
     p = req.get('params',{})
     if method == 'initialize':
         result(req, {'userAgent':'fake'})
     elif method in ('thread/start','thread/resume'):
         tid = p.get('threadId',str(uuid.uuid4()))
-        if os.environ.get('TRAECLI_HOME') == root+'/runtime' and 'excludeTurns' in p:
+        if os.environ.get('TRAECLI_HOME') == os.path.join(root, 'runtime') and 'excludeTurns' in p:
             send({'id':req['id'],'error':{'code':-32600,'message':'unsupported excludeTurns'}})
         elif tid == '00000000-0000-4000-8000-000000000000':
             send({'id':req['id'],'error':{'code':-32600,'message':'no rollout found for thread id '+tid}})
@@ -57,8 +57,8 @@ for line in sys.stdin:
         else: result(req, {'turn':{'id':turn,'status':'inProgress'}})
         if prompt.startswith('wait'):
             if prompt == 'wait-child':
-                child=subprocess.Popen(['sleep','60']); children.append(child)
-                with open(root+'/child','w') as f:f.write(str(child.pid))
+                child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); children.append(child)
+                with open(os.path.join(root, 'child'),'w') as f:f.write(str(child.pid))
             continue
         if prompt == 'stream-card':
             event('item/started',tid,turn,item={'id':'p','type':'agentMessage','phase':'commentary','text':''})
@@ -77,6 +77,8 @@ for line in sys.stdin:
         elif prompt == 'approval':
             send({'id':'approval-1','method':'item/commandExecution/requestApproval','params':{'threadId':tid,'turnId':turn}})
             continue
+        elif prompt == 'empty' and os.environ.get('TRAECLI_HOME') == os.path.join(root, 'runtime'):
+            item(tid,turn,'answer','','final_answer')
         elif prompt != 'empty':
             item(tid,turn,'answer', prompt, None if prompt == 'legacy' else 'final_answer')
         completed(tid,turn,'failed' if prompt == 'failed' else 'completed')
@@ -86,7 +88,9 @@ for line in sys.stdin:
         interrupts[tid]=interrupts.get(tid,0)+1
         if prompt in ('wait-activation','wait-natural','wait-wrong-error','wait-inactive-forever') and (interrupts[tid] == 1 or prompt == 'wait-inactive-forever'):
             send({'id':req['id'],'error':{'code':-32600,'message':'no active turn to interrupt' if prompt != 'wait-wrong-error' else 'permission denied'}})
-            if prompt == 'wait-natural': completed(tid,turn,'completed')
+            if prompt == 'wait-natural':
+                item(tid,turn,'answer','natural final','final_answer')
+                completed(tid,turn,'completed')
             continue
         result(req,{})
         if prompt != 'wait-ignore':

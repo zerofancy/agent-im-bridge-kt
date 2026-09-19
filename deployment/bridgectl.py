@@ -1,6 +1,7 @@
 ﻿#!/usr/bin/env python3
 """Immutable releases and user-level service jobs. Never runs deployment inside the Bridge process tree."""
 import argparse
+import base64
 import contextlib
 try:
     import fcntl  # POSIX 文件锁
@@ -75,8 +76,11 @@ def locked(path, blocking=False, record_lock=False):
         os.close(fd)
 
 
-def run(argv, check=True):
-    r = subprocess.run([str(x) for x in argv], capture_output=True, timeout=25)
+def run(argv, check=True, timeout=25):
+    try:
+        r = subprocess.run([str(x) for x in argv], capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError('命令超时: ' + str(argv[0])) from error
     encoding = locale.getencoding() if hasattr(locale, 'getencoding') else locale.getpreferredencoding(False)
     r.stdout = (r.stdout or b'').decode(encoding, errors='replace')
     r.stderr = (r.stderr or b'').decode(encoding, errors='replace')
@@ -257,6 +261,10 @@ def _xml_escape(value):
     return (str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;'))
 
 
+def _powershell_literal(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
 class WindowsServiceManager(ServiceManager):
     """Windows WinSW 系统服务管理（install/uninstall 需管理员；运行账户为当前用户）。"""
 
@@ -290,6 +298,27 @@ class WindowsServiceManager(ServiceManager):
     def _is_registered(self, label):
         return run(['sc.exe', 'query', label], check=False).returncode == 0
 
+    def _task_name(self, label):
+        return 'Agent IM Bridge ' + label + ' deploy'
+
+    def _service_account(self, label):
+        try:
+            xml = self._xml(label).read_text(encoding='utf-8')
+        except OSError as error:
+            raise RuntimeError('无法读取 Bridge 服务账户配置') from error
+        match = re.search(r'<username>([^<]+)</username>', xml)
+        if not match or not re.fullmatch(r'[A-Za-z0-9_.@\\ -]+', match.group(1)):
+            raise RuntimeError('Bridge 服务账户配置无效')
+        account = match.group(1)
+        if '\\' not in account and '@' not in account:
+            account = os.environ.get('COMPUTERNAME', '.') + '\\' + account
+        escaped = account.replace("'", "''")
+        script = "(New-Object System.Security.Principal.NTAccount('" + escaped + "')).Translate([System.Security.Principal.SecurityIdentifier]).Value"
+        sid = run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script]).stdout.strip()
+        if not re.fullmatch(r'S-\d-(?:\d+-)+\d+', sid, re.IGNORECASE):
+            raise RuntimeError('无法解析 Bridge 服务账户 SID')
+        return account, sid
+
     def is_loaded(self, label):
         r = run(['sc.exe', 'query', label], check=False)
         return r.returncode == 0 and 'RUNNING' in r.stdout.upper()
@@ -322,9 +351,9 @@ class WindowsServiceManager(ServiceManager):
 """
 
     def load(self, label, argv, log, keep=True):
-        self._require_admin()
         self.dir.mkdir(parents=True, exist_ok=True)
         if not self._is_registered(label):
+            self._require_admin()
             winsw = self._locate_winsw()
             shutil.copy2(winsw, self._exe(label))
             password = getpass.getpass(f'请输入服务账户 {getpass.getuser()} 的密码（用于注册 Windows 服务）: ')
@@ -337,12 +366,13 @@ class WindowsServiceManager(ServiceManager):
         else:
             # 已注册：仅更新 XML（新 release 的 arguments），无需重新输入密码
             self._xml(label).write_text(self._generate_xml(label, argv, log), encoding='utf-8')
-        run([self._exe(label), 'stop'], check=False)
-        run([self._exe(label), 'start'])
+        # WinSW CLI 会主动尝试提权；直接调用 SCM 才能使用预先授予的启停权限。
+        run(['sc.exe', 'stop', label], check=False)
+        run(['sc.exe', 'start', label])
 
     def unload(self, label):
         # 与 launchd bootout 对齐：停止但保留注册，后续 start 无需重新输入密码
-        run([self._exe(label), 'stop'], check=False)
+        run(['sc.exe', 'stop', label], check=False)
 
     def enable(self, label):
         run(['sc.exe', 'config', label, 'start=', 'auto'])
@@ -351,7 +381,57 @@ class WindowsServiceManager(ServiceManager):
         run(['sc.exe', 'config', label, 'start=', 'demand'])
 
     def load_deploy(self, label, argv, log):
-        self.load(label, argv, log)
+        task = self._task_name(label)
+        if run(['schtasks.exe', '/Query', '/TN', task], check=False).returncode:
+            raise RuntimeError('Windows 无人值守部署尚未启用；请在管理员 PowerShell 中先运行 enable-unattended。')
+        run(['schtasks.exe', '/Run', '/TN', task])
+
+    def enable_unattended(self, service_label, deploy_label, argv, writable_paths):
+        """一次性配置受限计划任务和最小服务控制权限。"""
+        self._require_admin()
+        if not self._is_registered(service_label):
+            env = service_label.rsplit('.', 1)[-1]
+            candidates = [p.stem for p in self.dir.glob('top.ntutn.agent.bridge.*.' + env + '.xml')
+                          if '.deploy.' not in p.stem and self._is_registered(p.stem)]
+            if len(candidates) != 1:
+                raise RuntimeError('Bridge 服务尚未注册或无法唯一定位；期望服务名: ' + service_label)
+            # Windows 路径大小写不敏感，但不同账户解析出的显示形式可能不同。
+            # 以指定 root 内已经注册的唯一主服务配置为准。
+            service_label = candidates[0]
+        user, sid = self._service_account(service_label)
+
+        shown = run(['sc.exe', 'sdshow', service_label]).stdout
+        sddl = next((line.strip() for line in shown.splitlines() if line.strip().startswith('D:')), '')
+        if not sddl:
+            raise RuntimeError('无法读取 Bridge 服务权限')
+        ace = '(A;;CCLCSWRPWPLOCRRC;;;' + sid + ')'
+        if ace not in sddl:
+            sacl = sddl.find('S:', 2)
+            updated = sddl + ace if sacl < 0 else sddl[:sacl] + ace + sddl[sacl:]
+            run(['sc.exe', 'sdset', service_label, updated])
+
+        for path in writable_paths:
+            path = Path(path)
+            path.mkdir(parents=True, exist_ok=True)
+            run(['icacls.exe', str(path), '/grant:r', user + ':(OI)(CI)M', '/T', '/C', '/Q'])
+            # 旧版由管理员创建的文件可能关闭了 ACL 继承；对子项再授予一次直接权限。
+            run(['icacls.exe', str(path / '*'), '/grant:r', user + ':M', '/T', '/C', '/Q'])
+
+        task = self._task_name(deploy_label)
+        arguments = subprocess.list2cmdline([str(x) for x in argv[1:]])
+        script = '\n'.join([
+            "$ErrorActionPreference = 'Stop'",
+            '$action = New-ScheduledTaskAction -Execute ' + _powershell_literal(argv[0]) +
+                ' -Argument ' + _powershell_literal(arguments) + ' -WorkingDirectory ' + _powershell_literal(self.root),
+            "$trigger = New-ScheduledTaskTrigger -Once -At ([datetime]'2099-01-01')",
+            '$principal = New-ScheduledTaskPrincipal -UserId ' + _powershell_literal(user) +
+                ' -LogonType S4U -RunLevel Limited',
+            '$settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)',
+            'Register-ScheduledTask -TaskName ' + _powershell_literal(task) +
+                ' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null',
+        ])
+        encoded = base64.b64encode(script.encode('utf-16le')).decode('ascii')
+        run(['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], timeout=60)
 
 
 def get_service_manager(domain, root=None):
@@ -490,8 +570,25 @@ class Manager:
 
     def deployment_label(self, job_id):
         if sys.platform == 'win32':
-            return self.label + '.deploy.' + hashlib.sha256(job_id.encode()).hexdigest()[:16]
+            return self.label + '.deploy'
         return self.label + '.deploy.' + job_id
+
+    def enable_unattended(self):
+        if sys.platform != 'win32' or not isinstance(self.service, WindowsServiceManager):
+            raise RuntimeError('enable-unattended 仅适用于 Windows')
+        settings = self.validate()
+        argv = [settings['python'], str(Path(__file__).resolve()), '_deploy-active',
+                '--root', str(self.root), '--env', self.env]
+        self.service.enable_unattended(
+            self.label, self.deployment_label(''), argv,
+            [self.deploydir, self.root / 'deployment' / 'winsw',
+             self.directory / 'logs', self.directory / 'control', self.directory / 'lifecycle',
+             self.directory / 'tmp', self.directory / 'attachments'])
+
+    def perform_active(self):
+        job = self.active_job()
+        if job:
+            self.perform(job['id'])
 
     def drained(self, job, status):
         if status.get('pending', 0) == 0:
@@ -809,7 +906,7 @@ class Manager:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['publish','prune','init','migrate-legacy','dev','status','start','stop','deploy','deploy-status','deploy-force','deploy-cancel','rollback','_launch','_deploy'])
+    parser.add_argument('command', choices=['publish','prune','init','migrate-legacy','dev','status','start','stop','deploy','deploy-status','deploy-force','deploy-cancel','rollback','enable-unattended','_launch','_deploy','_deploy-active'])
     parser.add_argument('--root', default=str(Path.home() / '.agent-im-bridge-kt'))
     parser.add_argument('--env', choices=['dev','prod'])
     parser.add_argument('--release'); parser.add_argument('--job'); parser.add_argument('--held', action='store_true')
@@ -858,6 +955,10 @@ def main():
         print('已备份并迁移正式环境；旧模型历史原地保留，未启动')
     elif args.command == '_launch': return m.launch(args.release, args.held)
     elif args.command == '_deploy': m.perform(args.job)
+    elif args.command == '_deploy-active': m.perform_active()
+    elif args.command == 'enable-unattended':
+        m.enable_unattended()
+        print(f'{m.env} 已启用 Windows 无人值守部署；后续 deploy 无需 UAC 或账户密码。')
     elif args.command.startswith('deploy-'):
         p = m.job_path(args.job_id or args.job)
         job = read(p)

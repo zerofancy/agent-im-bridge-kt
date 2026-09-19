@@ -70,6 +70,27 @@ systemctl --user restart top.ntutn.agent.bridge.*.prod
 - 需要 `loginctl enable-linger` 确保用户登出后服务继续运行
 - Linux 下 PATH 默认值不包含 `/opt/homebrew/bin`
 
+## 部署与运行（Windows）
+
+Windows 主进程仍由 WinSW/SCM 守护。首次注册服务时需要在管理员 PowerShell 中运行 `start` 并输入一次服务账户密码。服务注册完成后，再为每个环境执行一次：
+
+```powershell
+python deployment/bridgectl.py enable-unattended --root C:\Users\<服务账户>\.agent-im-bridge-kt --env dev
+# 正式环境另行执行：
+python deployment/bridgectl.py enable-unattended --root C:\Users\<服务账户>\.agent-im-bridge-kt --env prod
+```
+
+此命令只进行一次管理员配置：给当前账户授予对应 Bridge 服务的查询、启动和停止权限，修复该环境部署状态目录的写权限，并创建一个以当前账户、受限权限运行的固定计划任务。计划任务不保存密码，也不以管理员身份执行项目脚本。
+
+之后普通 PowerShell 中的 `deploy`、`rollback`、`start` 和 `stop` 不再弹 UAC，也不再要求输入服务账户密码。`deploy` 只触发固定的一次性任务，不会为每次发布注册临时 Windows 服务：
+
+```powershell
+python deployment/bridgectl.py deploy --env dev --release r-<新内容哈希>
+python deployment/bridgectl.py deploy-status <部署编号>
+```
+
+如果项目路径、Python 路径或运行账户发生变化，请重新以管理员身份执行 `enable-unattended` 更新任务。调试和正式环境权限、任务及状态保持隔离。
+
 `migrate-legacy` 仅用于首次迁移：核对旧实例锁已释放，备份旧配置与会话映射后迁移，不复制运行锁；保留原工作目录和模型状态目录以续接历史，不复制桌面端模型状态数据库。已初始化的环境拒绝覆盖。配置中的 JDK、Python 和后端可执行文件使用明确路径；守护不依赖交互式 shell 配置。
 
 后续升级：构建、发布得到新版本，再提交独立部署任务。提交立即返回部署编号，机器人可以在自己的任务中提交升级而不等待自身结束。

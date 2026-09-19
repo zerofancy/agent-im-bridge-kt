@@ -65,10 +65,11 @@ class BackendTest {
     @Test fun `only selected backend launches with its own environment`(): Unit = runBlocking {
         for (id in listOf(BackendId.CODEX, BackendId.TRAEX)) {
             val dir = Files.createDirectory(temp.resolve(id.configValue))
-            val binary = fakeAppServer(dir).toString()
+            val fixture = fakeAppServer(dir, id)
+            val binary = fixture.binary
             val options = RunOptions(dir, binary = if (id == BackendId.CODEX) binary else "missing-codex",
                 traexBinary = if (id == BackendId.TRAEX) binary else "missing-traex")
-            val backend = BackendSpec.resolve(id, options, emptyMap(), dir)
+            val backend = BackendSpec.resolve(id, options, emptyMap(), dir).copy(binaryArguments = fixture.binaryArguments)
             AppServerAgentRunner(backend).use { runner ->
                 runner.checkAvailable()
                 assertIs<AgentResult.Success>(runner.run("hello"))

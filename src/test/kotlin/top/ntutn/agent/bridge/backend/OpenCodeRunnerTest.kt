@@ -15,7 +15,8 @@ class OpenCodeRunnerTest {
         val executable = temp.resolve("opencode")
         Files.writeString(executable, javaClass.getResource("/fake-opencode.py")!!.readText())
         executable.toFile().setExecutable(true)
-        return OpenCodeRunner(BackendSpec(BackendId.OPENCODE, executable.toString(), temp), mode)
+        val (binary, arguments) = testScriptCommand(executable)
+        return OpenCodeRunner(BackendSpec(BackendId.OPENCODE, binary, temp, binaryArguments = arguments), mode)
     }
     private suspend fun waitFile(name: String) = withTimeout(5000) { while (!Files.exists(temp.resolve(name))) delay(20) }
 

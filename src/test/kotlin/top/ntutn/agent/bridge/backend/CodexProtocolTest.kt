@@ -15,7 +15,7 @@ open class CodexProtocolTest {
     protected open val nonMissingThreadStartFailureKind = AgentResult.Kind.PROTOCOL
     @TempDir lateinit var temp: Path
     private val id = "11111111-1111-4111-8111-111111111111"
-    protected fun runner() = AppServerAgentRunner(BackendSpec(backendId, fakeAppServer(temp).toString(), temp.resolve("runtime"), temp.resolve("shared")))
+    protected fun runner() = AppServerAgentRunner(fakeAppServer(temp, backendId))
     private suspend fun waitTurns(count: Int) = withTimeout(5000) {
         while (requests(temp).count { it.string("method") == "turn/start" } < count) delay(10)
     }

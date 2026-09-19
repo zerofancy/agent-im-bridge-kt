@@ -30,7 +30,7 @@
 | --- | --- | --- |
 | **WinSW（选定）** | ✅ | 零自研维护；崩溃重启/节流/日志轮转全内置；活跃维护；.NET Framework 4.6.1 Win10 自带 |
 | NSSM | 排除 | 停止语义略优（CTRL 事件触发 shutdown hook），但久未更新；用户已接受强杀语义，该优势无实际价值 |
-| Windows 计划任务 | 排除 | 无崩溃即时重启、停止需自行 taskkill，守护语义不足 |
+| Windows 计划任务 | 不用于主守护；用于受限的一次性部署执行器 | 无崩溃即时重启、停止需自行 taskkill，守护语义不足；但适合脱离主服务进程树执行单次升级 |
 | 自研看门狗 | 排除 | 维护成本高；用户接受管理员安装，换取零自研 |
 | procrun / Java 原生服务 | 排除 | 需改造 Kotlin 核心实现服务生命周期，违背"不改运行时"边界 |
 
@@ -91,7 +91,7 @@ bridgectl (python)
 | `unload(label)` | bootout + disable | `WinSW.exe stop` → `WinSW.exe uninstall` |
 | `enable(label)` | `launchctl enable` | `sc.exe config <label> start= auto` |
 | `disable(label)` | `launchctl disable` | `sc.exe config <label> start= demand` |
-| `load_deploy(label, argv, log)` | keep=False, on-failure | 生成 XML（keep=False → `<onfailure restart delay="10 sec"/>`，非 always）→ install → start |
+| `load_deploy(label, argv, log)` | keep=False, on-failure | 触发预先注册、以当前账户和受限权限运行的固定计划任务；不按部署创建临时服务 |
 
 日志文件沿用现有命名：`<log>`（out）与 `<log>.with_suffix('.err.log')`（err）。WinSW 的 stdout/stderr 默认名为 `<exe>.out.log` / `<exe>.err.log`，需在 XML 中显式指定文件名以对齐现有命名（如 WinSW 不支持自定义文件名，则在 `bridgectl status` 输出中给出实际路径并在 README 注明差异）。
 

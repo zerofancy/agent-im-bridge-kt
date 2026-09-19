@@ -18,20 +18,24 @@ class BackendSessionTest {
         for (version in 1..2) {
             val path = temp.resolve("sessions-$version.json")
             val id = UUID.randomUUID().toString()
-            val legacy = """{"version":$version,"sessions":[{"key":{"appId":"app","chatId":"chat","workspace":"/workspace","codexHome":"/runtime"},"sessionId":"$id","updatedAt":1}],"workspaces":[{"key":{"appId":"app","chatId":"chat","codexHome":"/runtime"},"workspace":"/selected"}]}"""
+            val workspace = temp.resolve("workspace").toString()
+            val runtime = temp.resolve("runtime").toString()
+            val selected = temp.resolve("selected").toString()
+            fun escaped(value: String) = value.replace("\\", "\\\\")
+            val legacy = """{"version":$version,"sessions":[{"key":{"appId":"app","chatId":"chat","workspace":"${escaped(workspace)}","codexHome":"${escaped(runtime)}"},"sessionId":"$id","updatedAt":1}],"workspaces":[{"key":{"appId":"app","chatId":"chat","codexHome":"${escaped(runtime)}"},"workspace":"${escaped(selected)}"}]}"""
             Files.writeString(path, legacy)
             val store = SessionStore(path)
-            val key = SessionKey("app", "chat", "/workspace", "/runtime")
+            val key = SessionKey("app", "chat", workspace, runtime)
             assertEquals(id, store.get(key))
             assertNull(store.get(key.copy(backendId = "traex")))
-            assertEquals(Path.of(if (version == 1) "/workspace" else "/selected"), store.workspace(key))
+            assertEquals(Path.of(if (version == 1) workspace else selected), store.workspace(key))
             assertEquals(legacy, Files.readString(path))
             store.set(key, id)
             val saved = JsonParser.parseString(Files.readString(path)).asJsonObject
             assertEquals(3, saved["version"].asInt)
             val savedKey = saved.getAsJsonArray("sessions")[0].asJsonObject.getAsJsonObject("key")
             assertEquals("codex", savedKey.string("backendId"))
-            assertEquals("/runtime", savedKey.string("runtimeRoot"))
+            assertEquals(runtime, savedKey.string("runtimeRoot"))
             assertFalse(savedKey.has("codexHome"))
             assertEquals(id, SessionStore(path).get(key))
         }
@@ -39,7 +43,7 @@ class BackendSessionTest {
 
     @Test fun `backends retain independent directories and bindings across restarts and cd`(): Unit = runBlocking {
         val path = temp.resolve("sessions.json")
-        val codex = SessionKey("app", "chat", temp.toString(), "/same-runtime")
+        val codex = SessionKey("app", "chat", temp.toString(), temp.resolve("same-runtime").toString())
         val traex = codex.copy(backendId = "traex")
         val codexDir = Files.createDirectory(temp.resolve("codex"))
         val traexDir = Files.createDirectory(temp.resolve("traex"))
@@ -62,7 +66,7 @@ class BackendSessionTest {
 
     @Test fun `OpenCode session IDs persist and reload without relaxing UUID backends`(): Unit = runBlocking {
         val path = temp.resolve("sessions.json")
-        val key = SessionKey("app", "chat", "/work", "/runtime", "opencode")
+        val key = SessionKey("app", "chat", temp.resolve("work").toString(), temp.resolve("runtime").toString(), "opencode")
         val id = "ses_0123456789abABCDEFGHIJKLMN"
         val store = SessionStore(path)
         store.set(key, id)
@@ -86,7 +90,8 @@ class BackendSessionTest {
 
     @Test fun `invalid backend in v3 fails without overwriting file`(): Unit = runBlocking {
         val path = temp.resolve("sessions.json")
-        SessionStore(path).set(SessionKey("app", "chat", "/work", "/runtime", "traex"), UUID.randomUUID().toString())
+        SessionStore(path).set(SessionKey("app", "chat", temp.resolve("work").toString(),
+            temp.resolve("runtime").toString(), "traex"), UUID.randomUUID().toString())
         val bad = Files.readString(path).replace("traex", "unknown")
         Files.writeString(path, bad)
         assertFailsWith<IllegalArgumentException> { SessionStore(path) }

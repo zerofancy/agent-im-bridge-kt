@@ -13,7 +13,7 @@ class CodexRunnerTest {
         for (backend in listOf(BackendId.CODEX, BackendId.TRAEX)) {
             val snapshots = mutableListOf<AgentProgress>()
             val handle = AgentRunHandle().apply { onProgress = { snapshots += it } }
-            AppServerAgentRunner(BackendSpec(backend, fakeAppServer(temp).toString(), temp.resolve("runtime"))).use { runner ->
+            AppServerAgentRunner(fakeAppServer(temp, backend)).use { runner ->
                 val result = runner.runControlled(handle, "stream-card", null, temp, SandboxMode.READ_ONLY) {}
                 assertEquals("correct final", assertIs<AgentResult.Success>(result).text)
                 assertTrue(snapshots.any { it.answer == "partial" })
@@ -24,7 +24,7 @@ class CodexRunnerTest {
         }
     }
     @Test fun `unicode shell syntax and final output survive RPC`(): Unit = runBlocking {
-        CodexRunner(fakeAppServer(temp).toString()).use { runner ->
+        AppServerAgentRunner(fakeAppServer(temp)).use { runner ->
             runner.checkAvailable()
             val prompt = "你好\n\$(touch never) 'quoted'  spaces"
             assertEquals(prompt, assertIs<AgentResult.Success>(runner.run(prompt)).text)
@@ -35,7 +35,7 @@ class CodexRunnerTest {
         }
     }
     @Test fun `failures empty answers and unexpected approval do not hang`(): Unit = runBlocking {
-        CodexRunner(fakeAppServer(temp).toString()).use { runner ->
+        AppServerAgentRunner(fakeAppServer(temp)).use { runner ->
             for (prompt in listOf("failed", "reject")) assertEquals(AgentResult.Kind.EXECUTION,
                 assertIs<AgentResult.Failure>(runner.run(prompt)).kind)
             assertEquals(AgentResult.Kind.EMPTY, assertIs<AgentResult.Failure>(runner.run("empty")).kind)
@@ -48,7 +48,7 @@ class CodexRunnerTest {
             assertFailsWith<IllegalArgumentException> { it.checkAvailable() }
             assertEquals(AgentResult.Kind.START, assertIs<AgentResult.Failure>(it.run("hello")).kind)
         }
-        val runner = CodexRunner(fakeAppServer(temp).toString()); runner.close()
+        val runner = AppServerAgentRunner(fakeAppServer(temp)); runner.close()
         assertEquals(AgentResult.Kind.START, assertIs<AgentResult.Failure>(runner.run("hello")).kind)
     }
     @Test fun `runtime options validate paths and removed timeout`() {

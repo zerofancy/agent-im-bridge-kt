@@ -69,6 +69,9 @@ class Handler(BaseHTTPRequestHandler):
  def do_GET(self):self.handle_request()
  def do_POST(self):self.handle_request()
  def do_PATCH(self):self.handle_request()
-server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+class Server(ThreadingHTTPServer):
+ request_queue_size=32
+ daemon_threads=True
+server=Server(('127.0.0.1',0),Handler)
 print('opencode server listening on http://127.0.0.1:'+str(server.server_port),flush=True)
 server.serve_forever()

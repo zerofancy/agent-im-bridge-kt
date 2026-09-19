@@ -40,7 +40,8 @@ internal class OpenCodeClient private constructor(val process: Process, private 
                 val temporary = backend.temporaryRoot ?: backend.runtimeRoot.resolve("tmp")
                 Files.createDirectories(temporary)
                 val password = UUID.randomUUID().toString()
-                val process = ProcessBuilder(backend.binary, "serve", "--hostname", "127.0.0.1", "--port", "0", "--pure")
+                val process = ProcessBuilder(listOf(backend.binary) + backend.binaryArguments +
+                    listOf("serve", "--hostname", "127.0.0.1", "--port", "0", "--pure"))
                     .directory(backend.runtimeRoot.toFile()).apply {
                         // Do not inherit another OpenCode instance's config, endpoint or runtime switches.
                         environment().keys.retainAll(setOf("PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE",
@@ -167,13 +168,15 @@ internal class OpenCodeClient private constructor(val process: Process, private 
         try {
             val handles = process.descendants().use { it.toArray().map { h -> h as ProcessHandle } }.reversed() + process.toHandle()
             closeQuietly(process.outputStream)
-            closeQuietly(process.inputStream)
-            closeQuietly(process.errorStream)
             handles.filter { it.isAlive }.forEach { it.destroy() }
             if (!process.waitFor(1, TimeUnit.SECONDS)) {
                 handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
                 process.waitFor(5, TimeUnit.SECONDS)
             }
+            // On Windows a concurrent native pipe read can make close() block indefinitely.
+            // Process exit closes the other end first and wakes both output readers.
+            closeQuietly(process.inputStream)
+            closeQuietly(process.errorStream)
             finishExit()
         } finally {
             http.dispatcher.cancelAll()

@@ -1,4 +1,5 @@
 import importlib.util
+import base64
 import json
 import os
 from pathlib import Path
@@ -323,15 +324,26 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual('failed', b.read(self.m.job_path(job['id']))['state'])
         self.assertFalse(any(a[0] == 'stop' for a in actions))
 
-    def test_windows_deployment_service_labels_fit_service_controller_limit(self):
+    def test_windows_deployment_uses_one_fixed_executor_label(self):
         first = '303a0363-1d34-46af-8f99-c885203a7c7c'
         second = 'f32b3dc2-f745-4c75-ade0-0fed0d5c0eef'
         with patch.object(b.sys, 'platform', 'win32'):
             a = self.m.deployment_label(first)
             other = self.m.deployment_label(second)
         self.assertLessEqual(len(a), 80)
-        self.assertNotEqual(a, other)
-        self.assertTrue(a.startswith(self.m.label + '.deploy.'))
+        self.assertEqual(a, other)
+        self.assertEqual(self.m.label + '.deploy', a)
+
+    def test_perform_active_runs_only_current_nonterminal_job(self):
+        job, _ = self.fake()
+        with patch.object(self.m, 'perform') as perform:
+            self.m.perform_active()
+        perform.assert_called_once_with(job['id'])
+        job['state'] = 'succeeded'
+        b.atomic(self.m.job_path(job['id']), job)
+        with patch.object(self.m, 'perform') as perform:
+            self.m.perform_active()
+        perform.assert_not_called()
 
     def test_prune_retains_live_previous_and_deployment_versions(self):
         releases=[]
@@ -615,7 +627,7 @@ class ServiceManagerTests(unittest.TestCase):
                     patch.object(b.ctypes.windll.shell32, 'IsUserAnAdmin', return_value=True):
                 mgr.load('svc', ['python', 'worker'], Path(tmpdir, 'logs/out.log'))
             self.assertTrue(any(c and c[-1] == 'install' for c in calls))
-            self.assertTrue(any(c and c[-1] == 'start' for c in calls))
+            self.assertIn(['sc.exe', 'start', 'svc'], calls)
             xml = (mgr.dir / 'svc.xml').read_text(encoding='utf-8')
             self.assertNotIn('pw', xml)
 
@@ -635,12 +647,92 @@ class ServiceManagerTests(unittest.TestCase):
                     patch.object(b.shutil, 'which') as which, \
                     patch.object(b.shutil, 'copy2') as copy2, \
                     patch.object(b.getpass, 'getpass') as getpass, \
-                    patch.object(b.ctypes.windll.shell32, 'IsUserAnAdmin', return_value=True):
+                    patch.object(b.ctypes.windll.shell32, 'IsUserAnAdmin', return_value=False):
                 mgr.load('svc', ['python', 'worker'], Path(tmpdir, 'logs/out.log'))
             getpass.assert_not_called()
             copy2.assert_not_called()
             which.assert_not_called()
-            self.assertTrue(any(c and c[-1] == 'start' for c in calls))
+            self.assertIn(['sc.exe', 'stop', 'svc'], calls)
+            self.assertIn(['sc.exe', 'start', 'svc'], calls)
+
+    def test_windows_deploy_runs_preprovisioned_limited_task(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmpdir:
+            calls = []
+            def fake_run(argv, check=True, timeout=25):
+                calls.append(argv)
+                return SimpleNamespace(returncode=0, stdout='')
+            with patch.object(b, 'run', side_effect=fake_run):
+                mgr = b.WindowsServiceManager(tmpdir)
+                mgr.load_deploy('svc.deploy', ['ignored'], Path(tmpdir, 'deploy.log'))
+            task = 'Agent IM Bridge svc.deploy deploy'
+            self.assertEqual(['schtasks.exe', '/Query', '/TN', task], calls[0])
+            self.assertEqual(['schtasks.exe', '/Run', '/TN', task], calls[1])
+            self.assertFalse(any('install' in call for call in calls))
+
+    def test_windows_unattended_setup_grants_service_rights_and_creates_limited_task(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmpdir:
+            calls = []
+            winsw = Path(tmpdir, 'deployment', 'winsw')
+            winsw.mkdir(parents=True)
+            (winsw / 'svc.xml').write_text('<service><username>yqmai</username></service>', encoding='utf-8')
+            def fake_run(argv, check=True, timeout=25):
+                calls.append(argv)
+                if argv[:2] == ['sc.exe', 'query']:
+                    return SimpleNamespace(returncode=0, stdout='STATE : 4 RUNNING')
+                if argv[:2] == ['sc.exe', 'sdshow']:
+                    return SimpleNamespace(returncode=0, stdout='D:(A;;CC;;;SY)S:(AU;SA;CC;;;WD)\n')
+                if argv[0] == 'powershell.exe':
+                    return SimpleNamespace(returncode=0, stdout='S-1-5-21-1-2-3-1001\n')
+                return SimpleNamespace(returncode=0, stdout='')
+            path = Path(tmpdir, 'state')
+            with patch.object(b, 'run', side_effect=fake_run), \
+                    patch.object(b.ctypes.windll.shell32, 'IsUserAnAdmin', return_value=True):
+                mgr = b.WindowsServiceManager(tmpdir)
+                mgr.enable_unattended('svc', 'svc.deploy', ['python', 'worker.py'], [path])
+            sdset = next(call for call in calls if call[:2] == ['sc.exe', 'sdset'])
+            self.assertIn('(A;;CCLCSWRPWPLOCRRC;;;S-1-5-21-1-2-3-1001)S:', sdset[3])
+            acl = next(call for call in calls if call[0] == 'icacls.exe')
+            self.assertIn(os.environ.get('COMPUTERNAME', '.') + r'\yqmai:(OI)(CI)M', acl)
+            create = next(call for call in calls if call[0] == 'powershell.exe' and '-EncodedCommand' in call)
+            script = base64.b64decode(create[-1]).decode('utf-16le')
+            self.assertIn('-LogonType S4U -RunLevel Limited', script)
+            self.assertIn("Register-ScheduledTask -TaskName 'Agent IM Bridge svc.deploy deploy'", script)
+            self.assertNotIn('password', script.lower())
+
+    def test_windows_unattended_setup_finds_registered_service_from_root(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmpdir:
+            winsw = Path(tmpdir, 'deployment', 'winsw')
+            winsw.mkdir(parents=True)
+            actual = 'top.ntutn.agent.bridge.actual.dev'
+            (winsw / (actual + '.xml')).write_text('<service><username>yqmai</username></service>', encoding='utf-8')
+            calls = []
+            def fake_run(argv, check=True, timeout=25):
+                calls.append(argv)
+                if argv[:2] == ['sc.exe', 'query']:
+                    return SimpleNamespace(returncode=0 if argv[2] == actual else 1, stdout='')
+                if argv[:2] == ['sc.exe', 'sdshow']:
+                    return SimpleNamespace(returncode=0, stdout='D:(A;;CC;;;SY)\n')
+                if argv[0] == 'powershell.exe':
+                    return SimpleNamespace(returncode=0, stdout='S-1-5-21-1-2-3-1001\n')
+                return SimpleNamespace(returncode=0, stdout='')
+            with patch.object(b, 'run', side_effect=fake_run), \
+                    patch.object(b.ctypes.windll.shell32, 'IsUserAnAdmin', return_value=True):
+                b.WindowsServiceManager(tmpdir).enable_unattended(
+                    'top.ntutn.agent.bridge.other.dev', 'top.ntutn.agent.bridge.other.dev.deploy',
+                    ['python', 'worker.py'], [Path(tmpdir, 'state')])
+            self.assertIn(['sc.exe', 'sdshow', actual], calls)
+            create = next(call for call in calls if call[0] == 'powershell.exe' and '-EncodedCommand' in call)
+            script = base64.b64decode(create[-1]).decode('utf-16le')
+            self.assertIn('Agent IM Bridge top.ntutn.agent.bridge.other.dev.deploy deploy', script)
 
     def test_windows_missing_winsw_hints_install(self):
         if sys.platform != 'win32':

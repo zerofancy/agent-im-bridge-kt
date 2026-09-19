@@ -31,7 +31,8 @@ internal class AppServerClient private constructor(val process: Process, private
 
     companion object {
         suspend fun start(backend: BackendSpec): AppServerClient = withContext(Dispatchers.IO) {
-            AppServerClient(ProcessBuilder(backend.binary, "app-server", "--listen", "stdio://")
+            AppServerClient(ProcessBuilder(listOf(backend.binary) + backend.binaryArguments +
+                listOf("app-server", "--listen", "stdio://"))
                 .apply { environment().putAll(backend.environment) }.start(), backend).also { it.read() }
         }
     }
@@ -134,8 +135,8 @@ internal class AppServerClient private constructor(val process: Process, private
         val handles = process.toHandle().descendants().use { it.toArray().map { h -> h as ProcessHandle } }.reversed() + process.toHandle()
         closeQuietly(writer)
         closeQuietly(process.outputStream)
-        closeQuietly(process.inputStream)
-        closeQuietly(process.errorStream)
+        // Windows may block forever when closing stdout while another coroutine is in a native read.
+        // End the process first so its pipe closes and wakes the reader, then release our stream handles.
         handles.filter { it.isAlive }.forEach { it.destroy() }
         if (!process.waitFor(1, TimeUnit.SECONDS)) {
             handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
@@ -143,6 +144,8 @@ internal class AppServerClient private constructor(val process: Process, private
                 log.warn("${displayName} app-server 关闭超时 pid={}；测试或关闭流程继续执行", process.pid())
             }
         }
+        closeQuietly(process.inputStream)
+        closeQuietly(process.errorStream)
         finishExit()
         scope.cancel()
     }

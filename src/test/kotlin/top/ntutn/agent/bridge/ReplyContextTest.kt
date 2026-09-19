@@ -63,7 +63,9 @@ class ReplyContextTest {
             assertEquals(listOf("forward"), source.reads)
             assertTrue(result.text.indexOf("内容first") < result.text.indexOf("file-sender"))
             assertTrue(result.text.indexOf("file-sender") < result.text.indexOf("图片说明"))
-            val paths = Files.walk(temp.resolve("files")).use { stream -> stream.filter { Files.isRegularFile(it) }.collect(java.util.stream.Collectors.toList()) }
+            val paths = Files.walk(temp.resolve("files")).use { stream -> stream.filter {
+                Files.isRegularFile(it) && it.fileName.toString() != ".lease"
+            }.collect(java.util.stream.Collectors.toList()) }
             assertTrue(paths.any { Files.readString(it) == "data" })
         } finally { result.release() }
     }
@@ -250,7 +252,9 @@ class ReplyContextTest {
             assertContains(result.text, "【资源下载失败：外部资源读取失败】")
             assertContains(result.text, "\"href\":\"https://example.com\"")
             assertFalse(result.text.contains("private external failure"))
-            val paths = Regex(Regex.escape(temp.toAbsolutePath().toString()) + "[^\\s]+\\.txt").findAll(result.text).map { Path.of(it.value) }.toList()
+            val paths = Files.walk(temp.resolve("files")).use { stream -> stream.filter {
+                Files.isRegularFile(it) && it.fileName.toString() != ".lease"
+            }.collect(java.util.stream.Collectors.toList()) }
             assertEquals(2, paths.size)
             paths.forEach { assertEquals("data", Files.readString(it)); assertTrue(it.startsWith(temp.resolve("files"))) }
             assertNotEquals(paths[0], paths[1])

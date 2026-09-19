@@ -13,7 +13,8 @@ enum class BackendId(val configValue: String, val displayName: String) {
 }
 
 data class BackendSpec(val id: BackendId, val binary: String, val runtimeRoot: Path,
-                       val sharedRoot: Path = runtimeRoot, val temporaryRoot: Path? = null) {
+                       val sharedRoot: Path = runtimeRoot, val temporaryRoot: Path? = null,
+                       internal val binaryArguments: List<String> = emptyList()) {
     val displayName: String get() = id.displayName
     val environment: Map<String, String> get() = (when (id) {
         BackendId.OPENCODE -> mapOf("XDG_DATA_HOME" to runtimeRoot.resolve("data").toString(),
