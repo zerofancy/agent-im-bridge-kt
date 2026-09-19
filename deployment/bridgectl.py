@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Immutable releases and user-level service jobs. Never runs deployment inside the Bridge process tree."""
 import argparse
 import contextlib
@@ -76,13 +76,20 @@ def locked(path, blocking=False, record_lock=False):
 
 def run(argv, check=True):
     r = subprocess.run([str(x) for x in argv], capture_output=True, text=True, timeout=25)
-    if check and r.returncode: raise RuntimeError('命令失败: ' + str(argv[0]) + ' (exit=' + str(r.returncode) + ')')
+    if check and r.returncode:
+        detail = (r.stderr or r.stdout or '').strip()
+        raise RuntimeError('命令失败: ' + str(argv[0]) + ' (exit=' + str(r.returncode) + '): ' + detail)
     return r
 
 
 def alive(pid):
-    try: os.kill(int(pid), 0); return True
-    except (OSError, TypeError, ValueError): return False
+    try: pid = int(pid)
+    except (TypeError, ValueError): return False
+    if os.name == 'nt':
+        # 跨会话无法 OpenProcess，让 HTTP 层判断桥是否存活
+        return True
+    try: os.kill(pid, 0); return True
+    except OSError: return False
 
 
 def sha(path):
@@ -272,10 +279,11 @@ class WindowsServiceManager(ServiceManager):
         arguments = ' '.join(_win_quote(a) for a in argv[1:])
         user = getpass.getuser()
         pw = _xml_escape(password) if password is not None else ''
-        return f"""<service>
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<service>
   <id>{_xml_escape(label)}</id>
   <name>Agent IM Bridge ({_xml_escape(label)})</name>
-  <description>Agent IM Bridge 守护服务</description>
+  <description>Agent IM Bridge service</description>
   <executable>{_xml_escape(argv[0])}</executable>
   <arguments>{_xml_escape(arguments)}</arguments>
   <workingdirectory>{_xml_escape(str(self.root))}</workingdirectory>
@@ -504,7 +512,7 @@ class Manager:
             if time.monotonic() > until: raise RuntimeError('旧实例未确认退出')
             time.sleep(.2)
 
-    def wait_ready(self, release, timeout=60, stable=10):
+    def wait_ready(self, release, timeout=120, stable=10):
         deadline = time.monotonic() + timeout
         since = None; boot = None
         while time.monotonic() < deadline:
