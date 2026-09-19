@@ -14,6 +14,21 @@ if sys.platform == 'darwin':
     import plistlib
 
 class DeploymentTests(unittest.TestCase):
+    def test_state_files_are_read_as_utf8(self):
+        path = self.root / 'state.json'
+        path.write_bytes('{"状态":"正常"}'.encode('utf-8'))
+        self.assertEqual({'状态': '正常'}, b.read(path))
+
+    def test_command_output_uses_system_encoding_and_replaces_invalid_bytes(self):
+        from types import SimpleNamespace
+        process = SimpleNamespace(returncode=0, stdout=b'out-\xff', stderr=b'err-\xfe')
+        with patch.object(b.subprocess, 'run', return_value=process) as subprocess_run, \
+                patch.object(b.locale, 'getencoding', return_value='utf-8'):
+            result = b.run(['tool'])
+        self.assertEqual('out-\ufffd', result.stdout)
+        self.assertEqual('err-\ufffd', result.stderr)
+        subprocess_run.assert_called_once_with(['tool'], capture_output=True, timeout=25)
+
     def test_opencode_login_uses_environment_state_without_inherited_secrets(self):
         from types import SimpleNamespace
         settings = {'workspace': str(self.root / 'workspace'), 'opencodeBinary': '/fake/opencode'}
@@ -308,6 +323,16 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual('failed', b.read(self.m.job_path(job['id']))['state'])
         self.assertFalse(any(a[0] == 'stop' for a in actions))
 
+    def test_windows_deployment_service_labels_fit_service_controller_limit(self):
+        first = '303a0363-1d34-46af-8f99-c885203a7c7c'
+        second = 'f32b3dc2-f745-4c75-ade0-0fed0d5c0eef'
+        with patch.object(b.sys, 'platform', 'win32'):
+            a = self.m.deployment_label(first)
+            other = self.m.deployment_label(second)
+        self.assertLessEqual(len(a), 80)
+        self.assertNotEqual(a, other)
+        self.assertTrue(a.startswith(self.m.label + '.deploy.'))
+
     def test_prune_retains_live_previous_and_deployment_versions(self):
         releases=[]
         for n in range(6):
@@ -554,6 +579,22 @@ class ServiceManagerTests(unittest.TestCase):
             self.assertFalse(b.WindowsServiceManager('/r').is_loaded('svc'))
             run.return_value = SimpleNamespace(returncode=1, stdout='')
             self.assertFalse(b.WindowsServiceManager('/r').is_loaded('svc'))
+
+    def test_windows_alive_uses_process_exit_code(self):
+        if sys.platform != 'win32':
+            self.skipTest('Windows only test')
+        kernel32 = b.ctypes.windll.kernel32
+        with patch.object(kernel32, 'OpenProcess', return_value=0), \
+                patch.object(kernel32, 'GetLastError', return_value=87):
+            self.assertFalse(b.alive(123))
+        def active(_handle, code):
+            code._obj.value = 259
+            return 1
+        with patch.object(kernel32, 'OpenProcess', return_value=456), \
+                patch.object(kernel32, 'GetExitCodeProcess', side_effect=active), \
+                patch.object(kernel32, 'CloseHandle') as close:
+            self.assertTrue(b.alive(123))
+            close.assert_called_once_with(456)
 
     def test_windows_load_installs_when_not_registered_and_strips_password_from_disk(self):
         if sys.platform != 'win32':

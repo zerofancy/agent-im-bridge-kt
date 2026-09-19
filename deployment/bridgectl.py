@@ -10,6 +10,7 @@ import ctypes
 import getpass
 import hashlib
 import json
+import locale
 import os
 from pathlib import Path
 import re
@@ -29,7 +30,7 @@ TERMINAL = {'succeeded', 'cancelled', 'rolled-back', 'failed'}
 
 
 def read(path, default=None):
-    return json.loads(path.read_text()) if path.exists() else default
+    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else default
 
 
 def atomic(path, data):
@@ -75,7 +76,10 @@ def locked(path, blocking=False, record_lock=False):
 
 
 def run(argv, check=True):
-    r = subprocess.run([str(x) for x in argv], capture_output=True, text=True, timeout=25)
+    r = subprocess.run([str(x) for x in argv], capture_output=True, timeout=25)
+    encoding = locale.getencoding() if hasattr(locale, 'getencoding') else locale.getpreferredencoding(False)
+    r.stdout = (r.stdout or b'').decode(encoding, errors='replace')
+    r.stderr = (r.stderr or b'').decode(encoding, errors='replace')
     if check and r.returncode:
         detail = (r.stderr or r.stdout or '').strip()
         raise RuntimeError('命令失败: ' + str(argv[0]) + ' (exit=' + str(r.returncode) + '): ' + detail)
@@ -86,8 +90,24 @@ def alive(pid):
     try: pid = int(pid)
     except (TypeError, ValueError): return False
     if os.name == 'nt':
-        # 跨会话无法 OpenProcess，让 HTTP 层判断桥是否存活
-        return True
+        kernel32 = ctypes.windll.kernel32
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        open_process.restype = ctypes.c_void_p
+        get_exit_code = kernel32.GetExitCodeProcess
+        get_exit_code.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        get_exit_code.restype = ctypes.c_int
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [ctypes.c_void_p]
+        close_handle.restype = ctypes.c_int
+        handle = open_process(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return kernel32.GetLastError() == 5  # Access denied means the process still exists.
+        try:
+            code = ctypes.c_ulong()
+            return bool(get_exit_code(handle, ctypes.byref(code))) and code.value == 259
+        finally:
+            close_handle(handle)
     try: os.kill(pid, 0); return True
     except OSError: return False
 
@@ -366,7 +386,7 @@ class Manager:
 
     def current(self):
         p = self.deploydir / 'current'
-        return p.read_text().strip() if p.exists() else None
+        return p.read_text(encoding='utf-8').strip() if p.exists() else None
 
     def verify(self, name):
         p = self.release(name)
@@ -468,6 +488,11 @@ class Manager:
             same_root = False
         return bool(same_root and os.environ.get('BRIDGE_ENV') == self.env and release == self.current())
 
+    def deployment_label(self, job_id):
+        if sys.platform == 'win32':
+            return self.label + '.deploy.' + hashlib.sha256(job_id.encode()).hexdigest()[:16]
+        return self.label + '.deploy.' + job_id
+
     def drained(self, job, status):
         if status.get('pending', 0) == 0:
             return True
@@ -532,7 +557,7 @@ class Manager:
             job = {'id': str(uuid.uuid4()), 'env': self.env, 'old': self.current(), 'target': target,
                    'state': 'prepared', 'createdAt': time.time(), 'selfInitiated': self.self_initiated()}
             atomic(self.deploydir / 'jobs' / (job['id'] + '.json'), job)
-            label = self.label + '.deploy.' + job['id']
+            label = self.deployment_label(job['id'])
             args = self.args(target, '_deploy', '--job', job['id'])
             try:
                 self.service.load_deploy(label, args, self.directory / 'logs' / ('deploy-' + job['id'] + '.log'))
@@ -655,7 +680,7 @@ class Manager:
             dep = self.root / 'deployment' / env
             for name in ('current', 'previous'):
                 p = dep / name
-                if p.exists(): protected.add(p.read_text().strip())
+                if p.exists(): protected.add(p.read_text(encoding='utf-8').strip())
             for p in (dep / 'jobs').glob('*.json'):
                 job = read(p)
                 if job['state'] not in TERMINAL: protected.update((job.get('old'), job['target']))
@@ -843,7 +868,7 @@ def main():
             atomic(p.with_suffix('.force' if args.command == 'deploy-force' else '.cancel'), b'1')
             print('已提交部署控制请求')
     elif args.command in ('deploy', 'rollback'):
-        target = args.release if args.command == 'deploy' else (m.deploydir / 'previous').read_text().strip()
+        target = args.release if args.command == 'deploy' else (m.deploydir / 'previous').read_text(encoding='utf-8').strip()
         print(m.submit(target))
     elif args.command == 'status':
         try: status = m.rpc()

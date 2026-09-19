@@ -79,6 +79,13 @@ class BackendTest {
         }
     }
 
+    @Test fun `only Codex opts into experimental app server fields`() {
+        val codex = appServerInitializeParams(BackendSpec(BackendId.CODEX, "codex", temp))
+        assertTrue(codex.getAsJsonObject("capabilities")["experimentalApi"].asBoolean)
+        val traex = appServerInitializeParams(BackendSpec(BackendId.TRAEX, "traex", temp))
+        assertFalse(traex.has("capabilities"))
+    }
+
     @Test fun `inactive diagnostic matching is exact and Traex specific`() {
         val spec = BackendSpec(BackendId.TRAEX, "traex", temp)
         assertTrue(spec.isInactiveTurn(RpcFailure(-32600, "no active turn to interrupt")))

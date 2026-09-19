@@ -16,7 +16,8 @@ internal class RpcFailure(val code: Int?, val diagnostic: String?) : Exception("
 internal class TransportFailure : Exception("Agent app-server connection unavailable; restart Bridge")
 
 /** This scope owns the transport, not any individual model request. */
-internal class AppServerClient private constructor(val process: Process, private val displayName: String) {
+internal class AppServerClient private constructor(val process: Process, private val backend: BackendSpec) {
+    private val displayName = backend.displayName
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + FatalErrorHandler.context)
     private val state = Mutex()
@@ -31,7 +32,7 @@ internal class AppServerClient private constructor(val process: Process, private
     companion object {
         suspend fun start(backend: BackendSpec): AppServerClient = withContext(Dispatchers.IO) {
             AppServerClient(ProcessBuilder(backend.binary, "app-server", "--listen", "stdio://")
-                .apply { environment().putAll(backend.environment) }.start(), backend.displayName).also { it.read() }
+                .apply { environment().putAll(backend.environment) }.start(), backend).also { it.read() }
         }
     }
 
@@ -93,7 +94,7 @@ internal class AppServerClient private constructor(val process: Process, private
 
     suspend fun initialize() {
         withTimeout(10_000) {
-            request("initialize", json("clientInfo" to json("name" to "agent_im_bridge_kt", "version" to "1.0")))
+            request("initialize", appServerInitializeParams(backend))
             write(json("method" to "initialized"))
         }
         log.info("${displayName} app-server 已连接 pid={}", process.pid())
@@ -150,3 +151,8 @@ internal class AppServerClient private constructor(val process: Process, private
         try { closeable?.close() } catch (_: Exception) { }
     }
 }
+
+internal fun appServerInitializeParams(backend: BackendSpec) =
+    json("clientInfo" to json("name" to "agent_im_bridge_kt", "version" to "1.0")).apply {
+        if (backend.id == BackendId.CODEX) add("capabilities", json("experimentalApi" to true))
+    }
