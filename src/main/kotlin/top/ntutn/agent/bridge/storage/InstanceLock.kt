@@ -14,12 +14,16 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.future.await
-import java.nio.file.attribute.PosixFilePermissions
 
-class InstanceLock private constructor(private val channel: FileChannel, private val lock: FileLock) : AutoCloseable {
+class InstanceLock private constructor(
+    private val channel: FileChannel,
+    private val lock: FileLock,
+    private val pidPath: Path?,
+) : AutoCloseable {
     @Synchronized override fun close() {
         if (lock.isValid) lock.release()
         channel.close()
+        if (pidPath != null) runCatching { Files.deleteIfExists(pidPath) }
     }
     companion object {
         /** Only signal a locked owner whose PID and start time still match our metadata. */
@@ -29,6 +33,7 @@ class InstanceLock private constructor(private val channel: FileChannel, private
             require(!Files.isSymbolicLink(directory) && Files.isRegularFile(path, NOFOLLOW_LINKS)) {
                 "实例锁目录或文件无效，未停止任何进程。"
             }
+            if (PlatformFiles.isWindows) return stopWindows(directory, path)
             FileChannel.open(path, READ, WRITE).use { channel ->
                 val available = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
                 if (available != null) {
@@ -57,11 +62,36 @@ class InstanceLock private constructor(private val channel: FileChannel, private
             }
         }
 
+        /** Windows 的 FileLock 是强制锁：持有期间其他进程无法读写锁文件，且 destroy() 不触发 shutdown hook，停止语义退化为定位 PID 后终止进程。 */
+        private fun stopWindows(directory: Path, path: Path): String {
+            val locked = try {
+                FileChannel.open(path, READ, WRITE).use { channel ->
+                    val available = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
+                    if (available != null) {
+                        available.release()
+                        false
+                    } else true
+                }
+            } catch (_: Exception) { true }
+            if (!locked) return "没有正在运行的 Bridge 实例。"
+            val pid = runCatching {
+                Files.readString(directory.resolve("bridge.pid"), Charsets.UTF_8).trim().toLong()
+            }.getOrNull()
+            require(pid != null && pid > 0 && pid != ProcessHandle.current().pid()) {
+                "无法读取实例进程信息。请结束 agent-im-bridge-kt 的 java 进程后重试。"
+            }
+            val process = ProcessHandle.of(pid).orElse(null) ?: return "旧实例已退出。"
+            require(process.destroy()) { "无法停止旧实例，请检查进程权限。" }
+            val exited = runBlocking { withTimeoutOrNull(20_000) { process.onExit().await(); true } ?: false }
+            require(exited) { "已请求旧实例退出，但 20 秒内未退出；请检查旧实例日志，未强制终止。" }
+            return "旧 Bridge 实例已停止。"
+        }
+
         fun acquire(directory: Path): InstanceLock {
-            Files.createDirectories(directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+            PlatformFiles.createDirectories(directory)
             val path = directory.resolve("bridge.lock")
             require(!Files.isSymbolicLink(directory) && !Files.isSymbolicLink(path)) { "实例锁目录或文件不能是符号链接。" }
-            val channel = FileChannel.open(path, setOf(CREATE, WRITE), PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            val channel = PlatformFiles.openChannel(path, setOf(CREATE, WRITE))
             try {
                 val lock = channel.tryLock() ?: throw IllegalStateException()
                 try {
@@ -73,7 +103,13 @@ class InstanceLock private constructor(private val channel: FileChannel, private
                     val bytes = ByteBuffer.wrap(metadata.toByteArray(Charsets.UTF_8))
                     while (bytes.hasRemaining()) channel.write(bytes)
                     channel.force(true)
-                    return InstanceLock(channel, lock)
+                    val pidPath = if (PlatformFiles.isWindows) {
+                        // 强制锁下 stop 无法读取锁文件，PID 写入不受锁保护的副文件供 stop 定位进程。
+                        val p = directory.resolve("bridge.pid")
+                        Files.writeString(p, "${process.pid()}\n", Charsets.UTF_8)
+                        p
+                    } else null
+                    return InstanceLock(channel, lock, pidPath)
                 } catch (e: Exception) {
                     lock.release()
                     throw e

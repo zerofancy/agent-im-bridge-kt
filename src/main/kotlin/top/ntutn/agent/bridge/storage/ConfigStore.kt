@@ -8,7 +8,6 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
-import java.nio.file.attribute.PosixFilePermissions
 
 class BridgeConfig(val appId: String, val appSecret: String, val allowedUserId: String, val tenant: String, val sandboxMode: String = "read-only", val backend: String = "codex") {
     val platform: String get() = when (tenant) {
@@ -37,12 +36,11 @@ class BridgeConfig(val appId: String, val appSecret: String, val allowedUserId: 
 
 class ConfigStore(val path: Path) {
     private val gson = GsonBuilder().setPrettyPrinting().create()
-    private val filePermissions = PosixFilePermissions.fromString("rw-------")
 
     fun load(): BridgeConfig? {
         if (!Files.exists(path, NOFOLLOW_LINKS)) return null
         require(Files.isRegularFile(path, NOFOLLOW_LINKS)) { "配置必须是普通文件，不能是符号链接。" }
-        Files.setPosixFilePermissions(path, filePermissions)
+        PlatformFiles.setPrivatePermissions(path, directory = false)
         return try {
             val json = JsonParser.parseString(Files.readString(path)).asJsonObject
             BridgeConfig(json["appId"].asString, json["appSecret"].asString,
@@ -65,10 +63,10 @@ class ConfigStore(val path: Path) {
     fun save(config: BridgeConfig) {
         config.validate()
         val directory = path.toAbsolutePath().parent
-        Files.createDirectories(directory, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+        PlatformFiles.createDirectories(directory)
         require(Files.isDirectory(directory, NOFOLLOW_LINKS)) { "配置目录不能是符号链接。" }
-        Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwx------"))
-        val temp = Files.createTempFile(directory, ".config-", ".tmp", PosixFilePermissions.asFileAttribute(filePermissions))
+        PlatformFiles.setPrivatePermissions(directory, directory = true)
+        val temp = PlatformFiles.createTempFile(directory, ".config-", ".tmp")
         try {
             Files.writeString(temp, gson.toJson(config) + "\n")
             Files.move(temp, path, ATOMIC_MOVE, REPLACE_EXISTING)

@@ -2,6 +2,8 @@ package top.ntutn.agent.bridge
 
 import com.google.gson.JsonParser
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.condition.DisabledOnOs
+import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -27,8 +29,6 @@ class WorkspaceTest {
         assertEquals(nested.toRealPath(), resolveWorkspace("\"$nested\"", temp))
         assertEquals(temp.toRealPath(), resolveWorkspace("..", nested))
         assertEquals(Path.of(System.getProperty("user.home")).toRealPath(), resolveWorkspace("~", temp))
-        val link = Files.createSymbolicLink(temp.resolve("link"), nested)
-        assertEquals(nested.toRealPath(), resolveWorkspace(link.toString(), temp))
         val literal = Files.createDirectory(temp.resolve("\$(literal)"))
         assertEquals(literal.toRealPath(), resolveWorkspace("\$(literal)", temp))
         for (bad in listOf("missing", "''", "\"mismatch", "file")) {
@@ -36,6 +36,14 @@ class WorkspaceTest {
             assertFailsWith<IllegalArgumentException> { resolveWorkspace(bad, temp) }
         }
         assertTrue(isCdCommand("/cd\t..")); assertFalse(isCdCommand("/cdrom"))
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS) // Windows 创建符号链接需要开发者模式 / 管理员权限
+    fun `workspace symlink resolves to target`(): Unit = runBlocking {
+        val nested = Files.createDirectories(temp.resolve("dir with spaces"))
+        val link = Files.createSymbolicLink(temp.resolve("link"), nested)
+        assertEquals(nested.toRealPath(), resolveWorkspace(link.toString(), temp))
     }
 
     @Test fun `v1 migrates and workspace switch clears only target binding atomically`(): Unit = runBlocking {

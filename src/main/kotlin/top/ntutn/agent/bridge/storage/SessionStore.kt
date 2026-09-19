@@ -8,7 +8,6 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
-import java.nio.file.attribute.PosixFilePermissions
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -33,7 +32,7 @@ class SessionStore(private val path: Path) {
         if (Files.exists(path, NOFOLLOW_LINKS)) {
             try {
                 require(Files.isRegularFile(path, NOFOLLOW_LINKS))
-                Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"))
+                PlatformFiles.setPrivatePermissions(path, directory = false)
                 val root = JsonParser.parseString(Files.readString(path)).asJsonObject
                 val version = root["version"].asInt
                 require(version in 1..3)
@@ -116,10 +115,10 @@ class SessionStore(private val path: Path) {
         var temp: Path? = null
         try {
             val parent = path.toAbsolutePath().parent
-            Files.createDirectories(parent, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+            PlatformFiles.createDirectories(parent)
             require(Files.isDirectory(parent, NOFOLLOW_LINKS))
             require(!Files.isSymbolicLink(path))
-            temp = Files.createTempFile(parent, ".sessions-", ".tmp", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+            temp = PlatformFiles.createTempFile(parent, ".sessions-", ".tmp")
             Files.writeString(temp, gson.toJson(mapOf("version" to 3, "sessions" to next.values, "workspaces" to nextDirectories.values)) + "\n")
             Files.move(temp, path, ATOMIC_MOVE, REPLACE_EXISTING)
         } catch (_: Exception) { throw SessionPersistenceException() }

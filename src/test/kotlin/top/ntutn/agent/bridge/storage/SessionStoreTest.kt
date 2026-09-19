@@ -2,6 +2,8 @@ package top.ntutn.agent.bridge.storage
 
 import top.ntutn.agent.bridge.*
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.condition.DisabledOnOs
+import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -21,9 +23,15 @@ class SessionStoreTest {
         assertEquals(id, SessionStore(path).get(key("private")))
         for (other in listOf(key("group"), key("private").copy(appId = "other"),
             key("private").copy(workspace = "/other"), key("private").copy(runtimeRoot = "/other"))) assertNull(store.get(other))
-        assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(path))
         store.remove(key("private"))
         assertNull(SessionStore(path).get(key("private")))
+    }
+    @Test
+    @DisabledOnOs(OS.WINDOWS) // Windows 无 posix 权限视图；私有性由 ACL / 用户主目录保证
+    fun `sessions file is private on POSIX platforms`(): Unit = runBlocking {
+        val path = temp.resolve("sessions.json")
+        SessionStore(path).set(key("private"), UUID.randomUUID().toString())
+        assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(path))
     }
     @Test fun `concurrent writes are not lost`(): Unit = runBlocking {
         val store = SessionStore(temp.resolve("sessions.json"))

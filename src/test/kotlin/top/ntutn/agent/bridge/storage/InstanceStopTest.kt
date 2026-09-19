@@ -2,6 +2,9 @@ package top.ntutn.agent.bridge.storage
 
 import top.ntutn.agent.bridge.*
 import kotlinx.coroutines.CoroutineScope
+import org.junit.jupiter.api.condition.DisabledOnOs
+import org.junit.jupiter.api.condition.EnabledOnOs
+import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -27,7 +30,9 @@ class InstanceStopTest {
         return process
     }
 
-    @Test fun `stop signals locked process and waits for graceful cleanup`() {
+    @Test
+    @DisabledOnOs(OS.WINDOWS) // Windows 上 destroy() 不触发 shutdown hook、强制锁阻止读写锁文件，优雅清理语义不可用
+    fun `stop signals locked process and waits for graceful cleanup`() {
         val process = start()
         try {
             assertEquals("旧 Bridge 实例已停止。", InstanceLock.stop(temp))
@@ -38,7 +43,21 @@ class InstanceStopTest {
         } finally { if (process.isAlive) process.destroyForcibly() }
     }
 
-    @Test fun `stale metadata never signals a running process`() {
+    @Test
+    @EnabledOnOs(OS.WINDOWS) // Windows 停止语义：定位 PID 后终止进程（无 shutdown hook 清理）
+    fun `stop terminates locked process on Windows`() {
+        val process = start()
+        try {
+            assertEquals("旧 Bridge 实例已停止。", InstanceLock.stop(temp))
+            assertFalse(process.isAlive)
+            assertEquals("没有正在运行的 Bridge 实例。", InstanceLock.stop(temp))
+            InstanceLock.acquire(temp).close()
+        } finally { if (process.isAlive) process.destroyForcibly() }
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS) // 同上：Windows 强制锁阻止测试向锁文件写入 stale 元数据
+    fun `stale metadata never signals a running process`() {
         assertEquals("没有正在运行的 Bridge 实例。", InstanceLock.stop(temp))
         val process = start()
         try {

@@ -12,15 +12,12 @@ import java.nio.file.*
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.StandardOpenOption.*
 import java.nio.file.attribute.FileTime
-import java.nio.file.attribute.PosixFilePermissions
 import java.time.Duration
 import java.util.UUID
 
 /** Filesystem locks are storage leases only; no business scheduling relies on them. */
 class AttachmentStore(private val root: Path, private val now: () -> Long = System::currentTimeMillis) {
     private val mutex = Mutex()
-    private val directoryMode = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))
-    private val fileMode = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))
     private val retention = Duration.ofDays(7).toMillis()
 
     suspend fun acquire(): Lease {
@@ -31,8 +28,8 @@ class AttachmentStore(private val root: Path, private val now: () -> Long = Syst
                     // Creating the storage lease and registering its owner is one atomic operation.
                     withContext(NonCancellable) {
                         initialize()
-                        val directory = Files.createTempDirectory(root, "request-", directoryMode)
-                        val channel = FileChannel.open(directory.resolve(".lease"), setOf(CREATE_NEW, WRITE), fileMode)
+                        val directory = PlatformFiles.createTempDirectory(root, "request-")
+                        val channel = PlatformFiles.openChannel(directory.resolve(".lease"), setOf(CREATE_NEW, WRITE))
                         try {
                             val lock = channel.lock()
                             Files.setLastModifiedTime(directory, FileTime.fromMillis(now()))
@@ -56,7 +53,7 @@ class AttachmentStore(private val root: Path, private val now: () -> Long = Syst
 
         suspend fun save(name: String?, download: suspend (OutputStream) -> String?): Path = withContext(Dispatchers.IO) {
             currentCoroutineContext().ensureActive()
-            val partial = Files.createTempFile(directory, ".download-", ".part", fileMode)
+            val partial = PlatformFiles.createTempFile(directory, ".download-", ".part")
             try {
                 val downloadedName = Files.newOutputStream(partial).use { download(it) }
                 currentCoroutineContext().ensureActive()
@@ -109,7 +106,7 @@ class AttachmentStore(private val root: Path, private val now: () -> Long = Syst
     }
 
     private fun initialize() {
-        Files.createDirectories(root, directoryMode)
+        PlatformFiles.createDirectories(root)
         check(Files.isDirectory(root, NOFOLLOW_LINKS))
     }
 }

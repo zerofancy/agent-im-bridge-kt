@@ -2,6 +2,8 @@ package top.ntutn.agent.bridge.storage
 
 import top.ntutn.agent.bridge.*
 import kotlinx.coroutines.*
+import org.junit.jupiter.api.condition.DisabledOnOs
+import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -38,7 +40,9 @@ class AttachmentStoreTest {
         assertTrue(Files.exists(path)); assertTrue(path.toString().endsWith(".png"))
     }
 
-    @Test fun `cleanup never follows resource directory symlinks`(): Unit = runBlocking {
+    @Test
+    @DisabledOnOs(OS.WINDOWS) // Windows 创建符号链接需要开发者模式 / 管理员权限
+    fun `cleanup never follows resource directory symlinks`(): Unit = runBlocking {
         var now = System.currentTimeMillis()
         val store = AttachmentStore(temp.resolve("attachments")) { now }
         val lease = store.acquire()

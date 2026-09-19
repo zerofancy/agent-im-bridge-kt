@@ -2,6 +2,8 @@ import java.nio.file.Path
 import java.nio.file.Files
 import java.nio.file.StandardOpenOption
 import java.nio.channels.FileChannel
+import java.util.Locale
+import java.util.Locale.getDefault
 
 plugins {
     kotlin("jvm") version "2.1.21"
@@ -37,6 +39,8 @@ distributions {
 }
 
 val deploymentTest by tasks.registering(Exec::class) {
+    // 部署事务测试依赖 POSIX 的 fcntl 与 launchd/systemd，Windows 上跳过（见 docs/windows-porting-plan.md）。
+    onlyIf { !System.getProperty("os.name").lowercase(getDefault()).startsWith("windows") }
     commandLine("python3", "-m", "unittest", "discover", "-s", "deployment", "-p", "test_*.py")
 }
 tasks.test { dependsOn(deploymentTest) }

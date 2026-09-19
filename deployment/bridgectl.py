@@ -2,7 +2,11 @@
 """Immutable releases and user-level service jobs. Never runs deployment inside the Bridge process tree."""
 import argparse
 import contextlib
-import fcntl
+try:
+    import fcntl  # POSIX 文件锁
+except ImportError:  # Windows：无 fcntl，locked() 使用 msvcrt 字节范围锁
+    fcntl = None
+import getpass
 import hashlib
 import json
 import os
@@ -44,9 +48,28 @@ def locked(path, blocking=False, record_lock=False):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        (fcntl.lockf if record_lock else fcntl.flock)(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        if fcntl is not None:
+            (fcntl.lockf if record_lock else fcntl.flock)(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        else:
+            import msvcrt
+            acquired = False
+            while not acquired:
+                try:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)  # Windows 无 flock：锁定首字节作为互斥
+                    acquired = True
+                except OSError:
+                    if not blocking:
+                        raise BlockingIOError('另一个进程持有部署锁') from None
+                    time.sleep(1)
         yield
     finally:
+        if fcntl is None:
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
         os.close(fd)
 
 
@@ -196,12 +219,23 @@ WantedBy=default.target
 """
 
 
+class WindowsServiceManager(ServiceManager):
+    """Windows 服务化管理占位（阶段 2 使用 NSSM）。当前仅支持 bridgectl dev 前台运行。"""
+
+    def _unsupported(self, *args, **kwargs):
+        raise RuntimeError('Windows 服务化管理尚未实现（NSSM，见 docs/windows-porting-plan.md 阶段 2）；当前请使用 bridgectl dev 前台运行')
+
+    is_loaded = load = unload = enable = disable = load_deploy = _unsupported
+
+
 def get_service_manager(domain):
     """根据平台返回对应的服务管理器"""
     if sys.platform == 'darwin':
         return LaunchdManager(domain)
     elif sys.platform == 'linux':
         return SystemdManager()
+    elif sys.platform == 'win32':
+        return WindowsServiceManager()
     else:
         raise RuntimeError(f'不支持的平台: {sys.platform}')
 
@@ -214,7 +248,7 @@ class Manager:
         self.directory = self.root / 'environments' / env
         self.deploydir = self.root / 'deployment' / env
         self.label = 'top.ntutn.agent.bridge.' + hashlib.sha256(str(self.root).encode()).hexdigest()[:12] + '.' + env
-        self.domain = 'gui/' + str(os.getuid())
+        self.domain = 'gui/' + (str(os.getuid()) if hasattr(os, 'getuid') else getpass.getuser())
         self.plist = Path.home() / 'Library/LaunchAgents' / (self.label + '.plist')
         self.service = get_service_manager(self.domain)
 
@@ -254,10 +288,13 @@ class Manager:
                 atomic(staging / 'manifest.json', manifest)
                 copied = {str(f.relative_to(staging)): sha(f) for f in sorted(staging.rglob('*')) if f.is_file() and f != staging / 'manifest.json'}
                 if copied != files: raise ValueError('构建产物在发布期间发生变化，请重新构建')
-                for f in staging.rglob('*'):
-                    if f.is_file(): f.chmod(0o555 if os.access(f, os.X_OK) else 0o444)
-                for d in sorted((f for f in staging.rglob('*') if f.is_dir()), reverse=True): d.chmod(0o555)
-                staging.chmod(0o555)
+                # POSIX 上发布目录设为只读保证不可变；Windows 无只读位语义且会导致后续无法清理，
+                # 不可变性由 manifest 的 sha256 校验保证。
+                if not sys.platform.startswith('win'):
+                    for f in staging.rglob('*'):
+                        if f.is_file(): f.chmod(0o555 if os.access(f, os.X_OK) else 0o444)
+                    for d in sorted((f for f in staging.rglob('*') if f.is_dir()), reverse=True): d.chmod(0o555)
+                    staging.chmod(0o555)
                 os.rename(staging, destination)
             finally:
                 if staging.exists():
@@ -491,7 +528,7 @@ class Manager:
         env.update(BRIDGE_ROOT=str(self.root), BRIDGE_ENV=self.env, BRIDGE_RELEASE=release,
                    BRIDGE_HOLD='1' if held else '0', TMPDIR=str(self.directory / 'tmp'),
                    PATH=settings.get('path', default_path))
-        classpath = ':'.join(str(f) for f in sorted((p / 'lib').glob('*.jar')))
+        classpath = os.pathsep.join(str(f) for f in sorted((p / 'lib').glob('*.jar')))
         argv = [settings['java'], '-Djava.io.tmpdir=' + str(self.directory / 'tmp'), '-cp', classpath, 'top.ntutn.agent.bridge.MainKt']
         child = subprocess.Popen(argv, env=env, cwd=settings['workspace'], stdin=subprocess.DEVNULL)
         def terminate(signum, frame):
@@ -577,7 +614,7 @@ class Manager:
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         with tempfile.TemporaryDirectory(prefix='.setup-', dir=self.directory) as staging:
             config = Path(staging) / 'config.json'
-            classpath = ':'.join(str(f) for f in sorted((snapshot / 'lib').glob('*.jar')))
+            classpath = os.pathsep.join(str(f) for f in sorted((snapshot / 'lib').glob('*.jar')))
             env = {k: v for k, v in os.environ.items() if k not in ('JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH')}
             result = subprocess.run([args.java, '-cp', classpath, 'top.ntutn.agent.bridge.DevRegistration',
                 str(config), str(self.root / 'environments' / peer / 'config.json')], env=env, stdin=sys.stdin)
@@ -721,7 +758,7 @@ def main():
 
 
 if __name__ == '__main__':
-    os.umask(0o077)
+    if hasattr(os, 'umask'): os.umask(0o077)
     try: sys.exit(main())
     except KeyboardInterrupt:
         print('\n操作已取消；可重新运行原命令继续。', file=sys.stderr)

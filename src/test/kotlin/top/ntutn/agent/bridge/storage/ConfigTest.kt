@@ -4,6 +4,8 @@ import top.ntutn.agent.bridge.*
 import com.lark.oapi.scene.registration.RegisterAppException
 import com.lark.oapi.scene.registration.RegisterAppResult
 import com.lark.oapi.scene.registration.UserInfo
+import org.junit.jupiter.api.condition.DisabledOnOs
+import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -21,17 +23,31 @@ class ConfigTest {
         val loaded = assertNotNull(store.load())
         assertEquals("very-secret", loaded.appSecret)
         assertEquals("ou_owner", loaded.allowedUserId)
-        assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(store.path))
-        assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(store.path.parent))
         assertFalse(config.toString().contains("very-secret"))
     }
 
-    @Test fun `invalid and symlink configs fail closed`() {
+    @Test
+    @DisabledOnOs(OS.WINDOWS) // Windows 无 posix 权限视图；私有性由 ACL / 用户主目录保证
+    fun `private permissions are set on POSIX platforms`() {
+        val store = ConfigStore(directory.resolve("state/config.json"))
+        store.save(BridgeConfig("cli_test", "secret", "ou_owner", "feishu"))
+        assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(store.path))
+        assertEquals(PosixFilePermissions.fromString("rwx------"), Files.getPosixFilePermissions(store.path.parent))
+    }
+
+    @Test fun `invalid config fails closed`() {
         val path = directory.resolve("config.json")
         Files.writeString(path, "{broken secret-content")
         val error = assertFailsWith<IllegalArgumentException> { ConfigStore(path).load() }
         assertFalse(error.message.orEmpty().contains("secret-content"))
         assertEquals("{broken secret-content", Files.readString(path))
+    }
+
+    @Test
+    @DisabledOnOs(OS.WINDOWS) // Windows 创建符号链接需要开发者模式 / 管理员权限
+    fun `symlink config fails closed`() {
+        val path = directory.resolve("config.json")
+        Files.writeString(path, "{broken secret-content")
         val link = directory.resolve("link.json")
         Files.createSymbolicLink(link, path)
         assertFailsWith<IllegalArgumentException> { ConfigStore(link).load() }

@@ -7,7 +7,6 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
-import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
 
 internal fun json(vararg values: Pair<String, Any?>): JsonObject = JsonObject().apply {
@@ -25,11 +24,11 @@ internal fun JsonObject.string(key: String): String? = get(key)?.takeIf { it.isJ
 
 internal object JsonFiles {
     private val gson = GsonBuilder().setPrettyPrinting().create()
-    fun directory(path: Path) { Files.createDirectories(path, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"))) }
+    fun directory(path: Path) { PlatformFiles.createDirectories(path) }
     fun read(path: Path): JsonObject? = if (Files.exists(path)) gson.fromJson(Files.readString(path), JsonObject::class.java) else null
     fun write(path: Path, value: JsonObject) {
         directory(path.parent)
-        val temp = Files.createTempFile(path.parent, ".atomic-", ".json", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+        val temp = PlatformFiles.createTempFile(path.parent, ".atomic-", ".json")
         try {
             Files.writeString(temp, gson.toJson(value))
             java.nio.channels.FileChannel.open(temp, StandardOpenOption.WRITE).use { it.force(true) }
