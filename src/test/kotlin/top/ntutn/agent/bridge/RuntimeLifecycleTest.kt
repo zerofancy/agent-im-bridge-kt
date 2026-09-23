@@ -12,6 +12,19 @@ import kotlin.test.*
 
 class RuntimeLifecycleTest {
     @TempDir lateinit var temp: Path
+    @Test fun `document replies skip startup notice without consuming IM notice`(): Unit = runBlocking {
+        val notice = StartupNotice(Instant.EPOCH)
+        val routes = mutableListOf<ReplyRoute>()
+        val sender = ReplySender { route, _ -> routes += route; CompletableFuture.completedFuture(Unit) }
+        val im = ReplyRoute("chat", "message")
+        val document = im.copy(documentComment = DocumentCommentTarget("docx", "file", "comment", "reply"))
+        notice.beforeReply(document, sender)
+        assertTrue(routes.isEmpty())
+        notice.beforeReply(im, sender)
+        notice.beforeReply(document, sender)
+        notice.beforeReply(im, sender)
+        assertEquals(listOf(im), routes)
+    }
     @Test fun `startup notice is one global bounded attempt before concurrent replies`(): Unit = runBlocking {
         val notice = StartupNotice(Instant.parse("2026-09-10T11:42:00Z"))
         val started = CompletableDeferred<Unit>()

@@ -1,13 +1,13 @@
 package top.ntutn.agent.bridge
 
-import com.lark.oapi.channel.LarkChannel
+import top.ntutn.agent.bridge.feishu.FeishuConnection
 import com.lark.oapi.channel.exception.LarkChannelException
 import com.lark.oapi.scene.registration.RegisterAppException
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.withTimeout
 import kotlin.system.exitProcess
 import top.ntutn.agent.bridge.feishu.createAgentChannel
 import top.ntutn.agent.bridge.storage.ConfigStore
@@ -39,7 +39,7 @@ fun main(args: Array<String>) {
     }
     FatalErrorHandler.install()
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
-    var larkChannel: LarkChannel? = null
+    var larkChannel: FeishuConnection? = null
     var telegramClient: TelegramClient? = null
     var runner: ManagedAgentRunner? = null
     var service: ChatService? = null
@@ -90,17 +90,19 @@ fun main(args: Array<String>) {
         Runtime.getRuntime().addShutdownHook(Thread {
             closeBridgeResources(
                 { activeTelegramClient?.stopPolling() }, { activeControl.close() }, { activeService.close() }, { activeRunner.close() },
-                { activeLarkChannel?.disconnect()?.get(5, TimeUnit.SECONDS) },
+                { runBlocking { withTimeout(5_000) { activeLarkChannel?.disconnect() } } },
                 { activeTelegramClient?.close() },
                 { activeLifecycle.finish(activeLifecycle.stopReason, 0) }, { activeInstance.close() }
             )
         })
         if (config.platform == "feishu") {
             val channel = larkChannel!!
-            channel.on<Any>("reconnecting") { activeControl.connected(false) }
-            channel.on<Any>("reconnected") { activeControl.connected(true) }
+            channel.connectionChanged = { connected ->
+                activeControl.connected(connected)
+                log.info("飞书连接状态 connected={}", connected)
+            }
             log.info("正在连接飞书…… environment={} release={}", environment.name, environment.release)
-            channel.connect().get(45, TimeUnit.SECONDS)
+            runBlocking { withTimeout(45_000) { channel.connect() } }
         } else {
             log.info("正在连接 Telegram…… environment={} release={}", environment.name, environment.release)
             val client = telegramClient!!
@@ -115,7 +117,7 @@ fun main(args: Array<String>) {
         log.error("启动失败 type={}", e.javaClass.simpleName)
         closeBridgeResources(
             { telegramClient?.stopPolling() }, { control?.close() }, { service?.close() }, { runner?.close() },
-            { larkChannel?.disconnect()?.get(5, TimeUnit.SECONDS) },
+            { runBlocking { withTimeout(5_000) { larkChannel?.disconnect() } } },
             { telegramClient?.close() },
             { lifecycle?.finish("启动失败 ${e.javaClass.simpleName}", 1) }, { instance?.close() }
         )

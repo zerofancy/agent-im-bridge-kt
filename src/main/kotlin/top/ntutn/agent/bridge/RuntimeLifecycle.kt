@@ -109,6 +109,8 @@ class StartupNotice(private val startedAt: Instant, private val timeoutMillis: L
     private val mutex = Mutex()
     private var attempted = false
     suspend fun beforeReply(route: ReplyRoute, sender: ReplySender) {
+        // Document threads contain discussion only; leave the notice for a later IM reply.
+        if (route.documentComment != null) return
         mutex.withLock {
             if (attempted) return
             attempted = true

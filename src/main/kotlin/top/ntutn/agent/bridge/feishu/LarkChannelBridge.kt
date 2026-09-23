@@ -4,14 +4,15 @@ import top.ntutn.agent.bridge.*
 import top.ntutn.agent.bridge.storage.AttachmentStore
 import top.ntutn.agent.bridge.storage.BridgeConfig
 import top.ntutn.agent.bridge.storage.ConfigStore
+import top.ntutn.agent.bridge.storage.DocumentRouteStore
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionStore
 import com.google.gson.JsonParser
-import com.lark.oapi.channel.LarkChannel
 import com.lark.oapi.channel.LarkChannelFactory
 import com.lark.oapi.channel.config.LarkChannelOptions
 import com.lark.oapi.channel.model.CardActionEvent
 import com.lark.oapi.channel.model.ChannelErrorEvent
+import com.lark.oapi.channel.model.CommentEvent
 import com.lark.oapi.channel.model.NormalizedMessage
 import com.lark.oapi.channel.model.ReactionEvent
 import com.lark.oapi.channel.model.SendInput
@@ -22,6 +23,7 @@ import kotlinx.coroutines.future.await
 import org.slf4j.LoggerFactory
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.util.concurrent.CompletableFuture
 
 fun extractPrompt(message: NormalizedMessage, allowedUserId: String): String? {
     if (message.senderId != allowedUserId || message.messageId.isNullOrBlank() || message.chatId.isNullOrBlank()) return null
@@ -50,18 +52,59 @@ fun extractPrompt(message: NormalizedMessage, allowedUserId: String): String? {
 
 fun extractMessageInput(message: NormalizedMessage): MessageInput {
     val event = (message.raw as P2MessageReceiveV1).event
+    val references = extractFeishuDocumentReferences(event.message.content.orEmpty())
     return MessageInput(message.chatType, event.message.parentId,
         MessageSender(event.sender.senderId?.openId, "open_id", event.sender.senderType ?: "unknown"),
         event.message.createTime, contentType = message.rawContentType,
         commandText = if (message.rawContentType == "post") postCommandText(event.message.content.orEmpty(), message.mentions.filter { it.isBot }.mapNotNull { it.key }) else null,
-        malformedPost = message.rawContentType == "post" && runCatching { parsePost(event.message.content.orEmpty()) }.isFailure)
+        malformedPost = message.rawContentType == "post" && runCatching { parsePost(event.message.content.orEmpty()) }.isFailure,
+        documentReferences = references)
+}
+
+private suspend fun extractCommentMessage(
+    event: CommentEvent,
+    allowedUserId: String,
+    commentClient: FeishuDocumentCommentClient,
+    routes: DocumentRouteStore,
+    sessions: SessionStore,
+    config: BridgeConfig,
+    backend: BackendSpec,
+    options: RunOptions
+): IncomingMessage? {
+    if (event.operatorId != allowedUserId) return null
+    val fileToken = event.fileToken?.takeIf { it.isNotBlank() } ?: return null
+    val fileType = event.fileType?.takeIf { it.isNotBlank() } ?: return null
+    val commentId = event.commentId?.takeIf { it.isNotBlank() } ?: return null
+    val payload = commentClient.getComment(fileType, fileToken, commentId, event.replyId?.takeIf { it.isNotBlank() }) ?: return null
+    if (payload.authorOpenId != allowedUserId || !payload.mentionedBot || payload.text.isBlank()) return null
+    val reference = DocumentReference(fileType, fileToken)
+    val fallback = sessions.latestChat(config.appId, backend.runtimeRoot.toString(), backend.id.configValue) ?: allowedUserId
+    val sessionChatId = routes.resolve(config.appId, reference, backend.runtimeRoot.toString(), backend.id.configValue) ?: fallback
+    val target = DocumentCommentTarget(fileType, fileToken, commentId, payload.replyId, payload.isWhole, payload.authorOpenId)
+    return IncomingMessage(
+        ReplyRoute(sessionChatId, "doc-comment:$fileToken:$commentId:${event.replyId.orEmpty()}", target),
+        payload.text,
+        MessageInput(
+            chatType = "p2p",
+            sender = MessageSender(payload.authorOpenId, "open_id", "user"),
+            createTime = event.timestamp.takeIf { it > 0 }?.toString(),
+            inputId = "doc-comment:$fileToken:$commentId:${event.replyId.orEmpty()}",
+            platformName = "飞书文档评论",
+            sessionChatId = sessionChatId,
+            documentReferences = setOf(reference),
+            replyDocumentComment = target,
+            enableRequestActivity = payload.replyId != null,
+            documentQuote = payload.quote,
+            documentUrl = commentDocumentUrl(reference, config.tenant)
+        )
+    )
 }
 
 fun channelOptions(config: BridgeConfig): LarkChannelOptions {
     config.validate()
     return LarkChannelOptions.newBuilder(config.appId, config.appSecret)
         .source("agent-im-bridge-kt")
-        .transport("websocket")
+        .transport("webhook") // FeishuConnection owns the single WebSocket and comment dispatch boundary.
         .domain(if (config.tenant == "lark") "https://open.larksuite.com" else "https://open.feishu.cn")
         .includeRawEvent(true)
         .httpTransport(LarkRequests.transport())
@@ -78,7 +121,7 @@ fun channelOptions(config: BridgeConfig): LarkChannelOptions {
         }).build()
 }
 
-fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec, lifecycle: RuntimeLifecycle? = null, initiallyHeld: Boolean = false): Pair<LarkChannel, ChatService> {
+fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec, lifecycle: RuntimeLifecycle? = null, initiallyHeld: Boolean = false): Pair<FeishuConnection, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
     val appDirectory = MessageDigest.getInstance("SHA-256").digest(config.appId.toByteArray())
@@ -92,6 +135,11 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         AttachmentStore(lifecycle?.environment?.attachments ?: Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)),
         config.appId, source)
     val environment = lifecycle?.environment
+    val documentRoutes = DocumentRouteStore((environment?.directory
+        ?: Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt")).resolve("document-routes.json"))
+    val commentClient = FeishuDocumentCommentClient(FeishuOpenApiClient(
+        feishuOpenBaseUrl(config), SdkTenantTokenProvider(sdkOpenApiConfig(config))
+    )) { channel.botIdentity?.openId }
     val configControls = environment?.let {
         val delayedUpdater = DelayedCardUpdater(
             FeishuOpenApiClient(
@@ -120,23 +168,44 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         )
         controller
     }
+    val commentReply: suspend (DocumentCommentTarget, String) -> Unit = { target, text ->
+        commentClient.reply(target, text)
+    }
+    lateinit var launchManaged: (suspend () -> Unit) -> Unit
     val service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, LarkTypingReactions(config.appId) { channel.rawClient }, lifecycle, initiallyHeld, configControls, LarkCardReplies({ channel.rawClient }, cardAnswers)) { route, text ->
-        val sent = java.util.concurrent.CompletableFuture<Unit>()
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, DocumentTypingReactions(commentClient, LarkTypingReactions(config.appId) { channel.rawClient }), lifecycle, initiallyHeld, configControls, LarkCardReplies({ channel.rawClient }, cardAnswers), { chatId, references, sourceKind ->
+        for (reference in references) {
+            documentRoutes.bind(config.appId, reference, chatId, backend.runtimeRoot.toString(), backend.id.configValue, sourceKind)
+        }
+    }) { route, text ->
+        val sent = CompletableFuture<Unit>()
         try {
-            channel.send(route.chatId, SendInput.text(text),
-                SendOptions.newBuilder().replyTo(route.messageId).build()).whenComplete { result, error ->
-                if (error != null) {
-                    val cause = generateSequence(error) { it.cause }.take(10).last()
-                    if (cause is Error) FatalErrorHandler.unexpected(cause)
-                    sent.completeExceptionally(java.io.IOException("飞书发送失败"))
-                } else if (result?.messageId.isNullOrBlank()) sent.completeExceptionally(java.io.IOException("API 未返回消息 ID"))
-                else sent.complete(Unit)
+            if (route.documentComment != null) {
+                launchManaged {
+                    try {
+                        commentReply(route.documentComment, text)
+                        sent.complete(Unit)
+                    } catch (e: Exception) {
+                        FatalErrorHandler.rethrowProgrammingError(e)
+                        sent.completeExceptionally(java.io.IOException("飞书评论回复失败"))
+                    }
+                }
+            } else {
+                channel.send(route.chatId, SendInput.text(text),
+                    SendOptions.newBuilder().replyTo(route.messageId).build()).whenComplete { result, error ->
+                    if (error != null) {
+                        val cause = generateSequence(error) { it.cause }.take(10).last()
+                        if (cause is Error) FatalErrorHandler.unexpected(cause)
+                        sent.completeExceptionally(java.io.IOException("飞书发送失败"))
+                    } else if (result?.messageId.isNullOrBlank()) sent.completeExceptionally(java.io.IOException("API 未返回消息 ID"))
+                    else sent.complete(Unit)
+                }
             }
         } catch (error: Exception) { sent.completeExceptionally(java.io.IOException("飞书发送失败")) }
         sent
     }
+    launchManaged = { block -> service.launchManaged { block() } }
     channel.on<NormalizedMessage>("message") { message ->
         FatalErrorHandler.boundary {
             extractPrompt(message, config.allowedUserId)?.let { prompt ->
@@ -149,6 +218,15 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         FatalErrorHandler.boundary {
             extractReaction(event, config.allowedUserId)?.let { reaction ->
                 service.receive(reaction.id) { source.reaction(reaction, config.appId, channel.botIdentity?.openId) }
+            }
+        }
+    }
+    val connection = FeishuConnection(channel, config) { event ->
+        FatalErrorHandler.boundary {
+            val dedup = commentEventKey(event) ?: return@boundary
+            log.info("收到文档评论事件 fileToken={} commentId={} replyId={}", event.fileToken, event.commentId, event.replyId)
+            service.receive(dedup) {
+                extractCommentMessage(event, config.allowedUserId, commentClient, documentRoutes, sessions, config, backend, options)
             }
         }
     }
@@ -172,7 +250,5 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         }
     }
     channel.on<ChannelErrorEvent>("error") { event -> FatalErrorHandler.boundary { log.error("通道错误 {}", safeError(event.error)) } }
-    channel.on<Any>("reconnecting") { log.warn("飞书连接中断，SDK 正在重连。") }
-    channel.on<Any>("reconnected") { log.info("飞书连接已恢复。") }
-    return channel to service
+    return connection to service
 }

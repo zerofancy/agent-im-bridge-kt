@@ -66,6 +66,16 @@ class SessionStore(private val path: Path) {
         Path.of(directories[key.chatKey()]?.workspace ?: key.workspace)
     }
 
+    suspend fun latestChat(appId: String, runtimeRoot: String, backendId: String): String? = mutex.withLock {
+        BackendId.parse(backendId)
+        entries.values
+            .asSequence()
+            .filter { it.key.appId == appId && it.key.runtimeRoot == runtimeRoot && it.key.backendId == backendId }
+            .maxByOrNull { it.updatedAt }
+            ?.key
+            ?.chatId
+    }
+
     suspend fun changeWorkspace(base: SessionKey, target: Path) = mutex.withLock {
         BackendId.parse(base.backendId)
         require(target.isAbsolute)

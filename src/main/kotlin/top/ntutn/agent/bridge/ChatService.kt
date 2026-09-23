@@ -17,7 +17,7 @@ import top.ntutn.agent.bridge.storage.SessionPersistenceException
 import top.ntutn.agent.bridge.storage.SessionStore
 
 
-data class ReplyRoute(val chatId: String, val messageId: String)
+data class ReplyRoute(val chatId: String, val messageId: String, val documentComment: DocumentCommentTarget? = null)
 fun interface ReplySender { fun send(route: ReplyRoute, text: String): CompletableFuture<Unit> }
 
 fun splitAnswer(text: String, limit: Int = 3000): List<String> {
@@ -41,6 +41,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                   initiallyHeld: Boolean = false,
                   private val configControls: ConfigControls? = null,
                   private val cardReplies: CardReplies? = null,
+                  private val documentRoutes: DocumentRouteTracker? = null,
                   private val sender: ReplySender) : AutoCloseable {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val mutex = Mutex()
@@ -173,7 +174,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 outstanding.add(work.completed)
                 if (draining && incomingOrder == null && command == null)
                     return@withLock suspend { send(route, "应用升级中，请稍后重试。") }
-                sharedTyping?.let { work.activity = RequestActivity(scope, it.forRequest(), route, work.completed) }
+                if (input?.enableRequestActivity != false) sharedTyping?.let { work.activity = RequestActivity(scope, it.forRequest(), route, work.completed) }
                 if (input?.malformedPost == true) return@withLock suspend { send(route, "富文本消息 JSON 无法解析，请重新发送。") }
                 if (command != null) return@withLock prepareControl(work, command)
                 work.ready = running.size < limit && route.chatId !in running && route.chatId !in switching && queue.isEmpty()
@@ -338,7 +339,8 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
         var presentation: StreamingReply? = null
         try {
             if (mutex.withLock { closed }) return
-            val base = sessionKey(route.chatId)
+            val sessionChatId = work.input?.sessionChatId ?: route.chatId
+            val base = sessionKey(sessionChatId)
             val current = sessions.workspace(base)
             val workspace = try { withContext(Dispatchers.IO) { checkedWorkspace(current) } }
             catch (_: IllegalArgumentException) {
@@ -350,10 +352,18 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             suspend fun run(id: String?): AgentResult {
                 stage(work, Stage.PREPARING)
                 cleanupAttachments()
+                val inputReferences = work.input?.documentReferences.orEmpty() + extractFeishuDocumentReferences(work.prompt)
+                if (inputReferences.isNotEmpty()) {
+                    documentRoutes?.bind(sessionChatId, inputReferences, DocumentRouteSource.USER_INPUT)
+                }
                 val prepared = if (work.input != null && replyContext != null)
                     replyContext.prepare(route, work.prompt, work.input, sentMessages.snapshot(key, id), senderNames)
                         .also { preparedPrompts += it }
                     else null
+                prepared?.let {
+                    val references = extractFeishuDocumentReferences(it.text) - inputReferences
+                    if (references.isNotEmpty()) documentRoutes?.bind(sessionChatId, references, DocumentRouteSource.USER_INPUT)
+                }
                 work.handle.onSubmitted = { observed ->
                     prepared?.let { sentMessages.submitted(key, observed, it.messageIds) }
                 }
@@ -423,6 +433,8 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 }
             }
             stage(work, Stage.REPLYING)
+            val outputReferences = extractFeishuDocumentReferences(answer)
+            if (outputReferences.isNotEmpty()) documentRoutes?.bind(sessionChatId, outputReferences, DocumentRouteSource.BOT_OUTPUT)
             val cardSent = withTimeout(30_000) { presentation?.finish(answer, if (result is AgentResult.Success) "已完成" else "执行失败") } == true
             for (chunk in if (cardSent) emptyList() else splitAnswer(answer)) {
                 if (work.handle.stopRequested) return

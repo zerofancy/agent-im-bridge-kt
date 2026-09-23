@@ -48,6 +48,14 @@ internal class FeishuOpenApiClient(
         return execute(request)
     }
 
+    suspend fun getJson(path: String): FeishuApiResponse {
+        val token = tokenProvider.get()
+        return execute(Request.Builder()
+            .url(baseUrl.trimEnd('/') + "/" + path.trimStart('/'))
+            .header("Authorization", "Bearer $token")
+            .get().build())
+    }
+
     private suspend fun execute(request: Request): FeishuApiResponse = suspendCancellableCoroutine { continuation ->
         val call = httpClient.newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
