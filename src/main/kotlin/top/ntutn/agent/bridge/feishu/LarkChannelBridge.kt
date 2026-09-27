@@ -121,7 +121,7 @@ fun channelOptions(config: BridgeConfig): LarkChannelOptions {
         }).build()
 }
 
-fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec, lifecycle: RuntimeLifecycle? = null, initiallyHeld: Boolean = false): Pair<FeishuConnection, ChatService> {
+fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec, lifecycle: RuntimeLifecycle? = null, initiallyHeld: Boolean = false, localReplies: LocalReplies? = null): Pair<FeishuConnection, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
     val appDirectory = MessageDigest.getInstance("SHA-256").digest(config.appId.toByteArray())
@@ -178,7 +178,7 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         for (reference in references) {
             documentRoutes.bind(config.appId, reference, chatId, backend.runtimeRoot.toString(), backend.id.configValue, sourceKind)
         }
-    }) { route, text ->
+    }, localReplies = localReplies) { route, text ->
         val sent = CompletableFuture<Unit>()
         try {
             if (route.documentComment != null) {

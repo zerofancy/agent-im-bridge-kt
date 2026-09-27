@@ -15,6 +15,9 @@ import top.ntutn.agent.bridge.storage.InstanceLock
 import top.ntutn.agent.bridge.storage.SessionStore
 import top.ntutn.agent.bridge.telegram.TelegramClient
 import top.ntutn.agent.bridge.telegram.createTelegramChannel
+import top.ntutn.agent.bridge.desktop.DesktopHistory
+import top.ntutn.agent.bridge.desktop.DesktopApi
+import java.security.MessageDigest
 
 // Do not render exception messages, payloads or stacks from external SDKs: they can contain credentials.
 fun safeError(error: Throwable): String {
@@ -64,22 +67,30 @@ fun main(args: Array<String>) {
         val options = environment.options()
         val sessions = SessionStore(environment.directory.resolve("sessions.json"))
         val backend = environment.backend(BackendId.parse(config.backend), options)
+        // Changing bot, backend or model state root creates a separate desktop history namespace.
+        val desktopNamespace = MessageDigest.getInstance("SHA-256")
+            .digest("${config.appId}\u0000${backend.id.configValue}\u0000${backend.runtimeRoot}".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        val desktopHistory = DesktopHistory(environment.directory.resolve("desktop/$desktopNamespace/history.json"))
         runner = createAgentRunner(backend, SandboxMode.parse(config.sandboxMode))
         runner.checkAvailable()
         val held = System.getenv("BRIDGE_HOLD") == "1"
         when (config.platform) {
             "feishu" -> {
-                val bridge = createAgentChannel(config, runner, sessions, options, backend, lifecycle, held)
+                val bridge = createAgentChannel(config, runner, sessions, options, backend, lifecycle, held, desktopHistory)
                 larkChannel = bridge.first; service = bridge.second
             }
             "telegram" -> {
-                val bridge = createTelegramChannel(config, runner, sessions, options, backend, lifecycle, held)
+                val bridge = createTelegramChannel(config, runner, sessions, options, backend, lifecycle, held, desktopHistory)
                 telegramClient = bridge.first; service = bridge.second
             }
             else -> error("不支持的平台: ${config.platform}")
         }
         val monitoredRunner = runner
-        control = RuntimeControl(lifecycle, service) { monitoredRunner.healthy() }
+        val desktop = DesktopApi(desktopHistory, service, json("apiVersion" to 1,
+            "environment" to environment.name, "backend" to backend.displayName, "sandboxMode" to config.sandboxMode,
+            "release" to environment.release, "bootId" to lifecycle.bootId))
+        control = RuntimeControl(lifecycle, service, desktop) { monitoredRunner.healthy() }
         val activeLarkChannel = larkChannel
         val activeTelegramClient = telegramClient
         val activeService = service

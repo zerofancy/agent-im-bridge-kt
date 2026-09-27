@@ -162,6 +162,20 @@ python deployment/bridgectl.py deploy-status <部署编号>
 
 日志、管理令牌、生命周期和配置分别位于 `environments/<环境>/{logs,control,lifecycle}` 及该环境根目录。管理接口仅绑定 `127.0.0.1`，令牌文件权限为 600；`bridgectl status` 不显示令牌。不要上传环境配置、令牌或完整模型状态。
 
+## 桌面端（第一版）
+
+新增 Kotlin Compose Desktop 客户端：中文会话列表、发送与排队、实时回复预览、完整最终答案与历史、原生停止、工作目录选择。桌面附着到由 `bridgectl` 管理的现有服务，关闭窗口不会停止任务；桌面会话独立于 IM，会与 IM 共用并发上限，回复不会自动发到机器人。
+
+```bash
+./gradlew test installDist :desktop-app:createDistributable
+# 将本次服务构建按既有 publish/deploy 流程发布到需要连接的环境后：
+./gradlew :desktop-app:run --args="--env dev"
+```
+
+macOS 应用位于 `desktop-app/build/compose/binaries/main/app/Agent Bridge.app`，自带运行时，可直接双击。首次默认连接 dev；在“连接设置”中显式选择 prod 或自定义状态根目录。旧版服务没有桌面 API，需要先升级服务。核心与桌面代码仍以 JDK 11 为目标；原生打包需 JDK 17+。
+
+首版保留每个服务实例一个后端及本机权限配置，只记录新建的桌面会话；不导入旧 IM 历史，不提供交互审批、diff 或每会话切换后端。执行摘要是有界预览，最终答案完整保存。详细启动、升级、隔离测试和 API 说明见 [桌面端使用说明](docs/desktop-app.html)。
+
 ## 流式卡片回复
 
 飞书模型任务默认使用 Card JSON 2.0：一轮一张卡片，执行时显示公开进度与工具名称/状态，答案增量显示在正文；轮次结束后提交完整答案并收起执行过程。即时命令继续文本回复，停止仍使用 `/stop`，只有后端确认轮次结束才显示已停止。没有模型自动超时。 `/stop` 的文本确认由独立的后端结束信号触发，不等待卡片或 Typing 清理；清理期间 `/status` 显示“后端已结束，回复清理中”。后端自行中断且卡片无法收束时补发文本说明。停止后的原卡片标记为“已终止”，已生成的答案和执行过程保留在默认折叠、可展开的面板中；引用这些内容时明确标记为未完成的输出。

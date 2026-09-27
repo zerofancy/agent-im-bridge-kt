@@ -64,7 +64,8 @@ fun createTelegramChannel(
     options: RunOptions,
     backend: BackendSpec,
     lifecycle: RuntimeLifecycle? = null,
-    initiallyHeld: Boolean = false
+    initiallyHeld: Boolean = false,
+    localReplies: LocalReplies? = null
 ): Pair<TelegramClient, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge.telegram")
     val client = TelegramClient(config.appId)
@@ -86,7 +87,7 @@ fun createTelegramChannel(
     service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
     }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, reactions, lifecycle, initiallyHeld,
-        cardReplies = cards) { route, text ->
+        cardReplies = cards, localReplies = localReplies) { route, text ->
         client.sendReply(route, text)
     }
 

@@ -17,8 +17,16 @@ import top.ntutn.agent.bridge.storage.SessionPersistenceException
 import top.ntutn.agent.bridge.storage.SessionStore
 
 
-data class ReplyRoute(val chatId: String, val messageId: String, val documentComment: DocumentCommentTarget? = null)
+enum class ReplyOrigin { IM, DESKTOP }
+data class ReplyRoute(val chatId: String, val messageId: String, val documentComment: DocumentCommentTarget? = null,
+                      val origin: ReplyOrigin = ReplyOrigin.IM)
 fun interface ReplySender { fun send(route: ReplyRoute, text: String): CompletableFuture<Unit> }
+
+/** Local delivery is independent of the IM network and of any connected GUI. */
+interface LocalReplies : CardReplies {
+    suspend fun starting(route: ReplyRoute)
+    suspend fun send(route: ReplyRoute, text: String)
+}
 
 fun splitAnswer(text: String, limit: Int = 3000): List<String> {
     require(limit > 0)
@@ -42,6 +50,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                   private val configControls: ConfigControls? = null,
                   private val cardReplies: CardReplies? = null,
                   private val documentRoutes: DocumentRouteTracker? = null,
+                  private val localReplies: LocalReplies? = null,
                   private val sender: ReplySender) : AutoCloseable {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val mutex = Mutex()
@@ -161,7 +170,24 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
     fun accept(route: ReplyRoute, prompt: String, input: MessageInput? = null): CompletableFuture<Unit> =
         admit(route, prompt, input, null)
 
-    private fun admit(route: ReplyRoute, prompt: String, input: MessageInput?, incomingOrder: Long?): CompletableFuture<Unit> {
+    /** A serialized client waits for admission, never for model completion, before submitting its next input. */
+    internal suspend fun acceptLocal(route: ReplyRoute, prompt: String, input: MessageInput): CompletableFuture<Unit> {
+        require(route.origin == ReplyOrigin.DESKTOP && localReplies != null)
+        val admitted = CompletableDeferred<Unit>()
+        val result = admit(route, prompt, input, null, admitted)
+        admitted.await()
+        return result
+    }
+
+    internal suspend fun localState(chatId: String) = mutex.withLock {
+        json("state" to (running[chatId]?.stage?.label ?: if (chatId in switching) "切换目录中" else "空闲"),
+            "requestId" to running[chatId]?.handle?.requestId, "queued" to queue.count { it.route.chatId == chatId })
+    }
+
+    internal suspend fun workspace(chatId: String) = sessions.workspace(sessionKey(chatId)).toString()
+
+    private fun admit(route: ReplyRoute, prompt: String, input: MessageInput?, incomingOrder: Long?,
+                      admitted: CompletableDeferred<Unit>? = null): CompletableFuture<Unit> {
         val work = Work(route, prompt, input)
         val command = BridgeCommand.parse(if (input?.contentType == "post") input.commandText.orEmpty() else prompt)
         val admission = scope.launch(start = CoroutineStart.UNDISPATCHED) {
@@ -174,7 +200,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 outstanding.add(work.completed)
                 if (draining && incomingOrder == null && command == null)
                     return@withLock suspend { send(route, "应用升级中，请稍后重试。") }
-                if (input?.enableRequestActivity != false) sharedTyping?.let { work.activity = RequestActivity(scope, it.forRequest(), route, work.completed) }
+                if (route.origin == ReplyOrigin.IM && input?.enableRequestActivity != false) sharedTyping?.let { work.activity = RequestActivity(scope, it.forRequest(), route, work.completed) }
                 if (input?.malformedPost == true) return@withLock suspend { send(route, "富文本消息 JSON 无法解析，请重新发送。") }
                 if (command != null) return@withLock prepareControl(work, command)
                 work.ready = running.size < limit && route.chatId !in running && route.chatId !in switching && queue.isEmpty()
@@ -192,6 +218,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 dispatch()
                 null
             }
+            admitted?.complete(Unit)
             if (control != null) {
                 try { control() }
                 catch (e: CancellationException) { throw e }
@@ -199,7 +226,9 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 finally { work.finish() }
             }
         }
-        admission.invokeOnCompletion { error -> if (error != null) work.finish() }
+        admission.invokeOnCompletion { error ->
+            if (error != null) { admitted?.completeExceptionally(error); work.finish() }
+        }
         return work.completed
     }
 
@@ -229,7 +258,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             }
             "/pwd" -> { { send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}") } }
             "/config" -> {
-                val controls = configControls
+                val controls = configControls.takeIf { route.origin == ReplyOrigin.IM }
                 if (controls == null) reply("当前平台暂不支持配置卡片。")
                 else suspend { controls.show(route) }
             }
@@ -353,10 +382,10 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 stage(work, Stage.PREPARING)
                 cleanupAttachments()
                 val inputReferences = work.input?.documentReferences.orEmpty() + extractFeishuDocumentReferences(work.prompt)
-                if (inputReferences.isNotEmpty()) {
+                if (route.origin == ReplyOrigin.IM && inputReferences.isNotEmpty()) {
                     documentRoutes?.bind(sessionChatId, inputReferences, DocumentRouteSource.USER_INPUT)
                 }
-                val prepared = if (work.input != null && replyContext != null)
+                val prepared = if (route.origin == ReplyOrigin.IM && work.input != null && replyContext != null)
                     replyContext.prepare(route, work.prompt, work.input, sentMessages.snapshot(key, id), senderNames)
                         .also { preparedPrompts += it }
                     else null
@@ -368,11 +397,13 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                     prepared?.let { sentMessages.submitted(key, observed, it.messageIds) }
                 }
                 stage(work, Stage.EXECUTING)
-                if (presentation == null && cardReplies != null) {
-                    val reply = StreamingReply(CoroutineScope(currentCoroutineContext()), cardReplies, route, {
+                if (route.origin == ReplyOrigin.DESKTOP) requireNotNull(localReplies).starting(route)
+                val replies = if (route.origin == ReplyOrigin.DESKTOP) localReplies else cardReplies
+                if (presentation == null && replies != null) {
+                    val reply = StreamingReply(CoroutineScope(currentCoroutineContext()), replies, route, {
                         currentCoroutineContext().ensureActive()
                         if (mutex.withLock { closed }) throw CancellationException("Bridge closed")
-                        startupNotice?.beforeReply(route, sender)
+                        if (route.origin == ReplyOrigin.IM) startupNotice?.beforeReply(route, sender)
                     })
                     presentation = reply
                     work.handle.onProgress = reply::progress
@@ -434,7 +465,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             }
             stage(work, Stage.REPLYING)
             val outputReferences = extractFeishuDocumentReferences(answer)
-            if (outputReferences.isNotEmpty()) documentRoutes?.bind(sessionChatId, outputReferences, DocumentRouteSource.BOT_OUTPUT)
+            if (route.origin == ReplyOrigin.IM && outputReferences.isNotEmpty()) documentRoutes?.bind(sessionChatId, outputReferences, DocumentRouteSource.BOT_OUTPUT)
             val cardSent = withTimeout(30_000) { presentation?.finish(answer, if (result is AgentResult.Success) "已完成" else "执行失败") } == true
             for (chunk in if (cardSent) emptyList() else splitAnswer(answer)) {
                 if (work.handle.stopRequested) return
@@ -476,13 +507,14 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
     }
 
     private suspend fun send(route: ReplyRoute, text: String) = sendWithNotice(route) {
-        sender.send(route, text).await()
+        if (route.origin == ReplyOrigin.DESKTOP) requireNotNull(localReplies).send(route, text)
+        else sender.send(route, text).await()
     }
 
     internal suspend fun <T> sendWithNotice(route: ReplyRoute, action: suspend () -> T): T {
         currentCoroutineContext().ensureActive()
         if (mutex.withLock { closed }) throw CancellationException("Bridge closed")
-        startupNotice?.beforeReply(route, sender)
+        if (route.origin == ReplyOrigin.IM) startupNotice?.beforeReply(route, sender)
         return withTimeout(30_000.milliseconds) { action() }
     }
 

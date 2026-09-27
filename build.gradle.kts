@@ -28,6 +28,14 @@ application { mainClass.set("top.ntutn.agent.bridge.MainKt") }
 tasks.test { useJUnitPlatform() }
 tasks.named<JavaExec>("run") { standardInput = System.`in` }
 
+tasks.register<JavaExec>("desktopSmokeServer") {
+    group = "verification"
+    description = "Run an isolated desktop UI fixture with simulated responses and temporary state"
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("top.ntutn.agent.bridge.desktop.DesktopSmokeServerKt")
+}
+
 // Runtime snapshots are published outside build/. The generated distribution is never a live classpath.
 distributions {
     main {

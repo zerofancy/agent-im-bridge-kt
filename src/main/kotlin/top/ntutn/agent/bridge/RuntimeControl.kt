@@ -6,9 +6,11 @@ import java.net.InetSocketAddress
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import top.ntutn.agent.bridge.desktop.DesktopApi
 
 /** HTTP is a synchronous SDK boundary; handlers immediately hand work to the owned scope. */
 class RuntimeControl(private val lifecycle: RuntimeLifecycle, private val service: ChatService,
+                     private val desktop: DesktopApi? = null,
                      private val backendHealthy: suspend () -> Boolean = { true }) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + FatalErrorHandler.context)
     private val token = UUID.randomUUID().toString() + UUID.randomUUID().toString()
@@ -18,11 +20,16 @@ class RuntimeControl(private val lifecycle: RuntimeLifecycle, private val servic
     init {
         server.createContext("/") { exchange ->
             scope.launch {
+                val deadline = scope.launch { delay(35_000); exchange.close() }
                 try {
                     if (!MessageDigest.isEqual(exchange.requestHeaders.getFirst("Authorization").orEmpty().toByteArray(), ("Bearer $token").toByteArray())) {
                         exchange.sendResponseHeaders(403, -1); return@launch
                     }
                     val action = exchange.requestURI.path
+                    if (action.startsWith("/desktop/")) {
+                        if (desktop == null) exchange.sendResponseHeaders(404, -1) else desktop.handle(exchange)
+                        return@launch
+                    }
                     if ((action == "/status" && exchange.requestMethod != "GET") || (action != "/status" && exchange.requestMethod != "POST")) {
                         exchange.sendResponseHeaders(405, -1); return@launch
                     }
@@ -50,12 +57,18 @@ class RuntimeControl(private val lifecycle: RuntimeLifecycle, private val servic
                     exchange.sendResponseHeaders(200, result.size.toLong())
                     exchange.responseBody.write(result)
                 } catch (e: java.io.IOException) { /* Local client may disconnect. */ }
-                finally { exchange.close() }
+                finally { deadline.cancel(); exchange.close() }
             }
         }
         server.start()
         JsonFiles.write(lifecycle.environment.directory.resolve("control/endpoint.json"), json("port" to server.address.port,
             "token" to token, "bootId" to lifecycle.bootId, "pid" to ProcessHandle.current().pid(), "startedAt" to lifecycle.startedAt.toString()))
     }
-    override fun close() { server.stop(0); scope.cancel() }
+    override fun close() {
+        try { server.stop(0) }
+        finally {
+            try { runBlocking { scope.coroutineContext.job.cancelAndJoin() } }
+            finally { desktop?.close() }
+        }
+    }
 }
