@@ -27,8 +27,8 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-// Compilation and the bundled desktop runtime both use JDK 25.
-kotlin { jvmToolchain(25) }
+// Compilation and the bundled desktop runtime both use JDK 21.
+kotlin { jvmToolchain(21) }
 tasks.test { useJUnitPlatform() }
 
 // Share the source artwork with README without maintaining a second PNG copy.
@@ -50,9 +50,12 @@ compose.resources {
 
 compose.desktop {
     application {
-        javaHome = javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) }
+        javaHome = javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) }
             .get().metadata.installationPath.asFile.absolutePath
         mainClass = "top.ntutn.agent.bridge.desktop.DesktopMainKt"
+        buildTypes.release.proguard {
+            configurationFiles.from(project.file("proguard-rules.pro"))
+        }
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Deb)
             packageName = "Agent Bridge"

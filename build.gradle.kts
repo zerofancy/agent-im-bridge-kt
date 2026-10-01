@@ -23,7 +23,7 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-kotlin { jvmToolchain(25) }
+kotlin { jvmToolchain(21) }
 application { mainClass.set("top.ntutn.agent.bridge.MainKt") }
 tasks.test { useJUnitPlatform() }
 tasks.named<JavaExec>("run") { standardInput = System.`in` }

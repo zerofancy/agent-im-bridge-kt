@@ -536,8 +536,8 @@ class Manager:
         java = Path(settings['java'])
         r = run([java, '-version'])
         version = re.search(r'version "(\d+)', r.stderr + r.stdout)
-        if not version or int(version.group(1)) < 25:
-            raise ValueError('需要 JDK 25 或更新版本；请将当前环境 runtime.json 的 java 设置为 JDK 25 的绝对路径')
+        if not version or int(version.group(1)) < 21:
+            raise ValueError('需要 JDK 21 或更新版本；请将当前环境 runtime.json 的 java 设置为 JDK 21 的绝对路径')
         # Create only after isolation and runtime checks, never inside a rejected peer path.
         workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
         return settings

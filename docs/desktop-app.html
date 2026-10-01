@@ -9,7 +9,7 @@
 <section><h2>这一版能做什么</h2><div class="cards"><div class="card"><strong>会话与历史</strong>创建会话、保存输入与完整最终答案、重新打开查看历史；断线重连不会重新提交任务。</div><div class="card"><strong>执行与停止</strong>实时答案预览、可展开的执行摘要、同会话 FIFO 排队、等待后端确认的停止。</div><div class="card"><strong>目录与环境</strong>空闲时选择工作目录；显示实际访问模式；显式切换 dev / prod 与自定义状态根目录。</div></div>
 <p>首版采用<strong>附着现有服务</strong>的模式，需要已初始化的飞书或 Telegram Bridge。每个服务实例仍使用一个配置好的后端（Codex、Traex 或 OpenCode）。桌面新建自己的会话，不向 IM 发送回复，也不导入旧 IM 聊天。桌面和 IM 共用同一调度器与并发上限。</p>
 <p>审批按钮、每会话选择后端、Git diff、worktree、终端与完整工具事件时间线不在本版范围。执行摘要和实时答案沿用当前后端的有界预览，最终答案不按预览上限截断。权限来自本机配置，重启服务生效，GUI 不修改权限。</p></section>
-<section><h2>构建与运行</h2><p>在仓库目录执行；核心及桌面统一使用 JDK 25，原生打包使用 JDK 25 的 jpackage。本次开发在 macOS 上验证，Linux 打包需要在 Linux 构建并验收。</p>
+<section><h2>构建与运行</h2><p>在仓库目录执行；核心及桌面统一使用 JDK 21，原生打包使用 JDK 21 的 jpackage。本次开发在 macOS 上验证，Linux 打包需要在 Linux 构建并验收。</p>
 <pre>./gradlew test installDist :desktop-app:createDistributable
 
 # 运行桌面开发版本，连接 dev
@@ -19,7 +19,11 @@
 ./gradlew :desktop-app:run --args="--root /absolute/bridge-root --env dev"
 
 # 在 macOS 生成 DMG（可选）
-./gradlew :desktop-app:packageDmg</pre>
+./gradlew :desktop-app:packageDmg
+
+# 验证经过 ProGuard 处理的 Release DMG
+./gradlew :desktop-app:packageReleaseDmg</pre>
+<p>Release 使用 Compose 默认的 ProGuard 7.7，项目字节码和打包运行时固定为 JDK 21。<code>createDistributable</code> 不执行 Release 的 ProGuard 步骤，不能替代 <code>packageReleaseDmg</code> 验证。Release DMG 位于 <code>desktop-app/build/compose/binaries/main-release/dmg/</code>。<code>desktop-app/proguard-rules.pro</code> 忽略 OkHttp 可选的 Android 与第三方 TLS 提供者缺失警告；同时保留 Okio 裁剪，但禁止其字节码优化，规避 ProGuard 7.7 对 buffer(Source) 返回类型特化导致的 VerifyError。桌面使用随应用打包的 JDK TLS 实现。Release 验收必须确认服务连接和会话加载，仅确认窗口启动不足以覆盖网络字节码路径。</p>
 <p>macOS 可直接双击 <code>desktop-app/build/compose/binaries/main/app/Agent Bridge.app</code>，应用自带 JVM。也可通过 <code>open "desktop-app/build/compose/binaries/main/app/Agent Bridge.app"</code> 启动。默认状态根目录为 <code>~/.agent-im-bridge-kt</code>，默认环境为 dev；连接 prod 需在设置中明确选择或使用 <code>--env prod</code>。</p>
 <p class="note">只有包含本次 API 的 Bridge 版本才能连接桌面。生成桌面包或运行 Gradle 不会升级现有 dev/prod 服务，也不会触发模型登录。</p></section>
 <section><h2>让现有服务支持桌面</h2><p>保留不可变发布和守护部署流程。先构建，再发布快照并选择需要升级的环境；部署会排空已有任务。</p>
@@ -30,7 +34,7 @@
 ./bridgectl deploy-status 部署编号
 ./bridgectl status --env dev</pre>
 <p>首次使用、尚未绑定机器人时，在本机前台终端运行 <code>./bridgectl dev</code> 完成向导。正式环境升级沿用同样流程并明确指定 <code>--env prod</code>。不从 build/install 直接运行 Bridge JVM，不修改 releases 内的已有文件。</p></section>
-<section><h2>Markdown 消息</h2><p>用户输入和 Agent 回答支持 Markdown、代码高亮与复制、可横向滚动的宽表格，以及工作目录内图片和 HTTPS 图片。原文持久化不变。详细行为、JDK 25 迁移和验收步骤见 <a href="desktop-markdown.html">Markdown 接入说明</a>。</p></section>
+<section><h2>Markdown 消息</h2><p>用户输入和 Agent 回答支持 Markdown、代码高亮与复制、可横向滚动的宽表格，以及工作目录内图片和 HTTPS 图片。原文持久化不变。详细行为、JDK 21 迁移和验收步骤见 <a href="desktop-markdown.html">Markdown 接入说明</a>。</p></section>
 <section><h2>日常使用</h2><ol><li>看到左下角已连接的环境和后端后，点击“新建会话”。</li><li>按需“选择目录”。忙碌时禁用目录切换；切到其他目录会清除该目标目录旧绑定，返回该目录也会开启新上下文。</li><li>输入内容，点击“发送”或按 ⌘ / Ctrl + Enter。同一会话运行中可继续加入队列。</li><li>点击“停止当前会话”后等待后端终态；旧任务的停止按钮不会影响新一轮。停止后新入队的消息等待清理结束再运行。</li><li>关闭窗口仅断开客户端。再次连接可查看历史；网络错误不会自动重新发送 prompt。提交结果未确认时，使用“重试”复用原请求 ID。</li></ol>
 <p>保留 <code>/status</code>、<code>/pwd</code>、<code>/help</code>、<code>/stop</code>、<code>/cd</code> 控制命令，未知斜杠命令交给 Agent。服务重启后，原本排队但尚未启动的请求标记未执行，已启动但没有终态的请求标记结果未知；都不会自动重跑。</p></section>
 <section><h2>本地接口与数据</h2><p>桌面只读取当前环境的 <code>control/endpoint.json</code> 来发现服务，实际历史和操作通过 loopback HTTP/SSE 完成。Bearer 令牌不写入界面或日志；不开放 CORS，也不监听外部网卡。</p>

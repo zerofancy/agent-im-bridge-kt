@@ -8,7 +8,7 @@
 
 ## 部署与运行（macOS）
 
-需要 JDK 25+、Python 3.9+，以及当前 macOS 用户已登录的图形会话。正式服务由用户级 launchd 守护，调试与正式使用不同机器人、配置、会话、运行锁、模型目录、附件和默认工作目录。完整说明见 [部署与运行诊断](docs/macos-deployment.html)。
+需要 JDK 21+、Python 3.9+，以及当前 macOS 用户已登录的图形会话。正式服务由用户级 launchd 守护，调试与正式使用不同机器人、配置、会话、运行锁、模型目录、附件和默认工作目录。完整说明见 [部署与运行诊断](docs/macos-deployment.html)。
 
 ```bash
 ./gradlew test installDist
@@ -21,7 +21,7 @@
 
 ## 部署与运行（Linux）
 
-需要 JDK 25+、Python 3.9+，以及 systemd 用户级服务支持。正式服务由用户级 systemd 守护，调试与正式使用不同机器人、配置、会话、运行锁、模型目录、附件和默认工作目录。
+需要 JDK 21+、Python 3.9+，以及 systemd 用户级服务支持。正式服务由用户级 systemd 守护，调试与正式使用不同机器人、配置、会话、运行锁、模型目录、附件和默认工作目录。
 
 ### 前置条件
 
@@ -172,11 +172,13 @@ python deployment/bridgectl.py deploy-status <部署编号>
 
 ```bash
 ./gradlew test installDist :desktop-app:createDistributable
+# macOS Release DMG（包含 ProGuard 处理）
+./gradlew :desktop-app:packageReleaseDmg
 # 将本次服务构建按既有 publish/deploy 流程发布到需要连接的环境后：
 ./gradlew :desktop-app:run --args="--env dev"
 ```
 
-macOS 应用位于 `desktop-app/build/compose/binaries/main/app/Agent Bridge.app`，自带运行时，可直接双击。首次默认连接 dev；在“连接设置”中显式选择 prod 或自定义状态根目录。旧版服务没有桌面 API，需要先升级服务。核心与桌面代码统一以 JDK 25 为目标；原生打包需 JDK 25。
+macOS 应用位于 `desktop-app/build/compose/binaries/main/app/Agent Bridge.app`，自带运行时，可直接双击。首次默认连接 dev；在“连接设置”中显式选择 prod 或自定义状态根目录。旧版服务没有桌面 API，需要先升级服务。核心与桌面代码统一以 JDK 21 为目标；原生打包需 JDK 21。
 
 首版保留每个服务实例一个后端及本机权限配置，只记录新建的桌面会话；不导入旧 IM 历史，不提供交互审批、diff 或每会话切换后端。执行摘要是有界预览，最终答案完整保存。用户消息和 Agent 回答支持 Markdown、代码高亮、滚动表格与图片，详见 [Markdown 接入说明](docs/desktop-markdown.html)。详细启动、升级、隔离测试和 API 说明见 [桌面端使用说明](docs/desktop-app.html)。
 

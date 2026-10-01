@@ -55,7 +55,7 @@ class DeploymentTests(unittest.TestCase):
         b.atomic(self.m.directory / 'config.json', {'appId': 'dev-bot'})
         b.atomic(self.root / 'environments/prod/runtime.json', {'workspace': str(self.root / 'peer-work'),
                  'opencodeHome': str(self.root / 'shared-opencode')})
-        with patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "25"', stdout='')):
+        with patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "21"', stdout='')):
             with self.assertRaisesRegex(ValueError, '重叠'):
                 self.m.validate()
 
@@ -71,7 +71,7 @@ class DeploymentTests(unittest.TestCase):
             return SimpleNamespace(returncode=0)
         with patch('sys.stdin.isatty', return_value=True), patch.object(self.m, 'verify', return_value=self.dist), \
                 patch.object(b.subprocess, 'run', side_effect=authorize), \
-                patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "25"', stdout='')):
+                patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "21"', stdout='')):
             self.m.setup_dev(args)
             self.m.setup_dev(args)  # Already configured: never authorize again.
         self.assertTrue((self.m.directory / 'workspace').is_dir())
@@ -96,7 +96,7 @@ class DeploymentTests(unittest.TestCase):
             return SimpleNamespace(returncode=0)
         with patch('sys.stdin.isatty', return_value=True), patch.object(self.m, 'verify', return_value=self.dist), \
                 patch.object(b.subprocess, 'run', side_effect=authorize), \
-                patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "25"', stdout='')):
+                patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "21"', stdout='')):
             self.m.setup_dev(args)
         saved = b.read(self.m.directory / 'config.json')
         self.assertEqual('traex', saved['backend'])
@@ -176,7 +176,7 @@ class DeploymentTests(unittest.TestCase):
         config = self.root / 'bot.json'
         b.atomic(config, {'appId': 'dev-bot'})
         from types import SimpleNamespace
-        with patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "25.0.2"', stdout='')):
+        with patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "21.0.2"', stdout='')):
             self.m.init(workspace, config, '/usr/bin/java')
             self.assertTrue(workspace.is_dir())
             marker = workspace / 'keep.txt'; marker.write_text('keep')
@@ -190,22 +190,24 @@ class DeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '重叠'): self.m.validate()
             self.assertFalse(workspace_in_prod.exists())
 
-    def test_java_25_requirement_does_not_rewrite_configured_runtime(self):
+    def test_java_21_requirement_does_not_rewrite_configured_runtime(self):
         from types import SimpleNamespace
         workspace = self.root / 'jdk-workspace'
         runtime = self.m.directory / 'runtime.json'
         b.atomic(runtime, {'workspace': str(workspace), 'java': '/configured/java'})
         b.atomic(self.m.directory / 'config.json', {'appId': 'dev-bot'})
         original = runtime.read_bytes()
-        for version in ['11.0.32', '21.0.12', 'unrecognized']:
+        for version in ['11.0.32', '17.0.12', '20.0.2', 'unrecognized']:
             with self.subTest(version=version), \
                     patch.object(b, 'run', return_value=SimpleNamespace(stderr=f'openjdk version "{version}"', stdout='')):
-                with self.assertRaisesRegex(ValueError, 'JDK 25.*runtime.json'):
+                with self.assertRaisesRegex(ValueError, 'JDK 21.*runtime.json'):
                     self.m.validate()
                 self.assertFalse(workspace.exists())
                 self.assertEqual(original, runtime.read_bytes())
-        with patch.object(b, 'run', return_value=SimpleNamespace(stderr='openjdk version "25.0.2"', stdout='')):
-            self.m.validate()
+        for version in ["21.0.12", "25.0.2"]:
+            with self.subTest(accepted_version=version), \
+                    patch.object(b, 'run', return_value=SimpleNamespace(stderr=f'openjdk version "{version}"', stdout='')):
+                self.m.validate()
         self.assertTrue(workspace.is_dir())
         self.assertEqual(original, runtime.read_bytes())
 
@@ -237,7 +239,7 @@ class DeploymentTests(unittest.TestCase):
         with patch('sys.argv', args), patch('sys.stdin.isatty', return_value=True), \
                 patch.object(b.Manager, 'verify', return_value=self.dist), \
                 patch.object(b.subprocess, 'run', side_effect=authorize) as registration, \
-                patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "25"', stdout='')), \
+                patch.object(b, 'run', return_value=SimpleNamespace(stderr='java version "21"', stdout='')), \
                 patch.object(b.Manager, 'login_model', side_effect=[RuntimeError('login cancelled'), None]), \
                 patch.object(b.Manager, 'start') as start, patch.object(b.Manager, 'stop') as stop:
             with self.assertRaisesRegex(RuntimeError, 'login cancelled'): b.main()

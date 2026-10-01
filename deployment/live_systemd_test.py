@@ -78,7 +78,7 @@ def main():
         dist=root/'distribution';shutil.copytree(repo/'build/install/agent-im-bridge-kt',dist)
         sources=root/'source';sources.mkdir();(sources/'MainKt.java').write_text(JAVA)
         classes=root/'classes';classes.mkdir()
-        java_home=Path(os.environ.get('JAVA_HOME', '/usr/lib/jvm/java-25-openjdk-amd64'))
+        java_home=Path(os.environ.get('JAVA_HOME', '/usr/lib/jvm/java-21-openjdk-amd64'))
         if not java_home.exists():
             # Try to find java home
             result=subprocess.run(['java', '-XshowSettings:properties', '-version'], capture_output=True, text=True)
