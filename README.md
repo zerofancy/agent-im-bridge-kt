@@ -1,5 +1,9 @@
 # 飞书 Agent 持续对话 · Kotlin（Codex / Traex / OpenCode）
 
+<p align="center">
+  <img src="assets/branding/agent-bridge-app-icon.png" alt="Agent Bridge Logo：连接 Agent 与聊天的桥梁" width="160" height="160">
+</p>
+
 本机运行的飞书机器人：通过官方链接绑定机器人，将授权用户的私聊及群聊 @ 文本交给本地 Codex、Traex 或 OpenCode CLI，返回最终答案。按后端及聊天保存并续接会话，默认只读分析。
 
 ## 部署与运行（macOS）

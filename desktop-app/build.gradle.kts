@@ -14,6 +14,7 @@ repositories {
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material)
+    implementation("org.jetbrains.compose.components:components-resources:1.11.1")
     implementation("com.mikepenz:multiplatform-markdown-renderer-m2:0.43.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.43.0")
     implementation("com.mikepenz:multiplatform-markdown-renderer-coil3:0.43.0")
@@ -30,6 +31,23 @@ dependencies {
 kotlin { jvmToolchain(25) }
 tasks.test { useJUnitPlatform() }
 
+// Share the source artwork with README without maintaining a second PNG copy.
+val prepareBrandingResources by tasks.registering(Sync::class) {
+    from(rootProject.file("assets/branding/agent-bridge-app-icon.png")) {
+        into("drawable")
+        rename { "agent_bridge_app_icon.png" }
+    }
+    into(layout.buildDirectory.dir("generated/brandingResources"))
+}
+
+compose.resources {
+    packageOfResClass = "top.ntutn.agent.bridge.desktop.resources"
+    customDirectory(
+        sourceSetName = "main",
+        directoryProvider = layout.dir(prepareBrandingResources.map { it.destinationDir }),
+    )
+}
+
 compose.desktop {
     application {
         javaHome = javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) }
@@ -42,7 +60,13 @@ compose.desktop {
             description = "本地 Agent 会话工作台"
             vendor = "Agent Bridge"
             modules("java.net.http", "jdk.unsupported")
-            macOS { bundleID = "top.ntutn.agent.bridge.desktop" }
+            macOS {
+                bundleID = "top.ntutn.agent.bridge.desktop"
+                iconFile.set(rootProject.file("assets/branding/agent-bridge-app-icon.icns"))
+            }
+            linux {
+                iconFile.set(rootProject.file("assets/branding/agent-bridge-app-icon.png"))
+            }
         }
     }
 }

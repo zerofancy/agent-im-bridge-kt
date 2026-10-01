@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>Agent Bridge</title>
+  <desc>A bridge and conversation bubble on a solid teal rounded square.</desc>
+  <rect x="80" y="80" width="864" height="864" rx="184" fill="#247565"/>
+  <path d="M280 326 Q512 194 744 326 L744 394 Q512 262 280 394 Z" fill="#A8C7B2"/>
+  <path d="M212 264 H268 Q316 264 316 312 V432
+           Q512 294 708 432 V312 Q708 264 756 264 H812
+           Q860 264 860 312 V766 Q860 790 841 773 L797 732
+           H756 Q708 732 708 684 V626
+           C708 522 620 450 512 450
+           C404 450 316 522 316 626 V684
+           Q316 732 268 732 H212 Q164 732 164 684
+           V312 Q164 264 212 264 Z" fill="#F9FAF7"/>
+</svg>

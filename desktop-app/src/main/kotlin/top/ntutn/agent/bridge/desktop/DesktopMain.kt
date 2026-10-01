@@ -21,6 +21,9 @@ import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
 import com.google.gson.JsonObject
+import org.jetbrains.compose.resources.painterResource
+import top.ntutn.agent.bridge.desktop.resources.Res
+import top.ntutn.agent.bridge.desktop.resources.agent_bridge_app_icon
 import java.awt.Frame
 import java.nio.file.Path
 
@@ -44,6 +47,7 @@ fun main(args: Array<String>) {
     val target = ConnectionTarget(root, environment)
     application {
         Window(onCloseRequest = ::exitApplication, title = "Agent Bridge · 本地工作台",
+            icon = painterResource(Res.drawable.agent_bridge_app_icon),
             state = rememberWindowState(width = 1180.dp, height = 820.dp)) {
             val scope = rememberCoroutineScope()
             val model = remember { DesktopModel(scope, target) }
