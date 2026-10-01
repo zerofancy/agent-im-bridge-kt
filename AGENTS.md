@@ -2,7 +2,7 @@
 
 ## Kotlin 与并发
 
-- 使用 Kotlin/JVM，保持 JDK 11 兼容，业务代码位于 `top.ntutn.agent.bridge`。
+- 使用 Kotlin/JVM，保持 JDK 25 兼容，业务代码位于 `top.ntutn.agent.bridge`。
 - 新增或重构异步业务时优先使用 `kotlinx.coroutines`。聊天调度、排队、消息回复等待使用协程，不使用自建线程池或每任务线程来调度业务。
 - 使用有明确生命周期的 `CoroutineScope` 和结构化并发；独立聊天任务通过 `SupervisorJob` 隔离失败。禁止 `GlobalScope` 和脱离所属服务生命周期的后台任务。
 - Java SDK 的 `CompletableFuture` 在边界保留，协程内使用 `await()`；不要通过 `get()`、`join()` 阻塞协程线程。同步 `AutoCloseable.close()` 等应用边界可以使用 `runBlocking`，不得从服务自身的协程调用关闭入口。

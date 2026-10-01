@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>桌面 Markdown 与 JDK 25</title>
+<style>
+:root{color-scheme:light;--ink:#203330;--muted:#66796e;--accent:#247565;--line:#dfe6dc}*{box-sizing:border-box}body{margin:0;background:#f9faf7;color:var(--ink);font:16px/1.8 system-ui,-apple-system,sans-serif}main{max-width:960px;margin:auto;padding:48px 28px 80px}header{border-bottom:1px solid var(--line);padding-bottom:24px}h1{font-size:34px;line-height:1.3}h2{font-size:23px;margin-top:36px}.muted{color:var(--muted)}a{color:var(--accent)}pre{padding:20px;background:#203330;color:#eef5ef;border-radius:10px;overflow:auto;font-size:13px}code{font-family:ui-monospace,monospace}table{border-collapse:collapse;width:100%;font-size:14px}td,th{text-align:left;padding:12px;border-bottom:1px solid var(--line);vertical-align:top}.note{background:#edf1eb;padding:16px;border-left:3px solid var(--accent)}li{margin:8px 0}
+</style></head><body><main>
+<header><p class="muted">AGENT / BRIDGE · 2026-10-01</p><h1>桌面 Markdown 渲染与 JDK 25</h1><p>用户消息与 Agent 回答直接呈现 Markdown。参考 KZAgent 的渲染与表格布局，保留本项目 Material 界面风格；原文存储、服务 API、队列及停止语义保持原有行为。</p></header>
+<section><h2>展示行为</h2><table><thead><tr><th>内容</th><th>行为</th></tr></thead><tbody>
+<tr><td>正文</td><td>支持标题、强调、删除线、嵌套列表、引用、只读任务列表和网页链接。正文与代码可选择复制。</td></tr>
+<tr><td>代码</td><td>代码块显示语言、语法高亮和复制按钮；长行可横向滚动。Mermaid 显示源码。</td></tr>
+<tr><td>表格</td><td>列宽按内容测量并限制在可读范围；单元格完整换行，超宽表格提供可拖动的独立横向滚动条。</td></tr>
+<tr><td>图片</td><td>支持 HTTPS、当前聊天工作目录内的相对路径、绝对路径、file: URL，包含 PNG/SVG。解析规范路径后检查工作目录边界，越界软链接、缺失文件与不支持的协议显示替代文字。</td></tr>
+<tr><td>公式与脚注</td><td>暂展示源码。预处理保护代码围栏、缩进代码、行内代码和链接目标，避免改变代码中的 $ 与 [^1]。</td></tr>
+<tr><td>状态与摘要</td><td>状态、提示和执行摘要继续显示纯文本。会话标题保留已有生成规则。</td></tr>
+</tbody></table><p>解析异步执行，相同正文复用解析状态；图片文件检查在 IO 协程执行。解析失败显示原文。图片相对路径按当前会话工作目录解析，切换目录后旧消息图片也按新目录解析，不增加历史目录快照。</p></section>
+<section><h2>构建基线</h2><table><tbody><tr><th>Java</th><td>JDK 25（核心、桌面字节码与打包运行时）</td></tr><tr><th>Gradle / Kotlin / Compose</th><td>9.5.0 / 2.4.0 / 1.11.1，Compose 编译器与 Kotlin 同版本</td></tr><tr><th>Markdown / 图片</th><td>Markdown Renderer 0.43.0（M2、code、coil3）；Coil 3.5.0（OkHttp、SVG）</td></tr></tbody></table>
+<pre># macOS：先安装 JDK 25，再指定构建 JVM
+export JAVA_HOME="$(/usr/libexec/java_home -v 25)"
+./gradlew test installDist :desktop-app:test :desktop-app:createDistributable
+
+# Linux：JAVA_HOME 指向实际安装的 JDK 25，再运行同一构建命令</pre>
+<p>macOS 产物：<code>desktop-app/build/compose/binaries/main/app/Agent Bridge.app</code>。应用自带 JDK 25 运行时。Gradle 工具链固定版本，打包 javaHome 显式采用同一工具链。Linux 原生包需在 Linux 构建验收。</p></section>
+<section><h2>现有服务迁移</h2><p class="note">新版本要求 Java 25 或更新版本。bridgectl 校验已配置 Java，旧版本或无法识别的版本会明确拒绝；不会自动改写已配置的 dev/prod 运行路径。</p><ol><li>为目标机器准备 JDK 25，确认其 <code>bin/java -version</code>。</li><li>在计划升级目标环境时，将该环境 <code>runtime.json</code> 的 <code>java</code> 改为新 JVM 的绝对路径，保留机器人配置、模型目录与工作目录。</li><li>通过 <code>bridgectl publish/deploy</code> 发布、部署不可变快照。正式操作显式指定 <code>--env prod</code>。不修改 releases 内产物。</li></ol><p>本次实现只构建并验收，不部署正式服务。旧式 build/install 运行实例必须先停止，再执行 installDist；不可变发布快照实例可与构建并行。</p></section>
+<section><h2>复现界面验收</h2><pre># 仅模拟服务：临时状态、临时图片，不连接机器人或真实模型
+./gradlew desktopSmokeServer
+
+# 使用上一条输出的 DESKTOP_SMOKE_ROOT
+open -n "desktop-app/build/compose/binaries/main/app/Agent Bridge.app" \
+  --args --root /输出的临时目录 --env dev</pre>
+<p>模拟服务预置“基础排版与代码”“宽表格与长段落”“图片与失败回退”三个会话。检查文字选中、代码复制、网页链接、长代码滚动、表格拖动、窗口缩放、PNG/SVG 与替代文字，再切换会话、展开执行摘要。退出前台模拟服务结束验收。</p>
+<p>自动测试覆盖图片真实路径与软链接越界、缺失文件、图片引用和替代文字、宽表格边界、转义不损坏代码，以及 Java 11/21 拒绝、25 接受和版本不可识别。默认测试不启用真实 Codex，也不在正式机器人上进行故障注入。</p></section>
+<section><h2>本次验证结果</h2><p>macOS 上已通过完整构建、核心与桌面离线测试、部署测试及 createDistributable。核心测试 275 项（8 项条件跳过），桌面测试 11 项；Python 部署测试 51 项（13 项平台跳过），均无失败。打包运行时为 Java 25.0.2。</p><p>实际界面已检查标题与正文、代码高亮及复制、PNG/SVG 图片、失败图片替代文字、会话切换、纯文本摘要、窗口缩放，以及网页链接打开系统浏览器。宽表格换行正常；最后的滚动条拖拽验收因 UI 工具报告窗口定位错误未完成，仍需手工复核。Linux 原生打包及真实模型测试本次未执行。</p></section>
+<section><h2>维护入口</h2><p>桌面渲染按职责拆为消息组件、Markdown 源码预处理、表格布局、图片解析加载四个文件，均位于 desktop-app 的 desktop 包。</p><p><a href="desktop-app.html">桌面端说明</a> · <a href="macos-deployment.html">部署与运行诊断</a></p></section>
+</main></body></html>

@@ -79,7 +79,7 @@ Kotlin/JVM 核心本身跨平台，主要风险集中在：文件权限 API、�
 | # | 项 | 说明 | 动作 |
 | --- | --- | --- | --- |
 | 17 | Codex / Traex / OpenCode CLI 的 Windows 版 | 必须支持 `app-server --listen stdio://` 且 stdio 输出 UTF-8；Traex 是否提供 Windows 版需实测确认 | 阶段 1 首项验收；若某后端无 Windows 版，Windows 平台限定其余后端并显式报错 |
-| 18 | JDK 11+ / Python 3.9+ | Windows 安装与 PATH | 部署文档写明前置；`bridgectl dev` 启动时校验 |
+| 18 | JDK 25+ / Python 3.9+ | Windows 安装与 PATH | 部署文档写明前置；`bridgectl dev` 启动时校验 |
 | 19 | Gradle | `gradlew.bat` 已随仓库提供 | 无需改动 |
 
 ---

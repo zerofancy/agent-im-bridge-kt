@@ -78,7 +78,7 @@ def main():
         dist=root/'distribution';shutil.copytree(repo/'build/install/agent-im-bridge-kt',dist)
         sources=root/'source';sources.mkdir();(sources/'MainKt.java').write_text(JAVA)
         classes=root/'classes';classes.mkdir()
-        java_home=Path(subprocess.check_output(['/usr/libexec/java_home','-v','11'],text=True).strip())
+        java_home=Path(subprocess.check_output(['/usr/libexec/java_home','-v','25'],text=True).strip())
         cp=':'.join(str(p) for p in (dist/'lib').glob('*.jar'))
         subprocess.run([str(java_home/'bin/javac'),'-cp',cp,'-d',str(classes),str(sources/'MainKt.java')],check=True)
         subprocess.run([str(java_home/'bin/jar'),'cf',str(dist/'lib/000-probe.jar'),'-C',str(classes),'.'],check=True)

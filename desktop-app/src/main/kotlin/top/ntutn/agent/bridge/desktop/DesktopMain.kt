@@ -180,7 +180,7 @@ private fun History(chat: JsonObject, modifier: Modifier) {
                         Column(Modifier.padding(16.dp)) {
                             Text("你", fontSize = 11.sp, color = Muted, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(6.dp))
-                            SelectionContainer { Text(request.text("prompt"), fontSize = 14.sp, lineHeight = 23.sp) }
+                            MarkdownMessageContent(request.text("prompt"), chat.text("workspace"))
                         }
                     }
                     Spacer(Modifier.height(14.dp))
@@ -191,7 +191,7 @@ private fun History(chat: JsonObject, modifier: Modifier) {
                     }
                     if (request.text("answer").isNotBlank()) {
                         Spacer(Modifier.height(10.dp))
-                        SelectionContainer { Text(request.text("answer"), fontSize = 14.sp, lineHeight = 24.sp) }
+                        MarkdownMessageContent(request.text("answer"), chat.text("workspace"))
                     }
                     request.getAsJsonArray("notes")?.forEach { note ->
                         SelectionContainer { Text(note.asString, color = Muted, fontSize = 12.sp, lineHeight = 20.sp,

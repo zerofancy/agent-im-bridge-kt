@@ -6,7 +6,7 @@ import java.util.Locale
 import java.util.Locale.getDefault
 
 plugins {
-    kotlin("jvm") version "2.1.21"
+    kotlin("jvm") version "2.4.0"
     application
 }
 
@@ -23,7 +23,7 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
-kotlin { jvmToolchain(11) }
+kotlin { jvmToolchain(25) }
 application { mainClass.set("top.ntutn.agent.bridge.MainKt") }
 tasks.test { useJUnitPlatform() }
 tasks.named<JavaExec>("run") { standardInput = System.`in` }
