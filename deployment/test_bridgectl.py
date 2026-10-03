@@ -509,6 +509,170 @@ class DeploymentTests(unittest.TestCase):
         self.assertEqual(4, actions.count(('rpc', 'drain')))
         self.assertIn(('stop', 'upgrade'), actions)
 
+    class FakeChild:
+        def __init__(self, pid, returncode, alive_polls=0):
+            self.pid = pid; self.returncode = returncode
+            self._alive_polls = alive_polls
+            self.signals = []
+
+        def poll(self):
+            if self._alive_polls > 0:
+                self._alive_polls -= 1
+                return None
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def send_signal(self, sig):
+            self.signals.append(sig)
+
+    def prepare_launch(self):
+        release = self.root / 'releases/r-test'
+        (release / 'lib').mkdir(parents=True)
+        (release / 'lib/a.jar').write_bytes(b'x')
+        workspace = self.root / 'work'; workspace.mkdir()
+        self.m.verify = lambda r: release
+        self.m.validate = lambda: {'java': '/usr/bin/java', 'workspace': str(workspace)}
+        b.atomic(self.m.directory / 'config.json', {'tenant': 'feishu'})
+        return release
+
+    def test_backoff_is_exponential_and_capped(self):
+        with patch.object(b.random, 'uniform', return_value=0.0):
+            values = [self.m.backoff_delay(n) for n in range(12)]
+        self.assertEqual([5, 10, 20, 40, 80, 160, 320, 640, 1280, 1800, 1800, 1800], values)
+
+    def test_supervised_loop_respawns_with_backoff_then_defers_to_deploy(self):
+        self.prepare_launch()
+        children = [self.FakeChild(1001, 1), self.FakeChild(1002, 1), self.FakeChild(1003, 1)]
+        delays = []
+
+        def popen(argv, **kwargs):
+            return children.pop(0)
+
+        def fake_wait(delay, stopping):
+            delays.append(delay)
+            if len(delays) == 2:
+                # Hold the deploy lock so the next post-crash check defers to an in-progress deployment.
+                lock_holder.append(open(self.m.deploydir / 'deploy.lock', 'w'))
+                b.fcntl.flock(lock_holder[-1], b.fcntl.LOCK_EX)
+            return False
+
+        lock_holder = []
+        with patch.object(b.subprocess, 'Popen', side_effect=popen), \
+                patch.object(b.time, 'sleep', return_value=None), \
+                patch.object(b.random, 'uniform', return_value=0.0), \
+                patch.object(self.m, 'system_boot', return_value='boot1'), \
+                patch.object(self.m, 'reachable', return_value=False), \
+                patch.object(self.m, 'wait_with_edge_wake', side_effect=fake_wait):
+            result = self.m.launch('r-test', False)
+        self.assertEqual([5.0, 10.0], delays)
+        self.assertEqual(1, result)
+        self.assertEqual(2, b.read(self.m.directory / 'lifecycle/restart-breaker.json')['attempts'])
+        lock_holder[0].close()
+
+    def test_edge_wake_respawns_immediately_without_counting_attempt(self):
+        self.prepare_launch()
+        children = [self.FakeChild(2001, 1), self.FakeChild(2002, 1)]
+
+        def popen(argv, **kwargs):
+            return children.pop(0)
+
+        lock_holder = []
+        def fake_wait(delay, stopping):
+            lock_holder.append(open(self.m.deploydir / 'deploy.lock', 'w'))
+            b.fcntl.flock(lock_holder[-1], b.fcntl.LOCK_EX)
+            return True  # reachability edge
+
+        with patch.object(b.subprocess, 'Popen', side_effect=popen), \
+                patch.object(b.time, 'sleep', return_value=None), \
+                patch.object(self.m, 'system_boot', return_value='boot1'), \
+                patch.object(self.m, 'reachable', return_value=False), \
+                patch.object(self.m, 'wait_with_edge_wake', side_effect=fake_wait):
+            result = self.m.launch('r-test', False)
+        self.assertEqual(1, result)
+        self.assertFalse((self.m.directory / 'lifecycle/restart-breaker.json').exists())
+        lock_holder[0].close()
+
+    def test_sigterm_stops_supervision_and_returns_zero(self):
+        self.prepare_launch()
+        child = self.FakeChild(3001, 0, alive_polls=10**9)
+        def wait_for_signal(timeout=None):
+            child._alive_polls = 0
+            return 0
+        child.wait = wait_for_signal
+        handlers = {}
+
+        def on_sleep(*a):
+            handlers[b.signal.SIGTERM](b.signal.SIGTERM, None)
+
+        with patch.object(b.subprocess, 'Popen', return_value=child), \
+                patch.object(b.time, 'sleep', side_effect=on_sleep), \
+                patch.object(b.signal, 'signal', side_effect=lambda s, h: handlers.__setitem__(s, h)), \
+                patch.object(self.m, 'system_boot', return_value='boot1'), \
+                patch.object(self.m, 'reachable', return_value=False):
+            result = self.m.launch('r-test', False)
+        self.assertEqual(0, result)
+        self.assertIn(b.signal.SIGTERM, child.signals)
+
+    def test_signal_death_maps_to_143(self):
+        self.prepare_launch()
+        child = self.FakeChild(4001, -15)
+        b.atomic(self.m.directory / 'lifecycle/current.json',
+                 {'pid': 4001, 'startedAt': 't', 'bootId': 'b'})
+        lock_holder = []
+        self.m.deploydir.mkdir(parents=True, exist_ok=True)
+        lock_holder.append(open(self.m.deploydir / 'deploy.lock', 'w'))
+        b.fcntl.flock(lock_holder[-1], b.fcntl.LOCK_EX)
+        with patch.object(b.subprocess, 'Popen', return_value=child), \
+                patch.object(b.time, 'sleep', return_value=None), \
+                patch.object(self.m, 'system_boot', return_value='boot1'), \
+                patch.object(self.m, 'reachable', return_value=False):
+            result = self.m.launch('r-test', False)
+        self.assertEqual(143, result)
+        self.assertEqual(15, b.read(self.m.directory / 'lifecycle/observed-exit.json')['signal'])
+        lock_holder[0].close()
+
+    def test_reachable_start_resets_persisted_attempts(self):
+        self.prepare_launch()
+        b.atomic(self.m.directory / 'lifecycle/restart-breaker.json',
+                 {'attempts': 5, 'boot': 'boot1'})
+        child = self.FakeChild(5001, 1)
+        lock_holder = []
+        delays = []
+        def fake_wait(delay, stopping):
+            delays.append(delay)
+            lock_holder.append(open(self.m.deploydir / 'deploy.lock', 'w'))
+            b.fcntl.flock(lock_holder[-1], b.fcntl.LOCK_EX)
+            return False
+        with patch.object(b.subprocess, 'Popen', return_value=child), \
+                patch.object(b.time, 'sleep', return_value=None), \
+                patch.object(b.random, 'uniform', return_value=0.0), \
+                patch.object(self.m, 'system_boot', return_value='boot1'), \
+                patch.object(self.m, 'reachable', return_value=True), \
+                patch.object(self.m, 'wait_with_edge_wake', side_effect=fake_wait):
+            self.m.launch('r-test', False)
+        self.assertEqual([5.0], delays)
+        lock_holder[0].close()
+
+    def test_edge_wake_state_machine(self):
+        def run_with(provider, initial_clock=1000):
+            clock = {'t': initial_clock}
+            stopping = {'value': False}
+            with patch.object(b.time, 'monotonic', side_effect=lambda: clock['t']), \
+                    patch.object(b.time, 'sleep', side_effect=lambda s: clock.update({'t': clock['t'] + s})), \
+                    patch.object(self.m, 'reachable', side_effect=provider):
+                return self.m.wait_with_edge_wake(100, stopping)
+
+        # Started unreachable (armed), first reachable slice wakes immediately, once.
+        values = iter([False, True])
+        self.assertTrue(run_with(lambda: next(values)))
+        # Started reachable and stays reachable: no edge, wait runs to deadline.
+        self.assertFalse(run_with(lambda: True))
+        # reachable->down->reachable requires the down slice to re-arm before the next edge fires.
+        values = iter([True, False, True])
+        self.assertTrue(run_with(lambda: next(values)))
+
 
 class ServiceManagerTests(unittest.TestCase):
     """测试平台抽象层和服务管理器"""

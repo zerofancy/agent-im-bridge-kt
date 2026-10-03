@@ -121,7 +121,7 @@ fun channelOptions(config: BridgeConfig): LarkChannelOptions {
         }).build()
 }
 
-fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec, lifecycle: RuntimeLifecycle? = null, initiallyHeld: Boolean = false, localReplies: LocalReplies? = null): Pair<FeishuConnection, ChatService> {
+fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec, lifecycle: RuntimeLifecycle? = null, initiallyHeld: Boolean = false, localReplies: LocalReplies? = null, onInboundActivity: () -> Unit = {}): Pair<FeishuConnection, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
     val appDirectory = MessageDigest.getInstance("SHA-256").digest(config.appId.toByteArray())
@@ -207,6 +207,7 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
     }
     launchManaged = { block -> service.launchManaged { block() } }
     channel.on<NormalizedMessage>("message") { message ->
+        onInboundActivity()
         FatalErrorHandler.boundary {
             extractPrompt(message, config.allowedUserId)?.let { prompt ->
                 log.info("收到请求 chatId={} messageId={} chatType={}", message.chatId, message.messageId, message.chatType)
@@ -215,6 +216,7 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         }
     }
     channel.on<ReactionEvent>("reaction") { event ->
+        onInboundActivity()
         FatalErrorHandler.boundary {
             extractReaction(event, config.allowedUserId)?.let { reaction ->
                 service.receive(reaction.id) { source.reaction(reaction, config.appId, channel.botIdentity?.openId) }
@@ -222,6 +224,7 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         }
     }
     val connection = FeishuConnection(channel, config) { event ->
+        onInboundActivity()
         FatalErrorHandler.boundary {
             val dedup = commentEventKey(event) ?: return@boundary
             log.info("收到文档评论事件 fileToken={} commentId={} replyId={}", event.fileToken, event.commentId, event.replyId)

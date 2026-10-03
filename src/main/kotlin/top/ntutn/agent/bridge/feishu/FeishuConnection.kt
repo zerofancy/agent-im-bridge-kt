@@ -8,6 +8,9 @@ import com.lark.oapi.event.EventDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import org.slf4j.LoggerFactory
 import top.ntutn.agent.bridge.storage.BridgeConfig
 import top.ntutn.agent.bridge.string
 
@@ -31,29 +34,51 @@ internal class CommentEventDispatcher(
 /** Own exactly one SDK WebSocket, alongside a webhook-mode channel for normalization and outbound APIs. */
 class FeishuConnection internal constructor(
     private val channel: LarkChannel,
-    config: BridgeConfig,
-    comment: (CommentEvent) -> Unit
+    private val config: BridgeConfig,
+    private val comment: (CommentEvent) -> Unit
 ) {
+    private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     var connectionChanged: (Boolean) -> Unit = {}
-    private val socket = com.lark.oapi.ws.Client.Builder(config.appId, config.appSecret)
-        .domain(feishuOpenBaseUrl(config))
-        .source("agent-im-bridge-kt")
-        .eventHandler(CommentEventDispatcher(channel.createWebhookDispatcher(), comment))
-        .onReconnecting { connectionChanged(false) }
-        .onReconnected { connectionChanged(true) }
-        .build()
+    private val socketLock = Mutex()
+    private var socket: com.lark.oapi.ws.Client = buildSocket()
+
+    private fun buildSocket(): com.lark.oapi.ws.Client =
+        com.lark.oapi.ws.Client.Builder(config.appId, config.appSecret)
+            .domain(feishuOpenBaseUrl(config))
+            .source("agent-im-bridge-kt")
+            .eventHandler(CommentEventDispatcher(channel.createWebhookDispatcher(), comment))
+            .onReconnecting { connectionChanged(false) }
+            .onReconnected { connectionChanged(true) }
+            .build()
+
+    private fun com.lark.oapi.ws.Client.startReady() {
+        start()
+        awaitReady(15_000)
+    }
 
     suspend fun connect() {
         channel.connect().await() // Resolve bot identity before accepting events.
-        runInterruptible(Dispatchers.IO) {
-            socket.start()
-            socket.awaitReady(15_000)
+        socketLock.withLock {
+            runInterruptible(Dispatchers.IO) { socket.startReady() }
         }
     }
 
+    /** Tear down and rebuild only the WebSocket; the outer channel keeps bot identity and outbound sends. */
+    suspend fun reconnect() = socketLock.withLock {
+        runInterruptible(Dispatchers.IO) {
+            try { socket.close() }
+            catch (error: Throwable) { log.warn("关闭旧 WebSocket 失败 type={}", error.javaClass.simpleName) }
+        }
+        socket = buildSocket()
+        runInterruptible(Dispatchers.IO) { socket.startReady() }
+    }
+
     suspend fun disconnect() {
-        try { runInterruptible(Dispatchers.IO) { socket.close() } }
-        finally { channel.disconnect().await() }
+        try {
+            socketLock.withLock {
+                runInterruptible(Dispatchers.IO) { socket.close() }
+            }
+        } finally { channel.disconnect().await() }
     }
 }
 

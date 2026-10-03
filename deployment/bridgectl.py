@@ -15,8 +15,10 @@ import locale
 import os
 from pathlib import Path
 import re
+import random
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -759,18 +761,107 @@ class Manager:
                    PATH=settings.get('path', default_path))
         classpath = os.pathsep.join(str(f) for f in sorted((p / 'lib').glob('*.jar')))
         argv = [settings['java'], '-Djava.io.tmpdir=' + str(self.directory / 'tmp'), '-cp', classpath, 'top.ntutn.agent.bridge.MainKt']
-        child = subprocess.Popen(argv, env=env, cwd=settings['workspace'], stdin=subprocess.DEVNULL)
+
+        stopping = {'value': False}
+        current = {'child': None}
+
         def terminate(signum, frame):
-            if child.poll() is None: child.send_signal(signum)
+            stopping['value'] = True
+            child = current['child']
+            if child is not None and child.poll() is None: child.send_signal(signum)
         signal.signal(signal.SIGTERM, terminate); signal.signal(signal.SIGINT, terminate)
-        code = child.wait()
-        life = read(self.directory / 'lifecycle/current.json', {})
-        if life.get('pid') == child.pid:
-            observed = {k: life[k] for k in ('pid', 'startedAt', 'bootId')}
-            if code < 0: observed['signal'] = -code
-            else: observed['exitCode'] = code
-            atomic(self.directory / 'lifecycle/observed-exit.json', observed)
-        return code if code >= 0 else 128 - code
+
+        boot = self.system_boot()
+        breaker_path = self.directory / 'lifecycle/restart-breaker.json'
+        breaker = read(breaker_path, {})
+        if not breaker or breaker.get('boot') != boot or self.reachable():
+            attempts = 0
+        else:
+            attempts = int(breaker.get('attempts', 0))
+
+        while True:
+            child = subprocess.Popen(argv, env=env, cwd=settings['workspace'], stdin=subprocess.DEVNULL)
+            current['child'] = child
+            started = time.monotonic()
+            while child.poll() is None:
+                if stopping['value']:
+                    with contextlib.suppress(OSError, subprocess.TimeoutExpired): child.wait(timeout=20)
+                    return 0
+                time.sleep(2)
+                if attempts and time.monotonic() - started >= self.HEALTHY_DURATION:
+                    attempts = 0
+            code = child.returncode
+            current['child'] = None
+            life = read(self.directory / 'lifecycle/current.json', {})
+            if life.get('pid') == child.pid:
+                observed = {k: life[k] for k in ('pid', 'startedAt', 'bootId')}
+                if code < 0: observed['signal'] = -code
+                else: observed['exitCode'] = code
+                atomic(self.directory / 'lifecycle/observed-exit.json', observed)
+            mapped = code if code >= 0 else 128 - code
+            if stopping['value']: return 0
+            # A deployment owns stop/start while draining and activating; never respawn behind its back.
+            try:
+                with locked(self.deploydir / 'deploy.lock'): pass
+            except BlockingIOError:
+                return mapped
+            delay = self.backoff_delay(attempts)
+            woken = self.wait_with_edge_wake(delay, stopping)
+            if not woken:
+                attempts += 1
+                atomic(breaker_path, {'attempts': attempts, 'boot': boot, 'lastCode': mapped, 'since': time.time()})
+
+    BACKOFF_BASE = 5
+    BACKOFF_CAP = 1_800
+    HEALTHY_DURATION = 180
+    EDGE_MIN_INTERVAL = 60
+    PROBE_SLICE = 5
+
+    def backoff_delay(self, attempts):
+        raw = min(self.BACKOFF_CAP, self.BACKOFF_BASE * 2 ** attempts)
+        jitter = random.uniform(0, min(raw * 0.1, self.BACKOFF_CAP - raw))
+        return raw + jitter
+
+    def reachable(self):
+        tenant = read(self.directory / 'config.json', {}).get('tenant', 'feishu')
+        host = 'open.larksuite.com' if tenant == 'lark' else 'open.feishu.cn'
+        try:
+            with socket.create_connection((host, 443), timeout=3): return True
+        except OSError:
+            return False
+
+    def wait_with_edge_wake(self, delay, stopping):
+        """Wait up to delay seconds; return early once on a false->true reachability edge. True when woken early."""
+        deadline = time.monotonic() + delay
+        was_reachable = self.reachable()
+        armed = not was_reachable  # need to see an unreachable slice before an edge can fire
+        last_edge = 0.0
+        while time.monotonic() < deadline and not stopping['value']:
+            time.sleep(self.PROBE_SLICE)
+            reachable = self.reachable()
+            now = time.monotonic()
+            if reachable:
+                if not was_reachable and armed and now - last_edge >= self.EDGE_MIN_INTERVAL:
+                    return True
+                if not was_reachable:
+                    armed = False; last_edge = now
+            else:
+                armed = True
+            was_reachable = reachable
+        return False
+
+    def system_boot(self):
+        try:
+            if sys.platform == 'darwin':
+                out = subprocess.run(['sysctl', '-n', 'kern.boottime'], capture_output=True, timeout=5).stdout.decode()
+                match = re.search(r'sec\s*=\s*(\d+)', out)
+                return match.group(1) if match else 'unknown'
+            if sys.platform.startswith('linux'):
+                for line in Path('/proc/stat').read_text().splitlines():
+                    if line.startswith('btime '): return line.split()[1]
+        except OSError:
+            pass
+        return 'unknown'
 
     def prune(self):
         protected = set()

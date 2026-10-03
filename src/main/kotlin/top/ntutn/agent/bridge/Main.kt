@@ -9,6 +9,7 @@ import java.nio.file.Path
 import java.util.concurrent.CountDownLatch
 import kotlinx.coroutines.withTimeout
 import kotlin.system.exitProcess
+import top.ntutn.agent.bridge.feishu.ConnectionWatchdog
 import top.ntutn.agent.bridge.feishu.createAgentChannel
 import top.ntutn.agent.bridge.storage.ConfigStore
 import top.ntutn.agent.bridge.storage.InstanceLock
@@ -49,6 +50,7 @@ fun main(args: Array<String>) {
     var instance: InstanceLock? = null
     var control: RuntimeControl? = null
     var lifecycle: RuntimeLifecycle? = null
+    var watchdog: top.ntutn.agent.bridge.feishu.ConnectionWatchdog? = null
     try {
         // Preserve only the legacy stop operation for migration. New environments use bridgectl stop.
         if (args.contentEquals(arrayOf("--stop"))) {
@@ -75,9 +77,11 @@ fun main(args: Array<String>) {
         runner = createAgentRunner(backend, SandboxMode.parse(config.sandboxMode))
         runner.checkAvailable()
         val held = System.getenv("BRIDGE_HOLD") == "1"
+        var onInboundActivity: (() -> Unit)? = null
         when (config.platform) {
             "feishu" -> {
-                val bridge = createAgentChannel(config, runner, sessions, options, backend, lifecycle, held, desktopHistory)
+                val bridge = createAgentChannel(config, runner, sessions, options, backend, lifecycle, held, desktopHistory,
+                    onInboundActivity = { onInboundActivity?.invoke() })
                 larkChannel = bridge.first; service = bridge.second
             }
             "telegram" -> {
@@ -98,20 +102,35 @@ fun main(args: Array<String>) {
         val activeInstance = instance
         val activeControl = control
         val activeLifecycle = lifecycle
+        if (config.platform == "feishu") {
+            val channel = activeLarkChannel!!
+            val created = ConnectionWatchdog(
+                reconnect = { channel.reconnect() },
+                status = { activeService.deploymentStatus() },
+                escalate = {
+                    activeLifecycle.stopReason = "飞书连接长时间不可恢复"
+                    activeLifecycle.finish("飞书连接长时间不可恢复", 1)
+                    exitProcess(1)
+                },
+                recovered = { activeControl.connected(true) })
+            watchdog = created
+            onInboundActivity = created::noteActivity
+            channel.connectionChanged = { connected ->
+                created.onConnectionChanged(connected)
+                activeControl.connected(connected)
+                log.info("飞书连接状态 connected={}", connected)
+            }
+        }
         Runtime.getRuntime().addShutdownHook(Thread {
             closeBridgeResources(
-                { activeTelegramClient?.stopPolling() }, { activeControl.close() }, { activeService.close() }, { activeRunner.close() },
+                { activeTelegramClient?.stopPolling() }, { watchdog?.close() }, { activeControl.close() }, { activeService.close() }, { activeRunner.close() },
                 { runBlocking { withTimeout(5_000) { activeLarkChannel?.disconnect() } } },
                 { activeTelegramClient?.close() },
                 { activeLifecycle.finish(activeLifecycle.stopReason, 0) }, { activeInstance.close() }
             )
         })
         if (config.platform == "feishu") {
-            val channel = larkChannel!!
-            channel.connectionChanged = { connected ->
-                activeControl.connected(connected)
-                log.info("飞书连接状态 connected={}", connected)
-            }
+            val channel = activeLarkChannel!!
             log.info("正在连接飞书…… environment={} release={}", environment.name, environment.release)
             runBlocking { withTimeout(45_000) { channel.connect() } }
         } else {
@@ -127,7 +146,7 @@ fun main(args: Array<String>) {
         FatalErrorHandler.rethrowProgrammingError(e)
         log.error("启动失败 type={}", e.javaClass.simpleName)
         closeBridgeResources(
-            { telegramClient?.stopPolling() }, { control?.close() }, { service?.close() }, { runner?.close() },
+            { telegramClient?.stopPolling() }, { watchdog?.close() }, { control?.close() }, { service?.close() }, { runner?.close() },
             { runBlocking { withTimeout(5_000) { larkChannel?.disconnect() } } },
             { telegramClient?.close() },
             { lifecycle?.finish("启动失败 ${e.javaClass.simpleName}", 1) }, { instance?.close() }
