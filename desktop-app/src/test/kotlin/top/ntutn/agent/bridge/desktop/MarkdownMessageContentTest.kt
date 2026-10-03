@@ -53,6 +53,49 @@ class MarkdownMessageContentTest {
             resolveMarkdownImageSource(aliasRoot.toString(), "alias.png")).path)
     }
 
+    @Test fun `local markdown file links resolve inside workspace and keep optional position`() {
+        val root = Files.createDirectory(directory.resolve("workspace"))
+        val nested = Files.createDirectories(root.resolve("docs"))
+        val file = Files.writeString(nested.resolve("guide.md"), "# guide")
+        val resolved = assertNotNull(resolveMarkdownFileLink(root.toString(), "docs/guide.md:12:3"))
+        assertEquals(root.toRealPath(), resolved.workspace)
+        assertEquals(file.toRealPath(), resolved.file)
+        assertEquals(12, resolved.line)
+        assertEquals(3, resolved.column)
+        assertEquals(file.toRealPath(), assertNotNull(
+            resolveMarkdownFileLink(root.toString(), file.toString())).file)
+    }
+
+    @Test fun `local markdown file links reject missing outside and non numeric suffixes`() {
+        val root = Files.createDirectory(directory.resolve("workspace"))
+        val outside = Files.writeString(directory.resolve("outside.md"), "no")
+        assertNull(resolveMarkdownFileLink(root.toString(), "../outside.md:3"))
+        assertNull(resolveMarkdownFileLink(root.toString(), outside.toString()))
+        assertNull(resolveMarkdownFileLink(root.toString(), "missing.md:1"))
+        assertNull(resolveMarkdownFileLink(root.toString(), "README.md:final"))
+    }
+
+    @Test fun `editor launch commands prefer trae and vscode with workspace plus goto`() {
+        val root = Files.createDirectory(directory.resolve("workspace"))
+        val file = Files.writeString(root.resolve("README.md"), "hi")
+        val target = ResolvedMarkdownFileLink(root.toRealPath(), file.toRealPath(), 7, 2)
+        val mac = editorLaunchCommands(target, "Mac OS X")
+        assertEquals(listOf("/Applications/Trae CN.app/Contents/Resources/app/bin/trae-cn", "-r",
+            root.toRealPath().toString(), "-g",
+            "${file.toRealPath()}:7:2"), mac.first())
+        val linux = editorLaunchCommands(target, "Linux")
+        assertEquals(listOf("trae", root.toRealPath().toString(), "--goto", "${file.toRealPath()}:7:2"), linux.first())
+        assertTrue(linux.any { it.take(2) == listOf("code", "-g") || it.contains("--goto") })
+    }
+
+    @Test fun `editor launch treats immediate failure as false and long running launch as success`() {
+        val root = Files.createDirectory(directory.resolve("workspace"))
+        val file = Files.writeString(root.resolve("README.md"), "hi")
+        val target = ResolvedMarkdownFileLink(root.toRealPath(), file.toRealPath(), 1, null)
+        assertFalse(openMarkdownFileInEditor(target, "Linux") { false })
+        assertTrue(openMarkdownFileInEditor(target, "Linux") { true })
+    }
+
     @Test fun `image alternate text and reference links survive parsing`() {
         val source = "![示意图](<images/my picture.png>)\n\n![引用图片][figure]\n\n[figure]: preview.svg"
         val tree = MarkdownParser(GFMFlavourDescriptor()).buildMarkdownTreeFromString(source)
