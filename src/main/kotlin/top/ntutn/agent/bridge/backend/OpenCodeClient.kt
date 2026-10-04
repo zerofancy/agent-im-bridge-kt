@@ -51,7 +51,7 @@ internal class OpenCodeClient private constructor(val process: Process, private 
                         for (key in listOf("TMPDIR", "TMP", "TEMP")) environment()[key] = temporary.toString()
                         environment()["OPENCODE_SERVER_PASSWORD"] = password
                         environment()["OPENCODE_SERVER_USERNAME"] = "opencode"
-                        environment()["OPENCODE_CONFIG_CONTENT"] = json("autoupdate" to false, "share" to "disabled").toString()
+                        environment()["OPENCODE_CONFIG_CONTENT"] = json("share" to "disabled").toString()
                     }.start()
                 OpenCodeClient(process, password).also { started = it; it.readOutput() }
             } } catch (e: CancellationException) {
@@ -97,7 +97,6 @@ internal class OpenCodeClient private constructor(val process: Process, private 
             endpoint.await()
             val health = request("GET", "/global/health").asJsonObject
             require(health["healthy"]?.asBoolean == true) { "OpenCode 未就绪" }
-            require(health.string("version") == "1.16.0") { "OpenCode 需要已验证的 1.16.0 版本" }
         }
     }
 
@@ -169,10 +168,9 @@ internal class OpenCodeClient private constructor(val process: Process, private 
             val handles = process.descendants().use { it.toArray().map { h -> h as ProcessHandle } }.reversed() + process.toHandle()
             closeQuietly(process.outputStream)
             handles.filter { it.isAlive }.forEach { it.destroy() }
-            if (!process.waitFor(1, TimeUnit.SECONDS)) {
-                handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
-                process.waitFor(5, TimeUnit.SECONDS)
-            }
+            waitForExit(handles, 1_000)
+            handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
+            waitForExit(handles, 5_000)
             // On Windows a concurrent native pipe read can make close() block indefinitely.
             // Process exit closes the other end first and wakes both output readers.
             closeQuietly(process.inputStream)
@@ -188,5 +186,10 @@ internal class OpenCodeClient private constructor(val process: Process, private 
 
     private fun closeQuietly(closeable: Closeable?) {
         try { closeable?.close() } catch (_: Exception) { }
+    }
+
+    private fun waitForExit(handles: List<ProcessHandle>, timeoutMillis: Long) {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+        while (handles.any { it.isAlive } && System.nanoTime() < deadline) Thread.sleep(20)
     }
 }

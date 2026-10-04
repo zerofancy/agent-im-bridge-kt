@@ -46,7 +46,14 @@ class OpenCodeRunnerTest {
             val second = withTimeout(7000) { runner.run("again", saved, temp, mode) }
             assertEquals("final again", assertIs<AgentResult.Success>(second).text)
             assertEquals(saved, second.sessionId)
-            assertEquals(1, Files.readAllLines(temp.resolve("requests")).count { it.contains("\"path\": \"/session\"") })
+            val requests = Files.readAllLines(temp.resolve("requests"))
+            assertEquals(1, requests.count { it.contains("\"path\": \"/session\"") })
+            requests.map { com.google.gson.JsonParser.parseString(it).asJsonObject }
+                .filter { it.string("method") == "POST" && it.string("path")?.endsWith("/message") == true }
+                .forEach {
+                    assertEquals("fixture", it.objectValue("body")?.objectValue("model")?.string("providerID"))
+                    assertEquals("current", it.objectValue("body")?.objectValue("model")?.string("modelID"))
+                }
         }
         val pid = Files.readString(temp.resolve("pid")).toLong()
         assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))

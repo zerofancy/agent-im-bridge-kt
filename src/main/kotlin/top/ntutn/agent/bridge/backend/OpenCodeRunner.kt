@@ -74,6 +74,14 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
         val server = try { connection() }
         catch (e: IOException) { return@coroutineScope failure(AgentResult.Kind.START) }
         val directory = workspace.toString()
+        val model = try {
+            server.request("GET", "/config", directory = directory).objectOrNull()?.string("model")?.let { configured ->
+                val separator = configured.indexOf('/')
+                if (separator > 0 && separator < configured.lastIndex)
+                    json("providerID" to configured.substring(0, separator), "modelID" to configured.substring(separator + 1))
+                else null
+            }
+        } catch (_: IOException) { null }
         val permission = JsonArray().apply {
             add(json("permission" to "*", "pattern" to "*", "action" to "allow"))
             add(json("permission" to "question", "pattern" to "*", "action" to "deny"))
@@ -103,8 +111,11 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
             UUID.randomUUID().toString().replace("-", "").take(14)
         val events = server.subscribe(directory)
         val response = async {
-            try { Result.success(server.request("POST", "/session/$id/message", json("messageID" to messageId,
-                "parts" to JsonArray().apply { add(json("type" to "text", "text" to prompt)) }), directory, waitForTurn = true)) }
+            val body = json("messageID" to messageId,
+                "parts" to JsonArray().apply { add(json("type" to "text", "text" to prompt)) }).apply {
+                model?.let { add("model", it) }
+            }
+            try { Result.success(server.request("POST", "/session/$id/message", body, directory, waitForTurn = true)) }
             catch (e: IOException) { Result.failure<JsonElement>(e) }
         }
         var submitted = false

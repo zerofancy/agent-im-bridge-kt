@@ -20,6 +20,20 @@ class DeploymentTests(unittest.TestCase):
         path.write_bytes('{"状态":"正常"}'.encode('utf-8'))
         self.assertEqual({'状态': '正常'}, b.read(path))
 
+    def test_atomic_retries_transient_permission_error(self):
+        path = self.root / 'state.json'
+        real_replace = b.os.replace
+        calls = 0
+        def replace(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls == 1: raise PermissionError('sharing violation')
+            return real_replace(source, destination)
+        with patch.object(b.os, 'replace', side_effect=replace), patch.object(b.time, 'sleep') as sleep:
+            b.atomic(path, {'state': 'ready'})
+        self.assertEqual({'state': 'ready'}, b.read(path))
+        sleep.assert_called_once_with(.02)
+
     def test_command_output_uses_system_encoding_and_replaces_invalid_bytes(self):
         from types import SimpleNamespace
         process = SimpleNamespace(returncode=0, stdout=b'out-\xff', stderr=b'err-\xfe')

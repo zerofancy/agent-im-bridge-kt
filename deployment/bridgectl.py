@@ -43,7 +43,13 @@ def atomic(path, data):
         with os.fdopen(fd, 'wb') as f:
             f.write(data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False, indent=2).encode())
             f.flush(); os.fsync(f.fileno())
-        os.replace(tmp, path)
+        for attempt in range(50):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 49: raise
+                time.sleep(.02)
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
 

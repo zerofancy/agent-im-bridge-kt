@@ -19,8 +19,9 @@ class Handler(BaseHTTPRequestHandler):
   if self.headers.get('Authorization')!=expected:return self.reply({},401)
   url=urlparse(self.path);path=url.path;directory=parse_qs(url.query).get('directory',[''])[0]
   body=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))) or '{}')
-  with (root/'requests').open('a') as f:f.write(json.dumps({'method':self.command,'path':path,'directory':directory})+'\n')
-  if path=='/global/health':return self.reply({'healthy':True,'version':'1.16.0'})
+  with (root/'requests').open('a') as f:f.write(json.dumps({'method':self.command,'path':path,'directory':directory,'body':body})+'\n')
+  if path=='/global/health':return self.reply({'healthy':True,'version':'999.0.0'})
+  if path=='/config':return self.reply({'model':'fixture/current'})
   if path=='/event':
    self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
    try:

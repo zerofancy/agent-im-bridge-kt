@@ -17,6 +17,20 @@ import top.ntutn.agent.bridge.storage.SessionStore
 class OpenCodeLiveTest {
     @TempDir lateinit var temp: Path
 
+    private suspend fun waitForNativeTempRelease() {
+        if (!System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) return
+        val directory = temp.resolve("tmp")
+        withTimeout(10_000) {
+            while (true) {
+                val files = mutableListOf<Path>()
+                if (Files.isDirectory(directory)) Files.newDirectoryStream(directory, ".*.node").use { it.forEach(files::add) }
+                val locked = files.filterNot { runCatching { Files.deleteIfExists(it); true }.getOrDefault(false) }
+                if (locked.isEmpty()) return@withTimeout
+                delay(50)
+            }
+        }
+    }
+
     @Test fun `real server returns current message and resumes against fixture provider`(): Unit = runBlocking {
         val pending = CompletableDeferred<Unit>()
         val finishProvider = java.util.concurrent.CountDownLatch(1)
@@ -78,6 +92,7 @@ class OpenCodeLiveTest {
                 assertEquals(AgentResult.Kind.STOPPED, assertIs<AgentResult.Failure>(result).kind)
                 finishProvider.countDown()
             }
+            waitForNativeTempRelease()
         } finally { finishProvider.countDown(); provider.stop(0) }
     }
 }
