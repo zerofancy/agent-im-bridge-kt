@@ -2,8 +2,8 @@ import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
     kotlin("jvm")
-    id("org.jetbrains.compose") version "1.11.1"
-    id("org.jetbrains.kotlin.plugin.compose") version "2.4.0"
+    alias(libs.plugins.compose)
+    alias(libs.plugins.kotlin.compose)
 }
 
 repositories {
@@ -14,17 +14,15 @@ repositories {
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material)
-    implementation("org.jetbrains.compose.components:components-resources:1.11.1")
-    implementation("com.mikepenz:multiplatform-markdown-renderer-m2:0.43.0")
-    implementation("com.mikepenz:multiplatform-markdown-renderer-code:0.43.0")
-    implementation("com.mikepenz:multiplatform-markdown-renderer-coil3:0.43.0")
-    implementation("io.coil-kt.coil3:coil-network-okhttp:3.5.0")
-    implementation("io.coil-kt.coil3:coil-svg:3.5.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.10.2")
-    implementation("com.google.code.gson:gson:2.11.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    testImplementation(kotlin("test-junit5"))
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    implementation(libs.compose.components.resources)
+    implementation(libs.bundles.multiplatform.markdown.renderer)
+    implementation(libs.coil.network.okhttp)
+    implementation(libs.coil.svg)
+    implementation(libs.kotlinx.coroutines.swing)
+    implementation(libs.gson)
+    implementation(libs.okhttp)
+    testImplementation(libs.kotlin.test.junit5)
+    testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 // Compilation and the bundled desktop runtime both use JDK 21.
