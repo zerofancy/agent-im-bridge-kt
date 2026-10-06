@@ -179,6 +179,10 @@ private fun History(chat: JsonObject, modifier: Modifier) {
                 Text("会话已就绪。选择工作目录，然后输入你的需求。", color = Muted, fontSize = 14.sp)
             }
             items(requests, key = { it.text("id") }) { request ->
+                val activeStates = remember { setOf("排队中", "控制命令", "执行中") }
+                val isActive = request.text("state") in activeStates
+                var userOverride by remember(request.text("id")) { mutableStateOf<Boolean?>(null) }
+                val expanded = userOverride ?: isActive
                 Column {
                     Surface(color = Color(0xFFEAF0E7), shape = RoundedCornerShape(12.dp), modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp)) {
@@ -193,6 +197,16 @@ private fun History(chat: JsonObject, modifier: Modifier) {
                         Spacer(Modifier.width(12.dp))
                         Text(request.text("state"), color = Muted, fontSize = 11.sp)
                     }
+                    if (request.text("process").isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        TextButton(onClick = { userOverride = !expanded }, contentPadding = PaddingValues(0.dp)) {
+                            Text(if (expanded) "收起执行摘要 ↑" else "查看执行摘要 ↓", fontSize = 12.sp)
+                        }
+                        if (expanded) Surface(color = Color(0xFFF0F2ED), shape = RoundedCornerShape(8.dp)) {
+                            SelectionContainer { Text(request.text("process"), color = Muted, fontSize = 12.sp, lineHeight = 21.sp,
+                                modifier = Modifier.fillMaxWidth().padding(14.dp)) }
+                        }
+                    }
                     if (request.text("answer").isNotBlank()) {
                         Spacer(Modifier.height(10.dp))
                         MarkdownMessageContent(request.text("answer"), chat.text("workspace"))
@@ -200,16 +214,6 @@ private fun History(chat: JsonObject, modifier: Modifier) {
                     request.getAsJsonArray("notes")?.forEach { note ->
                         SelectionContainer { Text(note.asString, color = Muted, fontSize = 12.sp, lineHeight = 20.sp,
                             modifier = Modifier.padding(top = 8.dp)) }
-                    }
-                    if (request.text("process").isNotBlank()) {
-                        var expanded by remember(request.text("id")) { mutableStateOf(false) }
-                        TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(0.dp)) {
-                            Text(if (expanded) "收起执行摘要 ↑" else "查看执行摘要 ↓", fontSize = 12.sp)
-                        }
-                        if (expanded) Surface(color = Color(0xFFF0F2ED), shape = RoundedCornerShape(8.dp)) {
-                            SelectionContainer { Text(request.text("process"), color = Muted, fontSize = 12.sp, lineHeight = 21.sp,
-                                modifier = Modifier.fillMaxWidth().padding(14.dp)) }
-                        }
                     }
                 }
             }
