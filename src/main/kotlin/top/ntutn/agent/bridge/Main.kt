@@ -49,6 +49,7 @@ fun main(args: Array<String>) {
     var service: ChatService? = null
     var instance: InstanceLock? = null
     var control: RuntimeControl? = null
+    var fileLinks: top.ntutn.agent.bridge.localfiles.LocalFileServer? = null
     var lifecycle: RuntimeLifecycle? = null
     var watchdog: top.ntutn.agent.bridge.feishu.ConnectionWatchdog? = null
     try {
@@ -80,8 +81,9 @@ fun main(args: Array<String>) {
         var onInboundActivity: (() -> Unit)? = null
         when (config.platform) {
             "feishu" -> {
+                fileLinks = top.ntutn.agent.bridge.localfiles.LocalFileServer()
                 val bridge = createAgentChannel(config, runner, sessions, options, backend, lifecycle, held, desktopHistory,
-                    onInboundActivity = { onInboundActivity?.invoke() })
+                    fileLinks = fileLinks, onInboundActivity = { onInboundActivity?.invoke() })
                 larkChannel = bridge.first; service = bridge.second
             }
             "telegram" -> {
@@ -100,6 +102,7 @@ fun main(args: Array<String>) {
         val activeService = service
         val activeRunner = runner
         val activeInstance = instance
+        val activeFileLinks = fileLinks
         val activeControl = control
         val activeLifecycle = lifecycle
         if (config.platform == "feishu") {
@@ -123,7 +126,7 @@ fun main(args: Array<String>) {
         }
         Runtime.getRuntime().addShutdownHook(Thread {
             closeBridgeResources(
-                { activeTelegramClient?.stopPolling() }, { watchdog?.close() }, { activeControl.close() }, { activeService.close() }, { activeRunner.close() },
+                { activeTelegramClient?.stopPolling() }, { watchdog?.close() }, { activeControl.close() }, { activeFileLinks?.close() }, { activeService.close() }, { activeRunner.close() },
                 { runBlocking { withTimeout(5_000) { activeLarkChannel?.disconnect() } } },
                 { activeTelegramClient?.close() },
                 { activeLifecycle.finish(activeLifecycle.stopReason, 0) }, { activeInstance.close() }
@@ -146,7 +149,7 @@ fun main(args: Array<String>) {
         FatalErrorHandler.rethrowProgrammingError(e)
         log.error("启动失败 type={}", e.javaClass.simpleName)
         closeBridgeResources(
-            { telegramClient?.stopPolling() }, { watchdog?.close() }, { control?.close() }, { service?.close() }, { runner?.close() },
+            { telegramClient?.stopPolling() }, { watchdog?.close() }, { control?.close() }, { fileLinks?.close() }, { service?.close() }, { runner?.close() },
             { runBlocking { withTimeout(5_000) { larkChannel?.disconnect() } } },
             { telegramClient?.close() },
             { lifecycle?.finish("启动失败 ${e.javaClass.simpleName}", 1) }, { instance?.close() }

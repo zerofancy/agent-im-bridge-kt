@@ -121,7 +121,7 @@ fun channelOptions(config: BridgeConfig): LarkChannelOptions {
         }).build()
 }
 
-fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec, lifecycle: RuntimeLifecycle? = null, initiallyHeld: Boolean = false, localReplies: LocalReplies? = null, onInboundActivity: () -> Unit = {}): Pair<FeishuConnection, ChatService> {
+fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: SessionStore, options: RunOptions, backend: BackendSpec, lifecycle: RuntimeLifecycle? = null, initiallyHeld: Boolean = false, localReplies: LocalReplies? = null, fileLinks: top.ntutn.agent.bridge.localfiles.LocalFileServer? = null, onInboundActivity: () -> Unit = {}): Pair<FeishuConnection, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     val channel = LarkChannelFactory.createLarkChannel(channelOptions(config))
     val appDirectory = MessageDigest.getInstance("SHA-256").digest(config.appId.toByteArray())
@@ -174,7 +174,9 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
     lateinit var launchManaged: (suspend () -> Unit) -> Unit
     val service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, DocumentTypingReactions(commentClient, LarkTypingReactions(config.appId) { channel.rawClient }), lifecycle, initiallyHeld, configControls, LarkCardReplies({ channel.rawClient }, cardAnswers), { chatId, references, sourceKind ->
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, DocumentTypingReactions(commentClient, LarkTypingReactions(config.appId) { channel.rawClient }), lifecycle, initiallyHeld, configControls, LarkCardReplies({ channel.rawClient }, cardAnswers, fileLinks) { chatId ->
+        sessions.workspace(SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue))
+    }, { chatId, references, sourceKind ->
         for (reference in references) {
             documentRoutes.bind(config.appId, reference, chatId, backend.runtimeRoot.toString(), backend.id.configValue, sourceKind)
         }

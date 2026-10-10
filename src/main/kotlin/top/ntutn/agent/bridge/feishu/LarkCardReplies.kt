@@ -60,7 +60,10 @@ catch (e: Exception) {
     throw CardRequestFailure(operation, "sdk", e.javaClass.simpleName, retryable = e is IOException)
 }
 
-internal class LarkCardReplies(private val client: () -> Client, private val answers: CardAnswerStore) : CardReplies {
+internal class LarkCardReplies(private val client: () -> Client, private val answers: CardAnswerStore,
+    private val fileLinks: top.ntutn.agent.bridge.localfiles.LocalFileServer? = null,
+    private val workspace: suspend (String) -> Path? = { null },
+) : CardReplies {
     private val limiter = CardRateLimiter()
     private val log = org.slf4j.LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private suspend fun <T : com.lark.oapi.core.response.BaseResponse<*>> request(operation: String, block: () -> T?): T {
@@ -89,6 +92,7 @@ internal class LarkCardReplies(private val client: () -> Client, private val ans
         error("Unreachable")
     }
     override suspend fun create(route: ReplyRoute): CardReference {
+        val directory = workspace(route.chatId)
         val api = client().cardkit().v1().card()
         val create = CreateCardReq.newBuilder().createCardReqBody(CreateCardReqBody.newBuilder().type("card_json")
             .data(ReplyCard.render("", "正在处理…", "正在处理", true)).build()).build()
@@ -108,7 +112,7 @@ internal class LarkCardReplies(private val client: () -> Client, private val ans
             response.data?.messageId?.takeIf { it.isNotBlank() }
                 ?: throw CardRequestFailure("reply", "missing_message_id", httpStatus = response.rawResponse?.statusCode)
         }
-        val ref = CardReference(id, messageId, route.chatId)
+        val ref = CardReference(id, messageId, route.chatId, workspace = directory)
         try { answers.save(ref, "【机器人仍在处理；若服务已重启，执行结果未知】") }
         catch (e: IOException) { log.warn("卡片引用保存失败 messageId={} exceptionType={}", messageId, e.javaClass.simpleName) }
         return ref
@@ -121,6 +125,9 @@ internal class LarkCardReplies(private val client: () -> Client, private val ans
         retry("settings") { request("settings") { api.settings(request) } }
         if (streaming) ref.streamingSince = System.nanoTime()
     }
+    private fun linked(card: CardReference, text: String): String =
+        card.workspace?.let { fileLinks?.rewrite(text, it) } ?: text
+
     override suspend fun progress(card: CardReference, progress: AgentProgress) {
         if (System.nanoTime() - card.streamingSince >= 8L * 60 * 1_000_000_000) settings(card, true)
         suspend fun content(element: String, value: String) {
@@ -131,18 +138,19 @@ internal class LarkCardReplies(private val client: () -> Client, private val ans
                     .uuid(UUID.randomUUID().toString()).build()).build()
             retry("content/$element") { request("content/$element") { api.content(request) } }
         }
-        try { content("process", progress.process); content("answer", progress.answer) }
+        val display = ReplyCard.preview(AgentProgress(linked(card, progress.process), linked(card, progress.answer)))
+        try { content("process", display.process); content("answer", display.answer) }
         catch (e: CardRequestFailure) {
             if (e.code != 200850 && e.code != 300309) throw e
             settings(card, true)
-            content("process", progress.process); content("answer", progress.answer)
+            content("process", display.process); content("answer", display.answer)
         }
     }
     override suspend fun finish(card: CardReference, text: String, process: String, status: String): Boolean {
         answers.save(card, if (status == "已终止") "【本次执行已终止，以下为未完成的输出】\n$text" else text)
         val content = if (status == "已终止") ReplyCard.preview(AgentProgress(process, text), terminated = true)
             else AgentProgress(bounded(process, 1800), text)
-        val full = ReplyCard.render(content.answer, content.process, status, false)
+        val full = ReplyCard.render(linked(card, content.answer), linked(card, content.process), status, false)
         val fits = ReplyCard.fits(full)
         val value = if (fits) full else ReplyCard.render("内容较长，完整回复见后续文本消息。", bounded(process, 1000), status, false)
         val api = client().cardkit().v1().card()

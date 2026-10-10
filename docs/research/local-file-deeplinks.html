@@ -1,0 +1,40 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>飞书卡片本地文件跳转调研</title><style>body{font:16px/1.75 system-ui,sans-serif;color:#182638;background:#f4f6fa;margin:auto;max-width:980px;padding:40px 24px}article{background:white;padding:32px;border-radius:16px}h1,h2{line-height:1.35}h2{margin-top:32px}code,pre{background:#edf1f7;overflow-wrap:anywhere}pre{padding:16px;white-space:pre-wrap}table{border-collapse:collapse;width:100%}td,th{border:1px solid #dce2ea;padding:10px;text-align:left}a{color:#1755aa}.note{border-left:4px solid #467bd9;padding:12px 18px;background:#eef4ff}</style><article>
+<h1>飞书卡片 → 本地文件 → 编辑器</h1><p>调研日期：2026-10-10。范围：当前 Bridge、macOS、本机 Trae CN、VS Code URL 协议和飞书卡片 2.0。</p>
+<p class="note">结论：方向可行，但“注册 deeplink”和“飞书卡片允许跳转”是两件事。优先采用 HTTPS 中转页 + 编辑器现有协议；自定义协议处理器作为后续扩展。</p>
+<h2>已确认的事实</h2><table><tr><th>层次</th><th>结论与证据</th></tr>
+<tr><td>VS Code</td><td>官方支持 vscode://file/绝对路径:行:列，也支持 CLI 的 --goto。无需重复注册新协议。</td></tr>
+<tr><td>Trae CN</td><td>本机 3.3.104：Info.plist 的 CFBundleURLSchemes 为 trae-cn，bundle ID 为 cn.trae.app；product.json 的 urlProtocol 和 applicationName 均为 trae-cn。协议注册已确认；file 路由的行列跳转仍需实际点击验证，不能只由协议注册推定完整兼容。</td></tr>
+<tr><td>飞书卡片 Markdown</td><td>官方文档注明文字链接只支持 HTTP/HTTPS，因此不应把任意自定义 scheme 的 Markdown 链接当作可靠方案。</td></tr>
+<tr><td>卡片按钮</td><td>open_url 支持 pc_url / ios_url / android_url，官方明确支持飞书 AppLink。未找到对任意第三方 scheme 的明确承诺，需要客户端实测。</td></tr>
+<tr><td>当前代码</td><td>ReplyCard.safeMarkdown 主要转义 HTML 标记，不转换本地文件链接；流式更新和最终卡片均调用它。绝对路径原样作为 Markdown href 发出，缺少协议。用户看到的 http:///Users/... 与飞书补全链接的表现一致，但本次未抓取客户端转换过程。</td></tr></table>
+<h2>链接形式</h2><p>保留原有可读标签，仅转换链接目标。例如 VS Code 官方形式：</p>
+<pre>vscode://file/Users/bytedance/Project/example/src/Example.kt:47:1
+
+Trae CN 待验证形式：
+trae-cn://file/Users/bytedance/Project/example/src/Example.kt:47:1</pre>
+<p>路径中的空格、中文、#、?、% 应按 URI 路径编码，行列号单独解析。不能使用表单编码把空格变成 +，也不能把 Windows 盘符的冒号误判为行号。</p>
+<h2>推荐接入</h2><ol>
+<li>在飞书出站渲染边界识别 Markdown 文件链接，提取绝对路径及行列；不要要求模型生成特定 deeplink。普通 HTTP/HTTPS 链接保留，代码块和行内代码不改写。</li>
+<li>将目标改成部署在受控域名的 HTTPS 中转页：<code>https://&lt;受控域名&gt;/open-file#path=…&amp;line=47&amp;column=1</code>。这是待部署的地址模板，不是现成服务。</li>
+<li>中转页展示路径，提供“用 Trae CN 打开”“用 VS Code 打开”和复制路径按钮。由用户点击按钮触发现有协议；不要依赖页面载入时自动拉起或 HTTP 302 跳向自定义协议。</li>
+<li>若飞书内置浏览器阻止外部应用，页面保留“在系统浏览器打开”的说明和可复制跳转信息。浏览器仍可能要求确认打开应用。</li>
+<li>手机端显示“请在文件所在电脑打开”和复制路径。链接作用于点击者本机，不会打开远端 Bridge 所在机器上的文件；跨机器需要额外配置路径映射或远程工作区。</li></ol>
+<p>中转页建议用纯静态页面、不加载分析脚本、不上报路径，使用 fragment 而非 query 携带本地路径，减少其进入 HTTP 请求和访问日志的机会；fragment 仍可能被客户端或页面脚本读取，并不等于保密存储。</p>
+<h2>自定义 deeplink 的适用时机</h2><pre>agent-bridge://open?path=…&amp;line=47&amp;column=1</pre>
+<p>如果需要统一默认编辑器、自动验证文件存在、路径映射或跨编辑器设置，再注册此类专用协议。macOS 用签名 app bundle 的 CFBundleURLTypes 注册并处理 open-url；Windows 用用户级协议注册；Linux 用 x-scheme-handler 对应的 desktop entry。它仍不能解决飞书 Markdown 只支持 HTTP/HTTPS 的入口限制，通常仍需要中转页。</p>
+<p>处理器只接受 open 操作及白名单编辑器；路径、行列参数独立校验，使用进程参数数组调用编辑器，不拼接 shell 命令。不接受任意命令、任意 scheme 或执行型 URL。</p>
+<h2>项目改动位置</h2><ul>
+<li>引入独立 FileLinkRenderer，避免把 URI 解析和协议选择混入通用 Markdown 转义。建议使用 Markdown 解析器识别链接节点，避免简单正则误改括号、转义和代码块。</li>
+<li>统一覆盖 ReplyCard.render 与 LarkCardReplies.progress 的出站路径，包括执行过程、最终答案及停止后的折叠内容；检查超长文本回退路径。</li>
+<li>CardAnswerStore 继续保存原始模型文本，避免回引卡片时将中转链接注入模型上下文。</li>
+<li>链接改写在卡片字节上限判断前完成；流式半截链接应暂时保留，完整后再转换。</li>
+<li>添加配置：是否启用、中转页地址；默认编辑器可放在中转页本地偏好中。第一版不需要系统协议安装器。</li></ul>
+<h2>验证与复杂度</h2><p>最低可用版本复杂度较低到中等：Markdown 链接改写、静态中转页及回归测试。自定义协议处理器涉及多平台安装、更新与路径校验，维护成本明显更高。</p>
+<p>落地前先做桌面点击验证：Trae CN 的文件/行/列协议；飞书 Markdown 直接 scheme；按钮 pc_url；HTTPS 页面在飞书内置浏览器与系统浏览器分别拉起编辑器。再覆盖空格、中文、括号、#、Windows 路径、#L47、:47:3、代码块、连续流式更新、文件不存在、未安装编辑器及移动端。当前仅完成文档和本机静态检查，未发送卡片、未点击拉起应用、未注册新协议。</p>
+<h2>来源</h2><ul>
+<li><a href="https://code.visualstudio.com/docs/configure/command-line#_opening-vs-code-with-urls">VS Code：Opening VS Code with URLs</a></li>
+<li><a href="https://open.feishu.cn/document/feishu-cards/card-json-v2-components/content-components/rich-text">飞书：卡片 2.0 富文本组件</a></li>
+<li><a href="https://open.feishu.cn/document/uAjLw4CM/ukzMukzMukzM/feishu-cards/configuring-card-interactions">飞书：配置卡片交互</a></li>
+<li>本机：/Applications/Trae CN.app/Contents/Info.plist；Contents/Resources/app/product.json。</li>
+<li>项目：StreamingReply.kt 的 ReplyCard.safeMarkdown/render；feishu/LarkCardReplies.kt 的 progress/finish。</li></ul>
+</article></html>

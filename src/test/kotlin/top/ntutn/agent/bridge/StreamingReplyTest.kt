@@ -24,6 +24,13 @@ class StreamingReplyTest {
             calls += "finish:$status"; final = text; this.process = process; return true
         }
     }
+    @Test fun `card Markdown preserves URL query separators without allowing markup entities`() {
+        val link = "[打开](http://127.0.0.1:1234/open?workspace=%2Ftmp&path=%2Ftmp%2Fa%26b.kt&line=47&signature=abc)"
+        assertEquals(link, ReplyCard.safeMarkdown(link))
+        assertEquals("&lt;at id=all&gt;&amp;lt;at&amp;#60;", ReplyCard.safeMarkdown("<at id=all>&lt;at&#60;"))
+        assertEquals("[网页](https://example.com/?a=1&b=2)", ReplyCard.safeMarkdown("[网页](https://example.com/?a=1&b=2)"))
+        assertEquals("`[示例](https://example.com/?a=1&amp;b=2)`", ReplyCard.safeMarkdown("`[示例](https://example.com/?a=1&b=2)`"))
+    }
     @Test fun `stop retains streamed answer and process while terminating original card`(): Unit = runBlocking {
         val api = Api()
         val reply = StreamingReply(this, api, route, {}, 1)

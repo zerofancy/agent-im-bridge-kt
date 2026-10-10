@@ -44,6 +44,29 @@ class LarkCardRepliesTest {
                 RawResponse().apply { statusCode = 200; headers = emptyMap(); body = response.toByteArray() }
             }).build()
     }
+    @Test fun `streaming and final cards link files using captured workspace while snapshots remain original`(): Unit = runBlocking {
+        val wire = Wire()
+        val store = CardAnswerStore(temp.resolve("answers"))
+        var directory = temp.resolve("first")
+        top.ntutn.agent.bridge.localfiles.LocalFileServer("trae") { true }.use { links ->
+            val api = LarkCardReplies({ wire.client }, store, links) { directory }
+            val ref = api.create(ReplyRoute("chat", "original"))
+            directory = temp.resolve("second")
+            val text = "[源码](src/a.kt:47)"
+            api.progress(ref, AgentProgress("检查完成", text))
+            assertTrue(api.finish(ref, text, "检查完成", "已完成"))
+            val content = wire.requests.last { it.first.endsWith("/answer/content") }.second.string("content")!!
+            assertContains(content, links.baseUrl)
+            assertContains(content, "first")
+            assertContains(content, "&path=")
+            assertContains(content, "&signature=")
+            assertFalse(content.contains("&amp;"))
+            assertFalse(content.contains("second"))
+            val update = wire.requests.last { it.first == "/open-apis/cardkit/v1/cards/card" }.second.toString()
+            assertContains(update, links.baseUrl)
+            assertEquals(text, store.read("reply", "chat"))
+        }
+    }
     @Test fun `SDK runtime failures become safe recoverable diagnostics but internal preparation errors escape`(): Unit = runBlocking {
         val wire = Wire()
         wire.sdkFailure = IllegalStateException("external secret payload")

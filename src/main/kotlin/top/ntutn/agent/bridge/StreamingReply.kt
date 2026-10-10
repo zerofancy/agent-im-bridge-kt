@@ -23,7 +23,8 @@ interface CardReplies {
 }
 
 data class CardReference(val cardId: String, val messageId: String, val chatId: String,
-                         var sequence: Int = 0, var streamingSince: Long = System.nanoTime())
+                         var sequence: Int = 0, var streamingSince: Long = System.nanoTime(),
+                         val workspace: java.nio.file.Path? = null)
 
 internal object ReplyCard {
     const val MAX_BYTES = 28_000
@@ -64,7 +65,16 @@ internal object ReplyCard {
                     line
                 }
                 marker != null -> { fence = marker.groupValues[1]; line }
-                else -> line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                else -> {
+                    val escaped = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    // Feishu keeps HTML entities literal in Markdown link destinations.
+                    // Restore query separators only; keep markup/entity escaping intact.
+                    top.ntutn.agent.bridge.localfiles.rewriteFileLinks(escaped) { destination ->
+                        if (destination.startsWith("http://") || destination.startsWith("https://"))
+                            destination.replace(Regex("&amp;(?=[A-Za-z][A-Za-z0-9_-]*=)"), "&")
+                        else null
+                    }
+                }
             }
         }
     }
