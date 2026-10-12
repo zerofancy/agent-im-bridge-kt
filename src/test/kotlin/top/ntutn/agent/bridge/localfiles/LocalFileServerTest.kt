@@ -37,7 +37,7 @@ class LocalFileServerTest {
             assertEquals(target.copy(workspace = root.toRealPath(), file = file.toRealPath()), calls.single())
         }
     }
-    @Test fun `symlink escapes missing files and launch failures remain recoverable`() {
+    @Test fun `outside files and symlinks open while missing files and launch failures remain recoverable`() {
         val dir = Files.createDirectory(root.resolve("project"))
         val outside = Files.writeString(root.resolve("outside.kt"), "x")
         val link = Files.createSymbolicLink(dir.resolve("link.kt"), outside)
@@ -45,7 +45,12 @@ class LocalFileServerTest {
         LocalFileServer("trae") { called = true; false }.use { server ->
             fun open(file: Path) = request(server.url(EditorTarget(dir, file, 1, null, "trae"))
                 .replace("/open?", "/api/open?"), "POST", server.baseUrl)
-            assertEquals(404, open(link))
+            assertEquals(503, open(link))
+            assertTrue(called)
+            called = false
+            assertEquals(503, open(outside))
+            assertTrue(called)
+            called = false
             assertEquals(404, open(dir.resolve("missing.kt")))
             assertFalse(called)
             assertEquals(503, open(Files.writeString(dir.resolve("ok.kt"), "x")))
@@ -65,6 +70,20 @@ class LocalFileServerTest {
         } finally { first.close() }
         assertFailsWith<java.io.IOException> { request(first.baseUrl + "/open") }
     }
+    @Test fun `signed links open files outside workspace including resolved symlinks`() {
+        val workspace = Files.createDirectory(root.resolve("workspace"))
+        val outside = Files.writeString(root.resolve("outside.kt"), "x")
+        val symlink = Files.createSymbolicLink(workspace.resolve("link.kt"), outside)
+        val calls = java.util.concurrent.CopyOnWriteArrayList<EditorTarget>()
+        LocalFileServer("trae") { calls += it; true }.use { server ->
+            for (file in listOf(outside, symlink)) {
+                val target = EditorTarget(workspace, file, 1026530, null, "trae")
+                val api = server.url(target).replace("/open?", "/api/open?")
+                assertEquals(200, request(api, "POST", server.baseUrl))
+                assertEquals(target.copy(workspace = workspace.toRealPath(), file = outside.toRealPath()), calls.last())
+            }
+        }
+    }
     @Test fun `file links preserve code web URLs images and relative workspace context`() {
         LocalFileServer("trae") { true }.use { server ->
             val preserved = "[web](https://example.com/x) ![img](icon.png) ` [code](a.kt:1) `\n```kotlin\n[file](a.kt:2)\n```\n    [indented](a.kt:3)"
@@ -74,8 +93,10 @@ class LocalFileServerTest {
                 assertTrue(rewritten.startsWith("[file](${server.baseUrl}/open?"), rewritten)
                 assertContains(rewritten, "line=47")
             }
-            assertEquals("[escape](../outside.kt)", server.rewrite("[escape](../outside.kt)", root))
-            assertEquals("[escape](%2e%2e/outside.kt)", server.rewrite("[escape](%2e%2e/outside.kt)", root))
+            for (raw in listOf("../outside.kt", "%2e%2e/outside.kt", root.parent.resolve("outside.kt").toString(),
+                root.parent.resolve("outside.kt").toUri().toString())) {
+                assertTrue(server.rewrite("[outside]($raw)", root).startsWith("[outside](${server.baseUrl}/open?"))
+            }
         }
     }
     @Test fun `CLI receives workspace and file as separate arguments without shell or forced window reuse`() = runBlocking {

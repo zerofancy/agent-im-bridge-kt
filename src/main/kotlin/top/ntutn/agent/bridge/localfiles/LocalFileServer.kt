@@ -95,7 +95,7 @@ class LocalFileServer internal constructor(
         val checked = try {
             val root = target.workspace.toRealPath()
             val file = target.file.toRealPath()
-            if (!Files.isDirectory(root) || !file.startsWith(root) || !Files.isRegularFile(file)) null
+            if (!Files.isDirectory(root) || !Files.isRegularFile(file)) null
             else target.copy(workspace = root, file = file)
         } catch (_: IOException) { null }
         if (checked == null) { reply(exchange, 404); return }
@@ -111,7 +111,7 @@ class LocalFileServer internal constructor(
         val chosen = fields.getValue("editor")
         val line = fields.getValue("line").takeIf { it.isNotEmpty() }?.toInt()
         val column = fields.getValue("column").takeIf { it.isNotEmpty() }?.toInt()
-        if (!workspace.isAbsolute || !file.isAbsolute || !file.normalize().startsWith(workspace.normalize()) ||
+        if (!workspace.isAbsolute || !file.isAbsolute ||
             chosen !in setOf("trae", "vscode") || (line != null && line <= 0) ||
             (column != null && (column <= 0 || line == null))) null
         else EditorTarget(workspace, file, line, column, chosen)

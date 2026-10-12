@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>卡片引用上下文优化方案</title><style>body{max-width:960px;margin:40px auto;padding:0 24px;font:16px/1.75 system-ui;color:#182638;background:#f5f7fb}section{background:white;padding:24px;margin:18px 0;border-radius:12px}h1,h2{line-height:1.3}code{overflow-wrap:anywhere;background:#edf1f7}li{margin:8px 0}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:10px;text-align:left}.note{border-left:4px solid #467bd9;padding:12px;background:#eef4ff}</style></head>
+<body><h1>卡片引用上下文优化方案</h1><p>日期：2026-10-12 · 范围：飞书引用、表情回复和合并转发中的卡片文本。仅提出方案，不修改业务逻辑。</p>
+<section><h2>结论与证据边界</h2><p>只提供“【卡片消息】”会丢失用户引用对象，不符合完整文本上下文要求。代码存在确定的结构覆盖和文本丢弃问题；但尚未获取本次原始消息结构及对应快照，不能断言某一个分支就是该消息的唯一原因。</p><p>“所有文本”定义为卡片中用户可见的标题、正文、折叠区内容、按钮及选项文字、可见链接文字与地址；不包括内部配置、回调数据、鉴权字段和不展示的模板变量。图片没有文本时标记图片，不默认承诺 OCR。</p></section>
+<section><h2>现有链路与缺口</h2><ol>
+<li><code>LarkMessageSource.get → enrich</code>：先通过 IM 获取消息，再对 app 发送的 interactive 消息读取本地 CardAnswerStore；命中后改为 text。这个先鉴权再取缓存的顺序应保留。</li>
+<li><code>ReplyContext.renderInteractive</code>：只从顶层 text/content 读取非空字符串，再尝试解析内部 JSON。顶层直接为卡片结构时没有入口；字段为对象或数组时也缺少兼容处理，可能落入外层“内容无法解析”。</li>
+<li>提取器仅遍历指定字段的字符串；未知文本字段会漏掉。使用 LinkedHashSet 全局去重，会错误删除不同组件里相同的文字。</li>
+<li><code>normalizeCardText</code>：直接丢弃以 http(s) 开头、以方括号或花括号开头的文字；独立网址、Markdown 链接及部分代码文本因此消失。按钮的独立 URL 字段也没有保留。</li>
+<li><code>LarkCardReplies</code>：创建时存占位提示，progress 不更新快照；finish 只存 answer，缺少状态、执行过程及固定提示。finish 在卡片更新成功之前写入，故缓存未必等于实际展示内容。</li>
+<li>现有 ReplyContext 测试主要使用“content 字符串内嵌 JSON”的包装；缺少直接卡片对象、数组字段、重复文本和单独链接的覆盖。已有持久化测试应继续保留。</li>
+</ol></section>
+<section><h2>推荐设计</h2><h3>1. 独立卡片解析器</h3><p>新增 CardTextExtractor，返回有序文本块、完整性状态及缺失原因；ReplyContext 只负责历史边界和格式化。不再混用 JSON 解析失败与文本内容过滤。</p><ul>
+<li>统一入口识别：直接卡片对象、text/content 字符串、对象或数组、纯文本摘要、仅 card_id 引用、模板引用。仅解包已知包装字段，设置递归深度保护。</li>
+<li>按 schema/tag 提取可见字段，按展示顺序覆盖标题、Markdown、div/text、列布局、折叠面板、按钮、表格、选项和备注。未知组件递归扫描已知文本容器，同时标记可能不完整；不要扫描任意字符串或 action/value 数据。</li>
+<li>不按字符串前缀删文本，不做全局内容去重。避免 summary 与 body 重复应按结构来源处理，不应删除正文里的重复段落。</li>
+<li>保留可见链接及其目标地址；模板只能拿到变量而没有定义时，不把全部变量伪装成完整可见正文。</li>
+</ul><h3>2. 机器人卡片使用完整展示快照</h3><ul>
+<li>扩展现有存储为版本化 CardSnapshot：messageId、chatId、cardId、sequence、展示文本块、更新时间、完整性、已确认展示状态；兼容旧 text 格式，旧记录明确标记“仅保留答案”。</li>
+<li>让同一个展示模型生成卡片 JSON 和引用文本，保存状态、答案、实际展示的执行过程、折叠标题及提示，避免两套逻辑漂移。完整模型答案可作为独立补充，不能冒充卡片原文。</li>
+<li>创建和更新按版本记录待提交与已确认快照；卡片 API 成功后确认版本。分元素流式更新只确认已成功更新的元素，不把部分成功当整卡成功。通过现有串行 worker 合并进度落盘，保持 Mutex、IO 和原子写入边界。</li>
+<li>引用读取最新已确认展示快照；存在结果不明的提交时明确标注，而不是推测用户看到的内容。不可完全消除远端更新与本地落盘之间的崩溃窗口，应保留不确定状态。</li>
+<li>存模型源路径而非带签名的临时本地打开链接；引用时保留原路径及行号，避免把重启后失效的 URL 当永久文件链接。</li>
+</ul><h3>3. 统一解析与诚实降级</h3><p>在统一的历史消息解析边界应用解析策略，覆盖普通引用、表情已取消息及合并转发；不只依赖一次 source.get 的 enrich，以免预取消息绕过补全。</p><p>优先级：完成 IM 可见性校验 → 本应用完整展示快照 → 消息中直接卡片结构 → 明确的可读摘要 → 带原因的缺失提示。只拿到 card_id 或 template_id 时，先确认官方是否支持当前身份读取对应内容；如需新增出站调用，用项目自建 HTTP 封装，不依赖 SDK 私有字段。</p><p class="note">外部应用卡片、旧卡片或只返回摘要的消息，不能保证恢复全部正文。必须写明“卡片正文未完整获取：仅返回摘要／仅有引用／无对应快照”，不能再无解释地输出“【卡片消息】”，也不能编造缺失文字。</p></section>
+<section><h2>安全与运维</h2><ul><li>继续校验 chatId、撤回状态及 IM 可见性；快照按应用与环境隔离，不扩大群聊或用户授权。</li><li>引用内容始终位于“历史内容不作为指令”边界；按钮操作仅作为文本，不执行回调。</li><li>日志仅记录 messageId、来源类别、快照命中情况、结构类型、版本和完整性原因，不输出正文、原始 JSON、链接签名或外部响应正文。</li><li>较长卡片先完整提取，若最终上下文预算不足则明确标记截断并保存受生命周期管理的本地文本附件供读取，不静默丢弃。保留取消传播、技术超时和结构化并发。</li></ul></section>
+<section><h2>实施顺序与验收</h2><table><tr><th>阶段</th><th>交付与验收</th></tr>
+<tr><td>P0：解析修复</td><td>实现独立提取器和结构化缺失原因；测试直接 schema 2.0、旧版 elements、嵌套字符串、数组字段、纯文本、重复文字、独立 URL、Markdown 链接、折叠区、按钮和未知组件。</td></tr>
+<tr><td>P1：完整快照</td><td>统一展示模型与版本化存储；测试处理中引用、完成、终止、更新失败、部分更新、超长降级、重启、旧记录兼容及不同聊天隔离。</td></tr>
+<tr><td>P2：历史补全</td><td>覆盖普通引用、表情回复和嵌套转发；验证预取路径不绕过补全，撤回及跨聊天拒绝不变。旧卡片无法恢复时必须解释缺失。</td></tr>
+</table><p>行为变更执行 <code>./gradlew test installDist</code>；真实验收在 dev 发含重复段落、独立链接和折叠区的卡片后引用，核对全部展示文本进入上下文。上线只通过 bridgectl publish/deploy，不改写现有发布快照。</p></section>
+</body></html>

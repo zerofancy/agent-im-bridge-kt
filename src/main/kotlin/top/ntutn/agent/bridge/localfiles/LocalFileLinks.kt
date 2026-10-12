@@ -83,7 +83,7 @@ internal fun parseFileTarget(workspace: Path, raw: String, editor: String): Edit
         }
         val root = workspace.toAbsolutePath().normalize()
         val file = (if (path.isAbsolute) path else root.resolve(path)).normalize()
-        if (!file.startsWith(root) || file == root) null else EditorTarget(root, file, line, column, editor)
+        if (file == root) null else EditorTarget(root, file, line, column, editor)
     } catch (_: InvalidPathException) { null }
     catch (_: IllegalArgumentException) { null }
     catch (_: java.net.URISyntaxException) { null }
