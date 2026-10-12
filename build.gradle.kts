@@ -20,6 +20,7 @@ dependencies {
     implementation(libs.slf4j.api)
     runtimeOnly(libs.logback.classic)
     testImplementation(libs.kotlin.test.junit5)
+    testImplementation(libs.logback.classic)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 

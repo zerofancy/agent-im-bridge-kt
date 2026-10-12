@@ -118,6 +118,11 @@ internal class AppServerClient private constructor(val process: Process, private
             log.debug("${displayName} RPC pid={} requestId={} method={}", process.pid(), id, method)
             write(json("id" to id, "method" to method, "params" to params))
             return reply.await()
+        } catch (error: RpcFailure) {
+            // Never log the response body or exception: either may contain prompts or credentials.
+            log.warn("${displayName} RPC 被拒绝 pid={} rpcId={} method={} code={} reason={}",
+                process.pid(), id, method, error.code, error.safeReason())
+            throw error
         } finally { withContext(NonCancellable) { state.withLock { pending.remove(id) } } }
     }
 

@@ -38,7 +38,7 @@
 | Codex 未返回有效答案 | 本次没有非空最终输出，可重新提问 |
 | 会话文件无效或保存失败 | 检查 sessions.json 格式、磁盘空间与目录权限；先备份再修复，重启恢复 |
 | 已有 Bridge 实例运行 | 退出旧实例后再启动；不要删除运行中的锁文件 |
-| Codex 会话协议异常 | 核实 CLI 支持 app-server 的 thread/start、thread/resume、turn/start 和 turn/interrupt 协议 |
+| Codex 会话请求或响应异常 | 查看 Bridge 日志中的 requestId、method、code 和 reason；RPC 拒绝不代表 CLI 版本不兼容。日志只保留固定诊断分类，不输出外部错误正文；unclassified 表示尚未识别的原因 |
 | 中断 30 秒未确认 | 当前聊天保持停止中；不会自动杀进程，可在本机使用 --stop 后重新启动 |
 | app-server 连接失效但进程仍存活 | 当前任务结果不明，暂停新执行；用本机 --stop 退出后重启 |
 | 配置文件无效 | 在本机修复或备份后重新绑定 |

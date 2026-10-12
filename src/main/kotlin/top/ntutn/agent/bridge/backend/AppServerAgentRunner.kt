@@ -64,7 +64,10 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
         var observed = sessionId
         fun failure(kind: AgentResult.Kind) = AgentResult.Failure(kind, sessionId = observed)
         if (handle.stopRequested) return@coroutineScope failure(AgentResult.Kind.STOPPED)
-        if (sessionId != null && !validSessionId(sessionId)) return@coroutineScope failure(AgentResult.Kind.PROTOCOL)
+        if (sessionId != null && !validSessionId(sessionId)) {
+            log.warn("${displayName} 会话校验失败 requestId={} reason=invalid_session_id", handle.requestId)
+            return@coroutineScope failure(AgentResult.Kind.PROTOCOL)
+        }
         val server = try { connection() } catch (e: CancellationException) { throw e } catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); return@coroutineScope failure(AgentResult.Kind.START) }
         try {
             val params = json("cwd" to workspace.toString(), "approvalPolicy" to "never", "sandbox" to sandboxMode.cliValue)
@@ -73,6 +76,8 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
             if (handle.stopRequested) return@coroutineScope failure(AgentResult.Kind.STOPPED)
             val thread = try { server.request(if (sessionId == null) "thread/start" else "thread/resume", params) }
             catch (e: RpcFailure) {
+                log.warn("${displayName} 会话请求失败 requestId={} sessionId={} method={} code={} reason={}",
+                    handle.requestId, sessionId, if (sessionId == null) "thread/start" else "thread/resume", e.code, e.safeReason())
                 return@coroutineScope failure(
                     if (sessionId != null && backend.isMissingSession(e, sessionId)) AgentResult.Kind.SESSION_MISSING
                     else if (backend.id == BackendId.TRAEX) AgentResult.Kind.EXECUTION
@@ -80,8 +85,11 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                 )
             }
             val id = thread.getAsJsonObject("thread")?.string("id")
-            if (id == null || !validSessionId(id) || (sessionId != null && id != sessionId))
+            if (id == null || !validSessionId(id) || (sessionId != null && id != sessionId)) {
+                log.warn("${displayName} 会话响应校验失败 requestId={} reason={}", handle.requestId,
+                    if (id == null) "missing_thread_id" else if (!validSessionId(id)) "invalid_thread_id" else "thread_id_mismatch")
                 return@coroutineScope failure(AgentResult.Kind.PROTOCOL)
+            }
             observed = id
             handle.threadId.complete(id)
             // Finish persisting the binding before honoring stop; never submit a turn after that stop.
@@ -110,6 +118,8 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                 }
                 val turnId = started.getAsJsonObject("turn")?.string("id")
                 if (turnId == null) {
+                    log.warn("${displayName} 轮次响应校验失败 requestId={} sessionId={} reason=missing_turn_id；等待后端退出",
+                        handle.requestId, id)
                     server.exited.await()
                     return@coroutineScope failure(AgentResult.Kind.PROTOCOL)
                 }
@@ -172,7 +182,11 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
             } finally { interrupt?.cancelAndJoin(); server.unsubscribe(id) }
         } catch (e: CancellationException) { throw e }
         catch (_: TransportFailure) { failure(AgentResult.Kind.EXECUTION) }
-        catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); failure(AgentResult.Kind.PROTOCOL) }
+        catch (e: Exception) {
+            FatalErrorHandler.rethrowProgrammingError(e)
+            log.warn("${displayName} 会话处理异常 requestId={} exceptionType={}", handle.requestId, e.javaClass.simpleName)
+            failure(AgentResult.Kind.PROTOCOL)
+        }
     }
 
     private suspend fun interruptTurn(server: AppServerClient, threadId: String, turnId: String) {

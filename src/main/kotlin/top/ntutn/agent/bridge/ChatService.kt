@@ -457,7 +457,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                         AgentResult.Kind.STOPPED -> "${runner.displayName} 当前轮已中断，会话保留。"
                         AgentResult.Kind.EXECUTION -> "${runner.displayName} 执行失败，已保留会话，请检查本机登录、网络及配置。"
                         AgentResult.Kind.EMPTY -> "${runner.displayName} 未返回有效答案，已保留会话。"
-                        AgentResult.Kind.PROTOCOL -> "${runner.displayName} 会话协议异常，未自动重跑，请检查 CLI 版本。"
+                        AgentResult.Kind.PROTOCOL -> "${runner.displayName} 会话请求或响应异常，未自动重跑。请查看 Bridge 日志中的错误码和诊断分类。"
                         AgentResult.Kind.STORAGE -> "会话保存失败，当前聊天已暂停执行，请修复本机存储后重启。"
                         AgentResult.Kind.SESSION_MISSING -> "${runner.displayName} 会话不可用，新建重试失败，请检查本机状态目录。"
                     }
