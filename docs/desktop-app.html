@@ -23,7 +23,7 @@
 
 # 验证经过 ProGuard 处理的 Release DMG
 ./gradlew :desktop-app:packageReleaseDmg</pre>
-<p>Release 使用 Compose 默认的 ProGuard 7.7，项目字节码和打包运行时固定为 JDK 21。<code>createDistributable</code> 不执行 Release 的 ProGuard 步骤，不能替代 <code>packageReleaseDmg</code> 验证。Release DMG 位于 <code>desktop-app/build/compose/binaries/main-release/dmg/</code>。<code>desktop-app/proguard-rules.pro</code> 忽略 OkHttp 可选的 Android 与第三方 TLS 提供者缺失警告；同时保留 Okio 裁剪，但禁止其字节码优化，规避 ProGuard 7.7 对 buffer(Source) 返回类型特化导致的 VerifyError。桌面使用随应用打包的 JDK TLS 实现。Release 验收必须确认服务连接和会话加载，仅确认窗口启动不足以覆盖网络字节码路径。</p>
+<p>Release 使用 Compose 默认的 ProGuard 7.7，项目字节码和打包运行时固定为 JDK 21。<code>createDistributable</code> 不执行 Release 的 ProGuard 步骤，不能替代 <code>packageReleaseDmg</code> 验证。Release DMG 位于 <code>desktop-app/build/compose/binaries/main-release/dmg/</code>。Release 通过 JitPack 接入 <a href="https://github.com/zerofancy/ComposeDesktopKeepKit/tree/v0.2.3">KeepKit v0.2.3</a>，版本统一维护在 <code>gradle/libs.versions.toml</code>。插件按最终解析的依赖自动添加 OkHttp、Okio、Coil、Coroutines 等规则，替代原有手写 keep 文件；Okio 使用针对 Kotlin 多文件门面的优化保护。执行 <code>./gradlew :desktop-app:keepKitReport</code> 可查看依赖匹配及版本回退报告，生成文件位于 Gradle 用户缓存。桌面使用随应用打包的 JDK TLS 实现。Release 验收必须确认服务连接和会话加载，仅确认窗口启动不足以覆盖网络字节码路径。</p>
 <p>macOS 可直接双击 <code>desktop-app/build/compose/binaries/main/app/Agent Bridge.app</code>，应用自带 JVM。也可通过 <code>open "desktop-app/build/compose/binaries/main/app/Agent Bridge.app"</code> 启动。默认状态根目录为 <code>~/.agent-im-bridge-kt</code>，默认环境为 dev；连接 prod 需在设置中明确选择或使用 <code>--env prod</code>。</p>
 <p class="note">只有包含本次 API 的 Bridge 版本才能连接桌面。生成桌面包或运行 Gradle 不会升级现有 dev/prod 服务，也不会触发模型登录。</p></section>
 <section><h2>让现有服务支持桌面</h2><p>保留不可变发布和守护部署流程。先构建，再发布快照并选择需要升级的环境；部署会排空已有任务。</p>

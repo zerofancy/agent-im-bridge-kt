@@ -15,6 +15,7 @@ logback = "1.5.18"
 junit-platform = "1.10.1"
 multiplatform-markdown-renderer = "0.43.0"
 coil = "3.5.0"
+keep-kit = "v0.2.3"
 
 [libraries]
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -45,3 +46,4 @@ multiplatform-markdown-renderer = [
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 compose = { id = "org.jetbrains.compose", version.ref = "compose" }
+keep-kit = { id = "io.github.zerofancy.compose-desktop-keep-kit", version.ref = "keep-kit" }

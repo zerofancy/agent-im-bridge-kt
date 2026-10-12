@@ -4,6 +4,7 @@ plugins {
     kotlin("jvm")
     alias(libs.plugins.compose)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.keep.kit)
 }
 
 repositories {
@@ -51,9 +52,6 @@ compose.desktop {
         javaHome = javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) }
             .get().metadata.installationPath.asFile.absolutePath
         mainClass = "top.ntutn.agent.bridge.desktop.DesktopMainKt"
-        buildTypes.release.proguard {
-            configurationFiles.from(project.file("proguard-rules.pro"))
-        }
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Deb)
             packageName = "Agent Bridge"
