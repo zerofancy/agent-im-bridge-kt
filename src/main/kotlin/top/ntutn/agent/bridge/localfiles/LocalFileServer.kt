@@ -30,6 +30,7 @@ class LocalFileServer internal constructor(
         "/open" to ("text/html; charset=utf-8" to resource("index.html")),
         "/app.js" to ("text/javascript; charset=utf-8" to resource("app.js")),
         "/style.css" to ("text/css; charset=utf-8" to resource("style.css")),
+        "/favicon.ico" to ("image/x-icon" to resource("favicon.ico")),
     )
 
     init {
@@ -67,7 +68,7 @@ class LocalFileServer internal constructor(
             set("Cache-Control", "no-store")
             set("Referrer-Policy", "no-referrer")
             set("X-Content-Type-Options", "nosniff")
-            set("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            set("Content-Security-Policy", "default-src 'none'; img-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         }
         val path = exchange.requestURI.path
         val asset = assets[path]

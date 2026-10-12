@@ -30,6 +30,13 @@ application { mainClass.set("top.ntutn.agent.bridge.MainKt") }
 tasks.test { useJUnitPlatform() }
 tasks.named<JavaExec>("run") { standardInput = System.`in` }
 
+tasks.processResources {
+    from("assets/branding/agent-bridge-app-icon.ico") {
+        into("local-files")
+        rename { "favicon.ico" }
+    }
+}
+
 tasks.register<JavaExec>("desktopSmokeServer") {
     group = "verification"
     description = "Run an isolated desktop UI fixture with simulated responses and temporary state"

@@ -13,6 +13,25 @@ import kotlin.test.*
 class LocalFileServerTest {
     @TempDir lateinit var root: Path
     private val http = HttpClient.newHttpClient()
+    @Test fun `favicon serves project icon without opening editor`() {
+        var opened = false
+        LocalFileServer("trae") { opened = true; true }.use { server ->
+            val response = http.send(HttpRequest.newBuilder(URI(server.baseUrl + "/favicon.ico")).build(),
+                HttpResponse.BodyHandlers.ofByteArray())
+            assertEquals(200, response.statusCode())
+            assertEquals("image/x-icon", response.headers().firstValue("Content-Type").orElse(null))
+            assertContentEquals(Files.readAllBytes(Path.of("assets/branding/agent-bridge-app-icon.ico")), response.body())
+            assertContentEquals(byteArrayOf(0, 0, 1, 0), response.body().copyOfRange(0, 4))
+            assertEquals(405, request(server.baseUrl + "/favicon.ico", "POST"))
+            assertFalse(opened)
+            val page = http.send(HttpRequest.newBuilder(URI(server.baseUrl + "/open")).build(),
+                HttpResponse.BodyHandlers.ofString())
+            val policy = page.headers().firstValue("Content-Security-Policy").orElse("")
+            assertContains(policy, "img-src 'self';")
+            assertContains(policy, "default-src 'none';")
+            assertContains(page.body(), "href=\"/favicon.ico\"")
+        }
+    }
     private fun request(url: String, method: String = "GET", origin: String? = null, header: Boolean = true): Int {
         val builder = HttpRequest.newBuilder(URI(url))
         if (origin != null) builder.header("Origin", origin)
