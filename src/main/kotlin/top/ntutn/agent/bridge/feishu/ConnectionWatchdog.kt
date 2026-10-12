@@ -14,7 +14,7 @@ import org.slf4j.LoggerFactory
 import top.ntutn.agent.bridge.FatalErrorHandler
 
 /**
- * Recovers the Feishu long connection after the SDK auto-reconnect race leaves the logical state down.
+ * Checks the owned transport as well as callbacks, so a stale connected flag cannot suppress recovery.
  * Sequence: debounce -> bounded in-process socket rebuilds -> graceful exit so the supervisor restarts the JVM.
  */
 class ConnectionWatchdog internal constructor(
@@ -22,6 +22,7 @@ class ConnectionWatchdog internal constructor(
     private val status: suspend () -> JsonObject,
     private val escalate: () -> Unit,
     private val recovered: () -> Unit = {},
+    private val transportHealthy: () -> Boolean = { true },
     private val tickMs: Long = 1_000,
     private val debounceMs: Long = 20_000,
     private val maxAttempts: Int = 3,
@@ -34,6 +35,7 @@ class ConnectionWatchdog internal constructor(
     private enum class State { HEALTHY, SUSPECTED, QUICK_RETRY, ESCALATING }
 
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
+    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + FatalErrorHandler.context)
 
     @Volatile private var connected = true
@@ -45,7 +47,7 @@ class ConnectionWatchdog internal constructor(
     private var escalated = false
 
     init {
-        if (autoStart) startLoop()
+        if (autoStart) start()
     }
 
     fun onConnectionChanged(value: Boolean) {
@@ -57,7 +59,8 @@ class ConnectionWatchdog internal constructor(
         lastActivityAt = nowMillis()
     }
 
-    private fun startLoop() {
+    fun start() {
+        if (!started.compareAndSet(false, true)) return
         scope.launch {
             while (isActive) {
                 delay(tickMs)
@@ -69,7 +72,7 @@ class ConnectionWatchdog internal constructor(
     internal suspend fun tick() {
         if (state != State.HEALTHY) elapsed += tickMs
         val freshActivity = lastActivityAt != 0L && nowMillis() - lastActivityAt <= activityFreshMs
-        if (connected || freshActivity) {
+        if (transportHealthy() && (connected || freshActivity)) {
             if (state != State.HEALTHY) markHealthy()
             return
         }
@@ -95,6 +98,7 @@ class ConnectionWatchdog internal constructor(
     private suspend fun attemptRebuild() {
         try {
             reconnect()
+            log.info("飞书连接重建完成")
             markHealthy()
         } catch (e: CancellationException) {
             throw e

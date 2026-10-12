@@ -109,6 +109,8 @@ fun main(args: Array<String>) {
             val channel = activeLarkChannel!!
             val created = ConnectionWatchdog(
                 reconnect = { channel.reconnect() },
+                transportHealthy = channel::healthy,
+                autoStart = false,
                 status = { activeService.deploymentStatus() },
                 escalate = {
                     activeLifecycle.stopReason = "飞书连接长时间不可恢复"
@@ -143,6 +145,7 @@ fun main(args: Array<String>) {
             log.info("Telegram Bot 已连接: @{}", bot.username ?: bot.displayName)
         }
         control.connected(true)
+        watchdog?.start()
         log.info("{} Bridge 已连接 environment={} release={}", backend.displayName, environment.name, environment.release)
         CountDownLatch(1).await()
     } catch (e: Exception) {

@@ -114,4 +114,25 @@ class ConnectionWatchdogTest {
         h.ticks(200)
         assertEquals(0, h.escalateCalls)
     }
+    @Test
+    fun `stale connected callback cannot hide dead transport and triggers socket rebuild`() = runBlocking {
+        var transportAlive = false
+        var rebuilds = 0
+        val watchdog = ConnectionWatchdog(
+            reconnect = { rebuilds++; transportAlive = true },
+            status = { testStatus(running = 1) },
+            escalate = { error("Active model turn must not be killed") },
+            transportHealthy = { transportAlive },
+            autoStart = false
+        )
+        try {
+            watchdog.onConnectionChanged(true)
+            watchdog.noteActivity() // Recent user activity cannot mask a subsequently failed heartbeat.
+            repeat(40) { watchdog.tick() }
+            assertEquals(1, rebuilds)
+            repeat(100) { watchdog.tick() }
+            assertEquals(1, rebuilds)
+        } finally { watchdog.close() }
+    }
+
 }
