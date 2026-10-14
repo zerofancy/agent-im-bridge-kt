@@ -13,6 +13,15 @@ import kotlin.test.*
 class LocalFileServerTest {
     @TempDir lateinit var root: Path
     private val http = HttpClient.newHttpClient()
+    @Test fun `editor process explicitly uses target workspace rather than inherited working directory`() {
+        val workspace = Files.createDirectory(root.resolve("editor-workspace"))
+        val target = EditorTarget(workspace, workspace.resolve("file.kt"), 1, null, "trae")
+        for (command in editorCommands(target)) {
+            val builder = editorProcessBuilder(target, command)
+            assertEquals(workspace.toAbsolutePath().normalize().toFile(), builder.directory())
+            assertEquals(command, builder.command())
+        }
+    }
     @Test fun `favicon serves project icon without opening editor`() {
         var opened = false
         LocalFileServer("trae") { opened = true; true }.use { server ->

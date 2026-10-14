@@ -31,7 +31,7 @@ internal fun defaultEditor(): String = if (Files.isExecutable(
 internal suspend fun launchEditor(target: EditorTarget): Boolean = runInterruptible(Dispatchers.IO) {
     for (command in editorCommands(target)) {
         val process = try {
-            ProcessBuilder(command).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            editorProcessBuilder(target, command).redirectOutput(ProcessBuilder.Redirect.DISCARD)
                 .redirectError(ProcessBuilder.Redirect.DISCARD).start()
         } catch (_: IOException) { continue }
         try {
@@ -43,3 +43,6 @@ internal suspend fun launchEditor(target: EditorTarget): Boolean = runInterrupti
     }
     false
 }
+
+internal fun editorProcessBuilder(target: EditorTarget, command: List<String>): ProcessBuilder =
+    ProcessBuilder(command).directory(target.workspace.toAbsolutePath().normalize().toFile())
