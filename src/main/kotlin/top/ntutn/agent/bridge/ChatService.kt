@@ -398,13 +398,17 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
                 }
                 stage(work, Stage.EXECUTING)
                 if (route.origin == ReplyOrigin.DESKTOP) requireNotNull(localReplies).starting(route)
-                val replies = if (route.origin == ReplyOrigin.DESKTOP) localReplies else cardReplies
+                val replies = when {
+                    route.origin == ReplyOrigin.DESKTOP -> localReplies
+                    route.documentComment != null -> null
+                    else -> cardReplies
+                }
                 if (presentation == null && replies != null) {
                     val reply = StreamingReply(CoroutineScope(currentCoroutineContext()), replies, route, {
                         currentCoroutineContext().ensureActive()
                         if (mutex.withLock { closed }) throw CancellationException("Bridge closed")
                         if (route.origin == ReplyOrigin.IM) startupNotice?.beforeReply(route, sender)
-                    })
+                    }, requestId = work.input?.inputId ?: route.messageId)
                     presentation = reply
                     work.handle.onProgress = reply::progress
                     work.handle.onStopping = reply::stopping
@@ -466,11 +470,18 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
             stage(work, Stage.REPLYING)
             val outputReferences = extractFeishuDocumentReferences(answer)
             if (route.origin == ReplyOrigin.IM && outputReferences.isNotEmpty()) documentRoutes?.bind(sessionChatId, outputReferences, DocumentRouteSource.BOT_OUTPUT)
-            val cardSent = withTimeout(30_000) { presentation?.finish(answer, if (result is AgentResult.Success) "已完成" else "执行失败") } == true
-            for (chunk in if (cardSent) emptyList() else splitAnswer(answer)) {
-                if (work.handle.stopRequested) return
-                send(route, chunk)
+            val delivery = withTimeout(30_000) {
+                presentation?.finishDelivery(answer, if (result is AgentResult.Success) "已完成" else "执行失败")
+                    ?: CardDelivery.FALLBACK_REQUIRED
             }
+            var confirmedChunks = 0
+            for (chunk in if (delivery == CardDelivery.DELIVERED) emptyList() else splitAnswer(presentation?.fallbackText(answer) ?: answer)) {
+                if (work.handle.stopRequested) return
+                presentation?.fallbackStarting(confirmedChunks + 1)
+                send(route, chunk)
+                presentation?.fallbackProgress(++confirmedChunks, false)
+            }
+            if (delivery == CardDelivery.FALLBACK_REQUIRED) presentation?.fallbackProgress(confirmedChunks, true)
             log.info("回复完成 chatId={} messageId={} sessionId={} elapsedMs={}", route.chatId, route.messageId,
                 result.sessionId, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
         } catch (_: TimeoutCancellationException) {

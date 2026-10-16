@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>飞书双卡片回复 Spec</title>
+<style>
+:root{color-scheme:light;--accent:#245bdb;--ink:#172b4d;--muted:#53657e;--border:#dce4f0}
+*{box-sizing:border-box}body{margin:0;background:#f3f6fb;color:var(--ink);font:16px/1.8 system-ui,-apple-system,sans-serif}main{max-width:1080px;margin:auto;padding:40px 24px 80px}header,section{background:white;border:1px solid var(--border);border-radius:16px;padding:26px;margin-bottom:20px}h1{font-size:30px;margin:8px 0}h2{font-size:22px;margin:0 0 14px}h3{font-size:17px;margin-bottom:6px}p{margin:8px 0}a{color:var(--accent)}code{background:#edf2fa;padding:2px 5px;border-radius:4px;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;font-size:14px}th,td{border:1px solid var(--border);padding:12px;text-align:left;vertical-align:top}th{background:#f1f5fd}.note{border-left:4px solid var(--accent);padding:12px 16px;background:#eef4ff}.muted{color:var(--muted)}.cards{display:grid;grid-template-columns:1fr 1fr;gap:18px}.card{border:1px solid var(--border);border-radius:12px;padding:18px}.label{color:var(--accent);font-weight:700}.card h3{margin-top:4px}li{margin:6px 0}@media(max-width:700px){.cards{grid-template-columns:1fr}section,header{padding:18px}table{display:block;overflow-x:auto}}
+</style>
+</head>
+<body><main>
+<header>
+<div class="label">产品与工程 Spec · 已实现，dev 验证阶段 · 2026-10-16</div>
+<h1>过程卡片 + 最终结果卡片</h1>
+<p>适用项目：agent-im-bridge-kt；仅改变飞书 IM 模型回复的展示与交付，不改变模型执行、会话隔离和队列规则。</p>
+<p class="note"><strong>已选方案：</strong>过程实时更新，完成后发送一张新的结果卡片。保留过程卡片，不撤回，不再额外发送第三条“已完成”通知。本文取代此前比较稿中“短消息提醒”的推荐。业务实现已完成，当前进入 dev 客户端验证阶段，未发布至 prod。</p>
+</header>
+<section><h2>1. 问题与目标</h2>
+<p>用户已读过程卡片后，完成时仅更新原卡片，无法获得预期的新消息提醒。撤回后重发会出现“撤回了一条消息”，已由用户实际测试确认体验不佳。</p>
+<ul><li>每次正常交付生成独立的新结果消息，用户从消息列表能直接发现答案。</li><li>保留实时执行过程与既有引用，不重复展示两份完整答案。</li><li>发送失败、停止、取消与重试不得引起重复答案或模型重跑。</li></ul>
+<p class="note">新结果消息提供正常消息通知的机会，不保证横幅、声音或未读角标：仍受客户端设置、免打扰、当前是否停留在聊天等影响。不调用加急、不修改已读状态、不增加通知权限。</p>
+</section>
+<section><h2>2. 用户体验契约</h2>
+<div class="cards"><div class="card"><div class="label">A · 过程卡片</div><h3>正在处理 → 正在发送结果 → 已完成</h3><p>展示当前状态、执行过程；运行时展开，结束后折叠。</p><p class="muted">已完成 · 答案见本次请求的结果卡片</p></div><div class="card"><div class="label">B · 新结果卡片</div><h3>回复完成</h3><p>完整最终答案、原有文件与文档链接。</p><p class="muted">不重复附加完整执行过程。</p></div></div>
+<ul><li>A 不展示持续增长的答案正文；模型工具活动、commentary 等仅归入执行过程，不能混入最终答案。没有新过程时只保留状态，不伪造进度。</li><li>B 仅在本轮权威终态确认后发送；成功为“回复完成”，已确认执行失败为“执行失败”，失败原因沿用既有安全提示，不展示内部异常正文。</li><li>A、B 使用不同 cardId 和 messageId；B 是非流式静态卡片，不能复用 A 的卡片实体。</li><li>A、B 均沿用原始用户请求的回复路由及话题语义；B 不仅回复到 A 下。原群聊 @ 校验、授权与来源关联保持不变。</li><li>并发聊天各自绑定 requestId、原消息 ID 和工作目录，不靠“上方／最新卡片”寻找所属结果。可用确定性的简短任务标识区分请求，不为此调用模型。</li><li>首版不依赖消息跳转链接；如后续加入跳转，须先核实官方获取方式，不拼接未经验证的链接。</li></ul>
+</section>
+<section><h2>3. 交付状态与时序</h2>
+<table><thead><tr><th>阶段</th><th>过程卡片 A</th><th>结果交付</th></tr></thead><tbody>
+<tr><td>接收、执行</td><td>尽力创建并更新；失败不阻断模型任务</td><td>不创建 B 消息</td></tr>
+<tr><td>确认模型终态</td><td>尽力更新“正在发送结果”</td><td>冻结最终答案，建立唯一发送意图和幂等键</td></tr>
+<tr><td>发送中</td><td>不能提前声称答案已交付</td><td>创建静态 B 卡片资源，向原请求发送其消息引用</td></tr>
+<tr><td>确认成功</td><td>收束、折叠，注明答案见结果卡片</td><td>记录消息 ID、时间及引用快照；不追加完成通知</td></tr>
+<tr><td>确认失败</td><td>根据兜底结果显示交付状态</td><td>仅确认未交付时进入文本兜底</td></tr>
+<tr><td>结果未知</td><td>标记交付状态待确认，不声称失败或成功</td><td>阻止盲目重发及自动文本兜底；进行可用的只读核对</td></tr>
+</tbody></table>
+<p>模型执行状态与消息交付状态分开保存：模型成功不代表消息已送达，执行失败也可能成功交付一张失败结果卡。A 的最后一次更新失败不影响已成功发送的 B。</p>
+<p>结果交付为原请求生命周期内的独立步骤，不依赖 A 是否创建成功。不得在通用 finish／close 的每次调用中直接发送 B；清理只收束 A 和释放资源，不能触发新的结果消息。</p>
+</section>
+<section><h2>4. 停止、取消与竞争</h2>
+<ul><li><code>/stop</code> 保留既有取消、队列截断及确认消息。停止任务不再新发正常结果卡，A 标记“已停止”；如有已产生的部分答案，可在 A 中折叠保留，并明确“不完整”。</li><li>通过每请求串行状态转换裁决停止与最终发送的竞争。发送尚未提交时停止优先抑制 B；已提交远端后无法保证撤销，可能已经送达，不能撤回、补发或将其误记为未发送。</li><li>停止到达时若交付结果不明，记录未知状态并保留既有停止处理，不自动重跑模型。是否已发送以确认结果为准。</li><li>服务关闭与资源释放不能产生新的结果发送。取消后的必要清理使用 NonCancellable，但不得借此继续执行未提交的发送业务。</li><li>同聊天严格 FIFO，交付确认／未知结果处理沿用现有槽位政策；跨聊天并发上限和模型无自动超时保持不变。消息发送仍使用技术超时，不新增模型超时。</li></ul>
+</section>
+<section><h2>5. 异常与降级</h2>
+<table><thead><tr><th>场景</th><th>必须行为</th></tr></thead><tbody>
+<tr><td>A 创建、更新或收束失败</td><td>不以此判定答案已交付；正常尝试 B。已知外部失败可降级，内部编程异常仍遵循 FatalErrorHandler。</td></tr>
+<tr><td>B 卡片资源创建失败</td><td>未发出 IM 消息时可文本兜底；资源创建结果未知不能盲目循环创建，不代表答案消息已送达。</td></tr>
+<tr><td>B 消息明确拒绝／确认未发送</td><td>沿用统一文本发送入口兜底，不另加完成通知；记录降级类型。</td></tr>
+<tr><td>B 消息发送超时、断连或取消后结果未知</td><td>使用既有 ReplyDeliveryUncertain 语义，不把未知当作未发送。先核对可确认的消息／回执；无法可靠确认则保留未知，不用新 UUID 或文本重发。</td></tr>
+<tr><td>重复终态、重复收束、关闭重入</td><td>复用同一发送意图；已交付直接返回回执，不再创建新消息。清理重复执行必须安全。</td></tr>
+<tr><td>文本兜底部分发送后失败</td><td>记录已确认分片与不明分片；不重新发送整份答案，不把部分交付报告成全部成功。</td></tr>
+</tbody></table>
+<h3>长答案</h3><p>沿用当前卡片约 28,000 字节的应用安全阈值，以最终编码后的 JSON 字节数判断，不能按字符数判断。超过阈值时发送一张短 B 卡片“完整回复见后续文本”，再按现有分片规则发送正文；短卡片发送结果未知时暂停后续正文，避免重复或乱序。只有全部必要分片确认后才记为完整交付，A 在此之前保持发送中。该降级允许多条文本，不承诺严格两条消息。</p>
+</section>
+<section><h2>6. 幂等、持久化与引用</h2>
+<p class="note">Review 修订：长答案的短结果卡在 <code>text_pending</code> 阶段仅保存“完整回复尚未确认送达”的引用占位，正文仍在交付记录中；全部文本分片确认后才保存完整答案快照。失败、取消或重启不能提前升级引用状态。文档评论在 ChatService 入口旁路所有卡片创建、进度及收尾操作，继续通过原评论回复路由交付。</p>
+<ul><li>每个请求最多一个逻辑结果发送意图，包含渠道、chatId、原消息 ID、requestId、稳定 UUID、交付阶段及已确认回执。实际重试必须复用同一 UUID；实施前核实接口幂等约束，不假定无限期有效。</li><li>发送前原子记录发送意图，确认后保存 B 的 messageId 与发送时间；失败或未知不得记作成功。重启只恢复诊断与核对信息，首版不自动重放未确认发送，也不承诺跨系统严格 exactly-once。</li><li>B 的 CardAnswerStore 快照保存完整答案，按新 messageId 和 chatId 绑定，保持原有 IM 可见性、同聊天及撤回检查；不能因为本地有快照就绕过权限。</li><li>A 的快照反映执行过程与真实状态；结束后注明结果独立交付，不能伪装成 B 的完整正文。停止时部分答案明确标注未完成。保留已有旧卡片映射，不回填伪造的新结果关联。</li><li>回执确认后立即保存结果引用；远端已成功但本地保存失败时应标记待恢复，不能为修复快照再次发送。来源快照不是交付成功证明。</li><li>卡片答案及文本降级均使用本次请求捕获的工作目录改写本地文件链接，不能从 Bridge 进程 cwd 推断。</li><li>日志仅记录脱敏关联标识、阶段、错误类别、时间；不记录答案正文、凭证或完整外部错误响应。</li></ul>
+</section>
+<section><h2>7. 工程改动范围</h2>
+<table><thead><tr><th>位置</th><th>计划调整</th></tr></thead><tbody>
+<tr><td><code>StreamingReply.kt</code></td><td>分离过程收束与最终交付；通过显式交付结果表达 Delivered、FallbackRequired、Uncertain，避免当前 Boolean 同时表示“装得下”和“已发送”。保持生命周期归属与结构化取消。</td></tr>
+<tr><td><code>feishu/LarkCardReplies.kt</code></td><td>新增静态结果卡创建／发送、稳定幂等键和新消息快照；过程卡只显示过程。复用统一鉴权和发送策略，新出站调用优先自建 HTTP 封装。</td></tr>
+<tr><td><code>ChatService.kt</code></td><td>在明确终态交付一次；仅确认需要降级时发送文本；未知状态禁止重复交付。保留停止与槽位管理。</td></tr>
+<tr><td>渲染器、交付状态存储与测试</td><td>区分过程／结果渲染，持久化最小交付意图与回执；补齐测试。若抽取共用接口，保留 Telegram 与桌面渠道现有语义。</td></tr>
+</tbody></table>
+<p>不新增后台全局任务、自建线程池或与聊天生命周期脱离的发送协程。业务共享状态用 Mutex／Channel；业务锁内不进行外部 I/O，存储原子提交沿用项目既有模式。此 Spec 不包含通用历史卡片提取、模型切换、通知加急、队列或部署机制重构。</p>
+</section>
+<section><h2>8. 验收标准</h2>
+<ol><li>正常短答案：先出现 A 并实时更新；结束后只出现一张新 B，A 折叠且不重复完整答案，两个消息／卡片 ID 不同；没有撤回占位和第三条完成通知。</li><li>内容与路由：B 只使用本轮最终 agentMessage，正确回复原请求；私聊、群聊话题、文件链接、工作目录隔离和引用快照正确。</li><li>失败与幂等：覆盖 A 不可用、B 创建失败、发送明确失败、发送超时、重复终态、重复 close、回执后落盘失败与重启核对；未知交付不自动文本兜底、不产生新 UUID 重发、不重跑模型。</li><li>生命周期：覆盖执行中停止、发送前停止、发送中停止、等待发送取消、服务关闭；没有清理触发结果发送，同聊天 FIFO、跨聊天并发及并发上限不回退。</li><li>长答案：按 JSON 字节边界及中文／链接测试降级；分片失败不得宣称完整成功，不额外再发通知。</li><li>实施后运行 <code>./gradlew test installDist</code>；重点扩展 StreamingReplyTest、LarkCardRepliesTest 和 ChatService 相关测试，其他渠道回归通过。</li><li>dev 真机：读过 A 后切到其他会话，完成后检查新 B 及客户端通知；分别覆盖停留聊天、免打扰、桌面／移动端与群聊。记录环境差异，不将 API 成功等同于通知展示。</li></ol>
+</section>
+<section><h2>9. 实施顺序与发布门槛</h2>
+<p>① 明确交付类型、状态存储和停止竞争测试 → ② 分离 A／B 渲染及飞书发送路径 → ③ 接入统一兜底和引用 → ④ 离线测试 → ⑤ 经用户要求部署 dev，验证通知与停止 → ⑥ 用户确认后再部署 prod。</p>
+<p>实现版本：<code>r-b36345cc1b6c8678db7a</code>，已部署至 dev；包含评论旁路与长答案引用状态的 review 修复。正常成功采用双卡；停止保留过程卡和既有停止确认；长答案采用结果短卡加文本，这是本版明确的两个例外。</p>
+<p>验证记录：构建通过；Bridge 回归 295 项（8 项跳过）、桌面回归 15 项，均无失败。部署单测 59 项（13 项跳过）通过。默认全量执行未完成，本轮沿用隔离 CodexProtocolTest、TraexProtocolTest、LarkRequestsTest 的配置后通过其余回归，未为此修改仓库测试配置。真实客户端的新消息提醒表现仍待 dev 验收，不宣称全量与通知验收已通过。</p>
+</section>
+</main></body></html>

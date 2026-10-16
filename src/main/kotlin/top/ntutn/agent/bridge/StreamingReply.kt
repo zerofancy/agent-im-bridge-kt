@@ -12,6 +12,19 @@ import kotlin.time.Duration.Companion.milliseconds
 /** A non-idempotent send may already have reached the server; do not replay it as plain text. */
 internal class ReplyDeliveryUncertain : IOException("Reply delivery could not be confirmed")
 
+internal enum class CardDelivery { DELIVERED, FALLBACK_REQUIRED }
+
+internal interface ResultDelivery {
+    suspend fun send(text: String, status: String): CardDelivery
+    suspend fun fallbackStarting(chunk: Int) {}
+    suspend fun fallbackProgress(confirmedChunks: Int, complete: Boolean)
+    fun fallbackText(text: String): String = text
+}
+
+internal interface SplitCardReplies : CardReplies {
+    suspend fun prepareResult(route: ReplyRoute, requestId: String): ResultDelivery
+}
+
 /** Implementations own external I/O, safe retries and durable quote snapshots. */
 interface CardReplies {
     val refreshIntervalMs: Long? get() = null
@@ -29,12 +42,12 @@ data class CardReference(val cardId: String, val messageId: String, val chatId: 
 internal object ReplyCard {
     const val MAX_BYTES = 28_000
     // Escaped JSON can expand a UTF-16 character to six ASCII bytes. Keep both components bounded.
-    fun render(answer: String, process: String, status: String, streaming: Boolean): String = json(
+    fun render(answer: String, process: String, status: String, streaming: Boolean, showProcess: Boolean = true): String = json(
         "schema" to "2.0",
         "config" to json("update_multi" to true, "width_mode" to "default", "streaming_mode" to streaming,
             "summary" to json("content" to bounded(if (streaming) "正在处理…" else "$status：$answer", 100))),
         "header" to json("title" to json("tag" to "plain_text", "content" to status),
-            "template" to if (streaming) "blue" else if (status == "已完成") "green" else "grey"),
+            "template" to if (streaming) "blue" else if (status in setOf("已完成", "回复完成")) "green" else "grey"),
         "body" to json("direction" to "vertical", "vertical_spacing" to "12px", "elements" to JsonArray().apply {
             val answerElement = json("tag" to "markdown", "element_id" to "answer",
                 "content" to safeMarkdown(answer.ifBlank { if (status == "已终止") "终止前尚未输出答案。" else "正在处理，请稍候…" }))
@@ -44,7 +57,7 @@ internal object ReplyCard {
                     "header" to json("title" to json("tag" to "plain_text", "content" to "终止前的输出")),
                     "elements" to JsonArray().apply { add(answerElement) }))
             } else add(answerElement)
-            add(json("tag" to "collapsible_panel", "element_id" to "process_panel", "expanded" to streaming,
+            if (showProcess) add(json("tag" to "collapsible_panel", "element_id" to "process_panel", "expanded" to streaming,
                 "header" to json("title" to json("tag" to "plain_text", "content" to "执行过程")),
                 "border" to json("color" to "grey", "corner_radius" to "8px"), "padding" to "8px",
                 "elements" to JsonArray().apply {
@@ -92,7 +105,8 @@ internal object ReplyCard {
 
 /** A child of the chat task; only complete snapshots cross this conflated mailbox. */
 internal class StreamingReply(scope: CoroutineScope, private val api: CardReplies, private val route: ReplyRoute,
-                              private val beforeReply: suspend () -> Unit, private val intervalMs: Long = 1000) {
+                              private val beforeReply: suspend () -> Unit, private val intervalMs: Long = 1000,
+                              private val requestId: String = route.messageId) {
     private data class Update(val progress: AgentProgress, val final: String? = null, val status: String = "已完成")
     private val updates = Channel<Update>(Channel.CONFLATED)
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
@@ -100,6 +114,10 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
     private var rendered = false
     private var finished = false
     private var deliveryFailure: ReplyDeliveryUncertain? = null
+    private var resultDelivery: ResultDelivery? = null
+    private var finalDelivery: CardDelivery? = null
+    private var deliveryStarted = false
+    private var finalProcessStatus: String? = null
     private val terminal = MutableStateFlow<Update?>(null)
     private data class Observed(val progress: AgentProgress = AgentProgress(), val stopping: Boolean = false)
     private val observed = MutableStateFlow(Observed())
@@ -107,9 +125,10 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
         var enabled = true
         try {
             beforeReply()
+            if (api is SplitCardReplies && route.documentComment == null) resultDelivery = api.prepareResult(route, requestId)
             card = api.create(route)
         } catch (e: CancellationException) { throw e }
-        catch (_: IOException) { enabled = false; log.warn("流式卡片创建失败，最终回复将使用文本 messageId={}", route.messageId) }
+        catch (_: IOException) { enabled = false; log.warn("过程卡片创建失败，将独立交付最终回复 messageId={}", route.messageId) }
         while (true) {
             val refresh = if (enabled && card != null) api.refreshIntervalMs else null
             val received = if (refresh == null) updates.receiveCatching()
@@ -135,14 +154,26 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
             val ref = card
             if (update.final != null) {
                 if (ref != null) try {
-                    rendered = api.finish(ref, update.final, update.progress.process, update.status)
+                    rendered = if (api is SplitCardReplies && observed.value.stopping) {
+                        val stoppedStatus = if (update.status == "执行失败") "执行失败" else "已终止"
+                        api.finish(ref, if (stoppedStatus == "已终止") observed.value.progress.answer else update.final,
+                            update.progress.process, stoppedStatus)
+                    } else if (api is SplitCardReplies && update.status != "已终止") {
+                        withTimeoutOrNull(1500) {
+                            api.finish(ref, "最终答案将通过新消息发送。", update.progress.process, "正在发送结果")
+                        }
+                        false
+                    } else api.finish(ref, update.final, update.progress.process, update.status)
                     finished = true
                 } catch (e: CancellationException) { throw e }
                 catch (e: ReplyDeliveryUncertain) { finished = true; deliveryFailure = e }
                 catch (_: IOException) { log.warn("卡片收束失败，最终回复将使用文本 messageId={}", route.messageId) }
                 break
             }
-            if (enabled && ref != null) try { api.progress(ref, ReplyCard.preview(update.progress)) }
+            if (enabled && ref != null) try {
+                val display = if (api is SplitCardReplies) update.progress.copy(answer = "") else update.progress
+                api.progress(ref, ReplyCard.preview(display))
+            }
             catch (e: CancellationException) { throw e }
             catch (_: IOException) { enabled = false; log.warn("卡片进度更新失败，等待最终收束 messageId={}", route.messageId) }
         }
@@ -156,7 +187,10 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
         val state = observed.updateAndGet { it.copy(stopping = true) }
         updates.trySend(Update(state.progress))
     }
-    suspend fun finish(text: String, status: String = "已完成", timeoutMs: Long = 25_000): Boolean {
+    suspend fun finish(text: String, status: String = "已完成", timeoutMs: Long = 25_000): Boolean =
+        finishDelivery(text, status, timeoutMs) == CardDelivery.DELIVERED
+
+    suspend fun finishDelivery(text: String, status: String = "已完成", timeoutMs: Long = 25_000): CardDelivery {
         // The runner's final event is authoritative; pending progress is superseded by this terminal update.
         val progress = observed.value.progress
         val output = if (status == "已终止") progress.answer else text
@@ -164,12 +198,57 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
         terminal.value = update
         updates.trySend(update)
         updates.close()
-        if (withTimeoutOrNull(timeoutMs) { worker.join(); true } != true) {
-            log.warn("卡片收束等待超时 messageId={} timeoutMs={}", route.messageId, timeoutMs)
+        val processTimeout = if (api is SplitCardReplies) minOf(timeoutMs, 5000) else timeoutMs
+        if (withTimeoutOrNull(processTimeout) { worker.join(); true } != true) {
+            log.warn("卡片收束等待超时 messageId={} timeoutMs={}", route.messageId, processTimeout)
             worker.cancelAndJoin()
         }
         deliveryFailure?.let { throw it }
-        return rendered
+        if (api !is SplitCardReplies || status == "已终止")
+            return if (rendered) CardDelivery.DELIVERED else CardDelivery.FALLBACK_REQUIRED
+        finalDelivery?.let { return it }
+        if (deliveryStarted) throw ReplyDeliveryUncertain()
+        currentCoroutineContext().ensureActive()
+        if (observed.value.stopping) throw CancellationException("Request stopped")
+        beforeReply()
+        deliveryStarted = true
+        finished = false
+        finalProcessStatus = "交付待确认"
+        val result = try {
+            resultDelivery?.send(text, status) ?: CardDelivery.FALLBACK_REQUIRED
+        } catch (e: ReplyDeliveryUncertain) {
+            deliveryFailure = e
+            settleProcess("结果发送状态未知，请勿重复执行。", "交付待确认")
+            throw e
+        }
+        finalDelivery = result
+        if (result == CardDelivery.DELIVERED) settleProcess("答案已单独发送，请查看本次请求的结果卡片。", status)
+        else finalProcessStatus = "文本交付未完成"
+        return result
+    }
+
+    suspend fun fallbackProgress(confirmedChunks: Int, complete: Boolean) {
+        if (api !is SplitCardReplies) return
+        resultDelivery?.fallbackProgress(confirmedChunks, complete)
+        if (complete) {
+            finalDelivery = CardDelivery.DELIVERED
+            settleProcess("答案已通过后续文本消息发送。", terminal.value?.status ?: "已完成")
+        } else finalProcessStatus = "文本交付未完成"
+    }
+
+    fun fallbackText(text: String): String = resultDelivery?.fallbackText(text) ?: text
+
+    suspend fun fallbackStarting(chunk: Int) { resultDelivery?.fallbackStarting(chunk) }
+
+    private suspend fun settleProcess(text: String, status: String) {
+        finalProcessStatus = status
+        card?.let { ref ->
+            try {
+                withTimeout(1500) { api.finish(ref, text, observed.value.progress.process, status) }
+                finished = true
+            } catch (e: TimeoutCancellationException) { currentCoroutineContext().ensureActive(); finished = false }
+            catch (_: IOException) { finished = false }
+        }
     }
     suspend fun close(status: String, terminated: Boolean = false) {
         worker.cancelAndJoin()
@@ -179,8 +258,9 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
                 // A stop while waiting for card I/O cancels the worker; retain the latest answer and process here too.
                 val snapshot = terminal.value
                 val progress = observed.value.progress
-                val output = snapshot?.final ?: if (terminated) progress.answer else status
-                val finalStatus = if (terminated) "已终止" else snapshot?.status ?: status
+                val output = if (api is SplitCardReplies && !terminated) "结果状态：${finalProcessStatus ?: "未确认"}"
+                    else snapshot?.final ?: if (terminated) progress.answer else status
+                val finalStatus = if (terminated) "已终止" else finalProcessStatus ?: snapshot?.status ?: status
                 val cleaned = withTimeoutOrNull(1500.milliseconds) {
                     try { api.finish(ref, output, snapshot?.progress?.process ?: progress.process, finalStatus) }
                     catch (e: CancellationException) { throw e }

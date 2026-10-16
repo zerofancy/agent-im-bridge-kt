@@ -29,6 +29,25 @@ class CardAnswerStore(private val directory: Path) {
             value?.takeIf { it.string("messageId") == messageId && it.string("chatId") == chatId }?.string("text")
         }
     }
+
+    private fun deliveryPath(route: ReplyRoute, requestId: String) = directory.resolve("deliveries").resolve(
+        MessageDigest.getInstance("SHA-256").digest("${route.chatId}\u0000${route.messageId}\u0000$requestId".toByteArray())
+            .joinToString("") { "%02x".format(it) } + ".json")
+
+    internal suspend fun beginDelivery(route: ReplyRoute, intent: com.google.gson.JsonObject): com.google.gson.JsonObject? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val path = deliveryPath(route, requireNotNull(intent.string("requestId")))
+            val previous = JsonFiles.read(path)
+            if (previous == null) withContext(NonCancellable) { JsonFiles.write(path, intent) }
+            previous
+        }
+    }
+
+    internal suspend fun saveDelivery(route: ReplyRoute, intent: com.google.gson.JsonObject) = withContext(Dispatchers.IO) {
+        mutex.withLock { withContext(NonCancellable) {
+            JsonFiles.write(deliveryPath(route, requireNotNull(intent.string("requestId"))), intent)
+        } }
+    }
 }
 
 /** Reserve times under a mutex; external I/O and delay never hold it. Shared across all chats. */
@@ -62,9 +81,12 @@ catch (e: Exception) {
 
 internal class LarkCardReplies(private val client: () -> Client, private val answers: CardAnswerStore,
     private val fileLinks: top.ntutn.agent.bridge.localfiles.LocalFileServer? = null,
+    private val resultApi: ResultCardApi,
+    private val limiter: CardRateLimiter = CardRateLimiter(),
     private val workspace: suspend (String) -> Path? = { null },
-) : CardReplies {
-    private val limiter = CardRateLimiter()
+) : SplitCardReplies {
+    override suspend fun prepareResult(route: ReplyRoute, requestId: String): ResultDelivery = LarkResultDelivery(
+        route, workspace(route.chatId), resultApi, answers, fileLinks, requestId)
     private val log = org.slf4j.LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private suspend fun <T : com.lark.oapi.core.response.BaseResponse<*>> request(operation: String, block: () -> T?): T {
         limiter.await()
@@ -95,7 +117,7 @@ internal class LarkCardReplies(private val client: () -> Client, private val ans
         val directory = workspace(route.chatId)
         val api = client().cardkit().v1().card()
         val create = CreateCardReq.newBuilder().createCardReqBody(CreateCardReqBody.newBuilder().type("card_json")
-            .data(ReplyCard.render("", "正在处理…", "正在处理", true)).build()).build()
+            .data(ReplyCard.render("任务执行中，最终答案将单独发送。", "正在处理…", "正在处理", true)).build()).build()
         // Entity creation has no idempotency key; do not retry an ambiguous creation.
         val id = retry("create", attempts = 1) {
             val response = request("create") { api.create(create) }
@@ -138,16 +160,18 @@ internal class LarkCardReplies(private val client: () -> Client, private val ans
                     .uuid(UUID.randomUUID().toString()).build()).build()
             retry("content/$element") { request("content/$element") { api.content(request) } }
         }
-        val display = ReplyCard.preview(AgentProgress(linked(card, progress.process), linked(card, progress.answer)))
-        try { content("process", display.process); content("answer", display.answer) }
+        val display = ReplyCard.preview(AgentProgress(linked(card, progress.process)))
+        try { content("process", display.process) }
         catch (e: CardRequestFailure) {
             if (e.code != 200850 && e.code != 300309) throw e
             settings(card, true)
-            content("process", display.process); content("answer", display.answer)
+            content("process", display.process)
         }
     }
     override suspend fun finish(card: CardReference, text: String, process: String, status: String): Boolean {
-        answers.save(card, if (status == "已终止") "【本次执行已终止，以下为未完成的输出】\n$text" else text)
+        val snapshot = if (status == "已终止") "【本次执行已终止，以下为未完成的输出】\n$text"
+            else "【过程卡片：$status】\n$text"
+        answers.save(card, "$snapshot\n\n执行过程：\n$process")
         val content = if (status == "已终止") ReplyCard.preview(AgentProgress(process, text), terminated = true)
             else AgentProgress(bounded(process, 1800), text)
         val full = ReplyCard.render(linked(card, content.answer), linked(card, content.process), status, false)

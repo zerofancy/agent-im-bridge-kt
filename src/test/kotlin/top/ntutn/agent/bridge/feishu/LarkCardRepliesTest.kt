@@ -16,6 +16,12 @@ import kotlin.test.*
 class LarkCardRepliesTest {
     @TempDir lateinit var temp: Path
     private class Wire {
+        val resultContents = mutableListOf<String>()
+        val resultRoutes = mutableListOf<ReplyRoute>()
+        val resultApi = object : ResultCardApi {
+            override suspend fun create(content: String): String { resultContents += content; return "result-card" }
+            override suspend fun reply(route: ReplyRoute, cardId: String, uuid: String): String { resultRoutes += route; return "result-message" }
+        }
         val requests = mutableListOf<Pair<String, JsonObject>>()
         var rejectCreate = false
         var sdkFailure: Exception? = null
@@ -44,34 +50,49 @@ class LarkCardRepliesTest {
                 RawResponse().apply { statusCode = 200; headers = emptyMap(); body = response.toByteArray() }
             }).build()
     }
+    @Test fun `split lifecycle saves process summary separately from new result snapshot`(): Unit = runBlocking {
+        val wire = Wire()
+        val store = CardAnswerStore(temp)
+        val api = LarkCardReplies({ wire.client }, store, resultApi = wire.resultApi)
+        val route = ReplyRoute("chat", "original")
+        val reply = StreamingReply(this, api, route, {}, 1)
+        reply.progress(AgentProgress("checking", "partial output"))
+        assertTrue(reply.finish("authoritative answer"))
+        reply.close("unknown")
+        assertEquals(listOf(route), wire.resultRoutes)
+        assertEquals("authoritative answer", store.read("result-message", "chat"))
+        assertFalse(store.read("reply", "chat")!!.contains("authoritative answer"))
+        assertContains(store.read("reply", "chat")!!, "结果卡片")
+        assertFalse(wire.requests.any { it.first.endsWith("/answer/content") })
+        assertFalse(wire.resultContents.single().contains("checking"))
+        val processUpdates = wire.requests.filter { it.first == "/open-apis/cardkit/v1/cards/card" }
+        assertFalse(processUpdates.any { it.second.toString().contains("authoritative answer") })
+        assertFalse(processUpdates.any { it.second.toString().contains("partial output") })
+    }
     @Test fun `streaming and final cards link files using captured workspace while snapshots remain original`(): Unit = runBlocking {
         val wire = Wire()
         val store = CardAnswerStore(temp.resolve("answers"))
         var directory = temp.resolve("first")
         top.ntutn.agent.bridge.localfiles.LocalFileServer("trae") { true }.use { links ->
-            val api = LarkCardReplies({ wire.client }, store, links) { directory }
+            val api = LarkCardReplies({ wire.client }, store, links, wire.resultApi) { directory }
             val ref = api.create(ReplyRoute("chat", "original"))
             directory = temp.resolve("second")
             val text = "[源码](src/a.kt:47)"
             api.progress(ref, AgentProgress("检查完成", text))
             assertTrue(api.finish(ref, text, "检查完成", "已完成"))
-            val content = wire.requests.last { it.first.endsWith("/answer/content") }.second.string("content")!!
-            assertContains(content, links.baseUrl)
-            assertContains(content, "first")
-            assertContains(content, "&path=")
-            assertContains(content, "&signature=")
-            assertFalse(content.contains("&amp;"))
-            assertFalse(content.contains("second"))
+            assertFalse(wire.requests.any { it.first.endsWith("/answer/content") })
             val update = wire.requests.last { it.first == "/open-apis/cardkit/v1/cards/card" }.second.toString()
             assertContains(update, links.baseUrl)
-            assertEquals(text, store.read("reply", "chat"))
+            assertContains(update, "first")
+            assertFalse(update.contains("second"))
+            assertContains(store.read("reply", "chat")!!, text)
         }
     }
     @Test fun `SDK runtime failures become safe recoverable diagnostics but internal preparation errors escape`(): Unit = runBlocking {
         val wire = Wire()
         wire.sdkFailure = IllegalStateException("external secret payload")
         val failure = assertFailsWith<CardRequestFailure> {
-            LarkCardReplies({ wire.client }, CardAnswerStore(temp)).create(ReplyRoute("chat", "original"))
+            LarkCardReplies({ wire.client }, CardAnswerStore(temp), resultApi = wire.resultApi).create(ReplyRoute("chat", "original"))
         }
         assertEquals("create", failure.operation)
         assertEquals("sdk", failure.category)
@@ -79,7 +100,7 @@ class LarkCardRepliesTest {
         assertNull(failure.cause)
         assertFalse(failure.toString().contains("secret"))
         assertFailsWith<IllegalStateException> {
-            LarkCardReplies({ error("internal preparation failure") }, CardAnswerStore(temp)).create(ReplyRoute("chat", "original"))
+            LarkCardReplies({ error("internal preparation failure") }, CardAnswerStore(temp), resultApi = wire.resultApi).create(ReplyRoute("chat", "original"))
         }
     }
     @Test fun `SDK boundary preserves cancellation and JVM errors`(): Unit = runBlocking {
@@ -92,7 +113,7 @@ class LarkCardRepliesTest {
     @Test fun `business failures retain code HTTP status and operation without raw body`(): Unit = runBlocking {
         val wire = Wire(); wire.rejectCreate = true
         val failure = assertFailsWith<CardRequestFailure> {
-            LarkCardReplies({ wire.client }, CardAnswerStore(temp)).create(ReplyRoute("chat", "original"))
+            LarkCardReplies({ wire.client }, CardAnswerStore(temp), resultApi = wire.resultApi).create(ReplyRoute("chat", "original"))
         }
         assertEquals(99991672, failure.code)
         assertEquals(200, failure.httpStatus)
@@ -102,34 +123,33 @@ class LarkCardRepliesTest {
     }
     @Test fun `SDK uses dedicated content API and sequences settings and terminal update`(): Unit = runBlocking {
         val wire = Wire(); val store = CardAnswerStore(temp)
-        val api = LarkCardReplies({ wire.client }, store)
+        val api = LarkCardReplies({ wire.client }, store, resultApi = wire.resultApi)
         val ref = api.create(ReplyRoute("chat", "original"))
         wire.failContentOnce = true
         api.progress(ref, AgentProgress("checking", "partial"))
         assertTrue(api.finish(ref, "final", "done", "已完成"))
         val operations = wire.requests.filter { it.second.has("sequence") }
-        assertEquals(listOf(1, 1, 2, 3, 4), operations.map { it.second["sequence"].asInt })
+        assertEquals(listOf(1, 1, 2, 3), operations.map { it.second["sequence"].asInt })
         assertEquals(operations[0].second["uuid"], operations[1].second["uuid"])
         assertTrue(operations[0].first.endsWith("/elements/process/content"))
-        assertTrue(operations[2].first.endsWith("/elements/answer/content"))
-        assertEquals("partial", operations[2].second["content"].asString)
-        assertTrue(operations[3].first.endsWith("/settings"))
+        assertFalse(operations.any { it.first.endsWith("/elements/answer/content") })
+        assertTrue(operations[2].first.endsWith("/settings"))
         val terminal = JsonParser.parseString(operations.last().second.getAsJsonObject("card")["data"].asString).asJsonObject
         assertFalse(terminal.getAsJsonObject("body").getAsJsonArray("elements")[1].asJsonObject["expanded"].asBoolean)
         val reply = wire.requests.single { it.first.endsWith("/original/reply") }.second
         assertEquals("interactive", reply["msg_type"].asString)
         assertEquals("card", JsonParser.parseString(reply["content"].asString).asJsonObject.getAsJsonObject("data")["card_id"].asString)
-        assertEquals("final", CardAnswerStore(temp).read("reply", "chat"))
+        assertContains(CardAnswerStore(temp).read("reply", "chat")!!, "final")
     }
     @Test fun `expired streaming reopens without resetting sequence and long final is preserved`(): Unit = runBlocking {
         val wire = Wire(); val store = CardAnswerStore(temp)
-        val api = LarkCardReplies({ wire.client }, store)
+        val api = LarkCardReplies({ wire.client }, store, resultApi = wire.resultApi)
         val ref = api.create(ReplyRoute("chat", "original"))
         wire.expireOnce = true
         api.progress(ref, AgentProgress("checking", "partial"))
         val text = "长答案🙂".repeat(20_000)
         assertFalse(api.finish(ref, text, "done", "已完成"))
-        assertEquals(text, store.read("reply", "chat"))
+        assertContains(store.read("reply", "chat")!!, text)
         val sequences = wire.requests.mapNotNull { it.second["sequence"]?.asInt }
         assertEquals(sequences.sorted().distinct(), sequences)
         val update = wire.requests.last().second.getAsJsonObject("card")["data"].asString
@@ -138,7 +158,7 @@ class LarkCardRepliesTest {
     }
     @Test fun `terminated update keeps original card and labels quoted answer unfinished`(): Unit = runBlocking {
         val wire = Wire(); val store = CardAnswerStore(temp)
-        val api = LarkCardReplies({ wire.client }, store)
+        val api = LarkCardReplies({ wire.client }, store, resultApi = wire.resultApi)
         val ref = api.create(ReplyRoute("chat", "original"))
         assertTrue(api.finish(ref, "部分答案", "执行了 pwd", "已终止"))
         assertEquals("/open-apis/cardkit/v1/cards/card", wire.requests.last().first)
@@ -151,7 +171,7 @@ class LarkCardRepliesTest {
     }
     @Test fun `large terminated output remains in card instead of referring to absent followup text`(): Unit = runBlocking {
         val wire = Wire(); val store = CardAnswerStore(temp)
-        val api = LarkCardReplies({ wire.client }, store)
+        val api = LarkCardReplies({ wire.client }, store, resultApi = wire.resultApi)
         val ref = api.create(ReplyRoute("chat", "original"))
         val output = "部分答案" + "<".repeat(6000)
         assertTrue(api.finish(ref, output, "执行了 pwd", "已终止"))
@@ -163,7 +183,7 @@ class LarkCardRepliesTest {
     }
     @Test fun `business permission failure is recoverable without ambiguous create retry`(): Unit = runBlocking {
         val wire = Wire(); wire.rejectCreate = true
-        assertFailsWith<IOException> { LarkCardReplies({ wire.client }, CardAnswerStore(temp)).create(ReplyRoute("chat", "original")) }
+        assertFailsWith<IOException> { LarkCardReplies({ wire.client }, CardAnswerStore(temp), resultApi = wire.resultApi).create(ReplyRoute("chat", "original")) }
         assertEquals(1, wire.requests.size)
     }
     @Test fun `card quotes and reactions use durable final after authorized lookup`(): Unit = runBlocking {

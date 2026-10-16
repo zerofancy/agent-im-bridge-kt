@@ -172,9 +172,11 @@ fun createAgentChannel(config: BridgeConfig, runner: AgentRunner, sessions: Sess
         commentClient.reply(target, text)
     }
     lateinit var launchManaged: (suspend () -> Unit) -> Unit
+    val cardLimiter = CardRateLimiter()
     val service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
-    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, DocumentTypingReactions(commentClient, LarkTypingReactions(config.appId) { channel.rawClient }), lifecycle, initiallyHeld, configControls, LarkCardReplies({ channel.rawClient }, cardAnswers, fileLinks) { chatId ->
+    }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, DocumentTypingReactions(commentClient, LarkTypingReactions(config.appId) { channel.rawClient }), lifecycle, initiallyHeld, configControls, LarkCardReplies({ channel.rawClient }, cardAnswers, fileLinks,
+        FeishuResultCardApi(FeishuOpenApiClient(feishuOpenBaseUrl(config), SdkTenantTokenProvider(sdkOpenApiConfig(config))), cardLimiter), cardLimiter) { chatId ->
         sessions.workspace(SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue))
     }, { chatId, references, sourceKind ->
         for (reference in references) {
