@@ -13,6 +13,35 @@ import kotlin.test.*
 class LocalFileServerTest {
     @TempDir lateinit var root: Path
     private val http = HttpClient.newHttpClient()
+    @Test fun `HTML links render signed sandboxed documents without launching editor`() {
+        val content = "<!doctype html><html><style>body{color:red}</style><h1>预览</h1></html>"
+        var opened = false
+        LocalFileServer("trae") { opened = true; true }.use { server ->
+            for (name in listOf("report.html", "中 文.HTM")) {
+                val file = Files.writeString(root.resolve(name), content)
+                val url = server.url(EditorTarget(root, file, null, null, "trae"))
+                assertContains(url, "/preview?")
+                assertContains(server.rewrite("[报告](<$file>)", root), "/preview?")
+                val response = http.send(HttpRequest.newBuilder(URI(url)).build(), HttpResponse.BodyHandlers.ofString())
+                assertEquals(200, response.statusCode())
+                assertEquals(content, response.body())
+                assertEquals("text/html; charset=utf-8", response.headers().firstValue("Content-Type").orElse(null))
+                val policy = response.headers().firstValue("Content-Security-Policy").orElse("")
+                assertContains(policy, "sandbox allow-scripts;")
+                assertFalse(policy.contains("allow-same-origin"))
+                assertContains(policy, "connect-src 'none'")
+                assertEquals(403, request(url.replace("editor=trae", "editor=vscode")))
+                assertEquals(405, request(url, "POST"))
+                Files.delete(file)
+                assertEquals(404, request(url))
+            }
+            val source = Files.writeString(root.resolve("source.kt"), "private source")
+            val forgedPreview = server.url(EditorTarget(root, source, null, null, "trae")).replace("/open?", "/preview?")
+            assertEquals(403, request(forgedPreview))
+            assertEquals(403, request(server.baseUrl + "/preview?path=report.html"))
+            assertFalse(opened)
+        }
+    }
     @Test fun `editor process explicitly uses target workspace rather than inherited working directory`() {
         val workspace = Files.createDirectory(root.resolve("editor-workspace"))
         val target = EditorTarget(workspace, workspace.resolve("file.kt"), 1, null, "trae")

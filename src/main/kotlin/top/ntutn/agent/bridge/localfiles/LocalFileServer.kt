@@ -56,8 +56,11 @@ class LocalFileServer internal constructor(
         val params = listOf("workspace" to target.workspace.toString(), "path" to target.file.toString(),
             "line" to (target.line?.toString() ?: ""), "column" to (target.column?.toString() ?: ""), "editor" to target.editor)
         val query = params.joinToString("&") { (key, value) -> "$key=${URLEncoder.encode(value, Charsets.UTF_8)}" }
-        return "$baseUrl/open?$query&signature=${sign(query)}"
+        val endpoint = if (isHtml(target.file)) "preview" else "open"
+        return "$baseUrl/$endpoint?$query&signature=${sign(query)}"
     }
+
+    private fun isHtml(file: Path): Boolean = file.fileName.toString().substringAfterLast('.', "").lowercase() in setOf("html", "htm")
 
     private fun sign(query: String): String = Base64.getUrlEncoder().withoutPadding().encodeToString(
         Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(secret, "HmacSHA256")) }.doFinal(query.toByteArray(Charsets.UTF_8)))
@@ -79,10 +82,11 @@ class LocalFileServer internal constructor(
             exchange.responseBody.write(asset.second)
             return
         }
-        if (path != "/api/open") { reply(exchange, 404); return }
-        if (exchange.requestMethod != "POST") { reply(exchange, 405); return }
-        if (exchange.requestHeaders.getFirst("Origin") != baseUrl ||
-            exchange.requestHeaders.getFirst("X-Bridge-Open") != "1") { reply(exchange, 403); return }
+        val preview = path == "/preview"
+        if (!preview && path != "/api/open") { reply(exchange, 404); return }
+        if (exchange.requestMethod != if (preview) "GET" else "POST") { reply(exchange, 405); return }
+        if (!preview && (exchange.requestHeaders.getFirst("Origin") != baseUrl ||
+            exchange.requestHeaders.getFirst("X-Bridge-Open") != "1")) { reply(exchange, 403); return }
         val query = exchange.requestURI.rawQuery.orEmpty()
         if (query.length > 32_768) { reply(exchange, 400); return }
         val signed = query.substringBeforeLast("&signature=", "")
@@ -100,6 +104,16 @@ class LocalFileServer internal constructor(
             else target.copy(workspace = root, file = file)
         } catch (_: IOException) { null }
         if (checked == null) { reply(exchange, 404); return }
+        if (preview) {
+            if (!isHtml(target.file) || !isHtml(checked.file)) { reply(exchange, 403); return }
+            exchange.responseHeaders.apply {
+                set("Content-Type", "text/html; charset=utf-8")
+                set("Content-Security-Policy", "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: https:; font-src data:; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+            }
+            exchange.sendResponseHeaders(200, 0)
+            Files.newInputStream(checked.file).use { it.copyTo(exchange.responseBody) }
+            return
+        }
         reply(exchange, if (open(checked)) 200 else 503)
     }
 
