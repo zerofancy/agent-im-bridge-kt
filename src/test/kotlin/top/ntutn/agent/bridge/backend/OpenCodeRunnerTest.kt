@@ -84,6 +84,19 @@ class OpenCodeRunnerTest {
         }
     }
 
+    @Test fun `completed HTTP without assistant terminal releases idle request and permits next run`(): Unit = runBlocking {
+        runner().use { runner ->
+            for (prompt in listOf("empty-response", "failed-response")) {
+                val result = withTimeout(5000) { runner.run(prompt, null, temp, mode) }
+                assertEquals(AgentResult.Kind.PROTOCOL, assertIs<AgentResult.Failure>(result).kind)
+            }
+            assertIs<AgentResult.Success>(withTimeout(5000) { runner.run("next", null, temp, mode) })
+            assertEquals(3, Files.readAllLines(temp.resolve("requests")).count {
+                it.contains("\"method\": \"POST\"") && it.contains("/message")
+            })
+        }
+    }
+
     @Test fun `unknown HTTP outcome holds slot and reconciles without replay`(): Unit = runBlocking {
         runner().use { runner ->
             val handle = AgentRunHandle()

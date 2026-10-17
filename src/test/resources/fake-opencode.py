@@ -45,12 +45,16 @@ class Handler(BaseHTTPRequestHandler):
    user={'info':{'id':mid,'role':'user','sessionID':sid},'parts':[]}
    assistant={'info':{'id':'msg_answer'+mid,'role':'assistant','sessionID':sid,'parentID':mid,'time':{'created':1}},'parts':[{'type':'text','text':'partial'},{'type':'reasoning','text':'SECRET REASONING'},{'type':'tool','tool':'bash','state':{'status':'running','input':{'command':'pwd'},'output':'SECRET OUTPUT'}}]}
    s['messages'] += [user,assistant]
+   if text in ['empty-response','failed-response']:
+    s['messages'].remove(assistant);s['busy']=False
+    return self.reply(None, 200 if text=='empty-response' else 500)
    if text=='early-stop':
     s['busy']=False
     time.sleep(.5)
     s['busy']=True;s['stop']=False
     while not s['stop']:time.sleep(.02)
    elif text=='disconnect':
+    s['busy']=False # Idle alone cannot prove termination after a transport failure.
     self.connection.shutdown(socket.SHUT_RDWR);self.connection.close()
     while not (root/'finish').exists():time.sleep(.02)
    elif text in ['stop','ignore-stop']:

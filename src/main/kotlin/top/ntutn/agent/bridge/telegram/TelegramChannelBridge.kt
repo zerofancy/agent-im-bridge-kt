@@ -65,7 +65,8 @@ fun createTelegramChannel(
     backend: BackendSpec,
     lifecycle: RuntimeLifecycle? = null,
     initiallyHeld: Boolean = false,
-    localReplies: LocalReplies? = null
+    localReplies: LocalReplies? = null,
+    fileLinks: top.ntutn.agent.bridge.localfiles.LocalFileServer? = null
 ): Pair<TelegramClient, ChatService> {
     val log = LoggerFactory.getLogger("top.ntutn.agent.bridge.telegram")
     val client = TelegramClient(config.appId)
@@ -77,7 +78,9 @@ fun createTelegramChannel(
         AttachmentStore(lifecycle?.environment?.attachments ?: Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)),
         config.appId, source)
 
-    val cards = TelegramCardReplies(client)
+    suspend fun workspace(chatId: String) = sessions.workspace(
+        SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue))
+    val cards = TelegramCardReplies(client, fileLinks, ::workspace)
     lateinit var service: ChatService
     val reactions = TelegramTypingReactions(client) { route ->
         service.sendWithNotice(route) {
@@ -88,7 +91,7 @@ fun createTelegramChannel(
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
     }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, reactions, lifecycle, initiallyHeld,
         cardReplies = cards, localReplies = localReplies) { route, text ->
-        client.sendReply(route, text)
+        client.sendReply(route, text) { raw -> fileLinks?.rewrite(raw, workspace(route.chatId)) ?: raw }
     }
 
     client.startMenuRegistration(backend.displayName)

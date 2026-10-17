@@ -87,7 +87,8 @@ fun main(args: Array<String>) {
                 larkChannel = bridge.first; service = bridge.second
             }
             "telegram" -> {
-                val bridge = createTelegramChannel(config, runner, sessions, options, backend, lifecycle, held, desktopHistory)
+                fileLinks = top.ntutn.agent.bridge.localfiles.LocalFileServer()
+                val bridge = createTelegramChannel(config, runner, sessions, options, backend, lifecycle, held, desktopHistory, fileLinks)
                 telegramClient = bridge.first; service = bridge.second
             }
             else -> error("不支持的平台: ${config.platform}")

@@ -50,6 +50,41 @@ class TelegramCardRepliesTest {
         override fun close() { try { client.close() } finally { server.stop(0) } }
     }
 
+    @Test fun `local links use captured workspace in drafts final and plain fallback`(): Unit = runBlocking {
+        for (unsupported in listOf(false, true)) Api().use { api ->
+            api.rejectRich = unsupported
+            top.ntutn.agent.bridge.localfiles.LocalFileServer().use { links ->
+                var workspace = temp
+                val cards = TelegramCardReplies(api.client, links) { workspace }
+                val card = cards.create(route)
+                workspace = temp.resolve("changed")
+                val answer = "[spec](docs/spec.md:12) and `example.md` and [web](https://example.com)"
+                cards.progress(card, AgentProgress("", answer))
+                assertTrue(cards.finish(card, answer, "", "已完成"))
+                val final = api.calls.last().second
+                val content = if (unsupported) final["text"].asString
+                    else final.getAsJsonObject("rich_message")["markdown"].asString
+                assertContains(content, links.baseUrl + "/open?")
+                assertContains(content, "line=12")
+                assertFalse(content.contains("changed"))
+                assertContains(content, "`example.md`")
+                assertContains(content, "https://example.com")
+                cards.release(card)
+            }
+        }
+    }
+
+    @Test fun `plain replies transform links before splitting`(): Unit = runBlocking {
+        Api().use { api ->
+            top.ntutn.agent.bridge.localfiles.LocalFileServer().use { links ->
+                api.client.sendReply(route, "[preview](report.html)") { links.rewrite(it, temp) }.await()
+                val body = api.calls.last().second
+                assertContains(body["text"].asString, links.baseUrl + "/preview?")
+                assertEquals(456, body.getAsJsonObject("reply_parameters")["message_id"].asInt)
+            }
+        }
+    }
+
     @Test fun `private drafts refresh same identity and final messages persist all answer chunks`(): Unit = runBlocking {
         Api().use { api ->
             val cards = TelegramCardReplies(api.client)

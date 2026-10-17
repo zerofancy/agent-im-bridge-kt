@@ -10,9 +10,13 @@ import java.io.IOException
 import java.util.UUID
 
 /** Only presentation workers mutate a state; the stop registry is shared with polling. */
-class TelegramCardReplies(private val client: TelegramClient) : CardReplies {
+class TelegramCardReplies(
+    private val client: TelegramClient,
+    private val fileLinks: top.ntutn.agent.bridge.localfiles.LocalFileServer? = null,
+    private val workspace: suspend (String) -> java.nio.file.Path? = { null }
+) : CardReplies {
     override val refreshIntervalMs = 10_000L
-    private class State(val route: ReplyRoute, val draft: Long) {
+    private class State(val route: ReplyRoute, val draft: Long, val workspace: java.nio.file.Path?) {
         var message: ReplyRoute? = null
         var rich = true
         var progress = AgentProgress()
@@ -30,7 +34,7 @@ class TelegramCardReplies(private val client: TelegramClient) : CardReplies {
     override suspend fun create(route: ReplyRoute): CardReference {
         val key = UUID.randomUUID().toString()
         val draft = (UUID.randomUUID().mostSignificantBits and Long.MAX_VALUE).coerceAtLeast(1)
-        val state = State(route, draft)
+        val state = State(route, draft, workspace(route.chatId))
         val ref = CardReference(key, route.messageId, route.chatId)
         mutex.withLock {
             states[key] = state
@@ -71,10 +75,13 @@ class TelegramCardReplies(private val client: TelegramClient) : CardReplies {
         if (state.message == null) update(state, force = true)
     }
 
+    private fun linked(state: State, text: String): String =
+        state.workspace?.let { fileLinks?.rewrite(text, it) } ?: text
+
     private suspend fun update(state: State, force: Boolean) {
         if (state.finalized || System.nanoTime() < state.retryAt) return
-        val rich = TelegramRichReply.render(state.progress.answer, state.progress.process, "正在处理", true)
-        val plain = bounded(state.progress.answer.ifBlank { state.progress.process }, 3500).ifBlank { "正在处理…" }
+        val rich = TelegramRichReply.render(linked(state, state.progress.answer), state.progress.process, "正在处理", true)
+        val plain = bounded(linked(state, state.progress.answer).ifBlank { state.progress.process }, 3500).ifBlank { "正在处理…" }
         val serialized = if (state.rich) rich.toString() else plain
         if (!force && serialized == state.lastRendered &&
             (state.message != null || System.nanoTime() - state.lastSentAt < refreshIntervalMs * 1_000_000)) return
@@ -101,7 +108,7 @@ class TelegramCardReplies(private val client: TelegramClient) : CardReplies {
         if (state.sending) throw ReplyDeliveryUncertain()
         // Disable the native button before delivering the final result.
         mutex.withLock { stops.remove(state.route.chatId to state.draft) }
-        val answer = text.ifBlank { if (status == "已终止") "终止前尚未输出答案。" else status }
+        val answer = linked(state, text).ifBlank { if (status == "已终止") "终止前尚未输出答案。" else status }
         val chunks = TelegramRichReply.chunks(answer)
         for ((index, chunk) in chunks.withIndex()) {
             if (index < state.nextChunk) continue

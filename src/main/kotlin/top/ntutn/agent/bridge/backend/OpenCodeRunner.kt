@@ -145,6 +145,7 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                 }
                 if (!server.process.isAlive) return@coroutineScope failure(AgentResult.Kind.EXECUTION)
                 try {
+                    val completedResponse = if (response.isCompleted) response.await() else null
                     val messages = server.request("GET", "/session/$id/message", directory = directory).arrayOrNull()
                         ?: throw IOException("Invalid OpenCode messages")
                     if (messages.any { it.objectOrNull()?.objectValue("info")?.let { info ->
@@ -163,6 +164,18 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                     val final = own.lastOrNull()?.let { openCodeFinal(it, id, messageId) }
                     if (submitted && idle && final != null) {
                         return@coroutineScope if (handle.stopRequested) failure(AgentResult.Kind.STOPPED) else final
+                    }
+                    // A fully received synchronous HTTP response plus a subsequent idle snapshot
+                    // confirms request termination even when OpenCode omitted its assistant terminal.
+                    // Transport failures remain uncertain: idle alone may precede loop admission.
+                    if (idle && completedResponse != null) {
+                        val outcome = completedResponse
+                        if (outcome.isSuccess || outcome.exceptionOrNull() is OpenCodeHttpFailure) {
+                            org.slf4j.LoggerFactory.getLogger(OpenCodeRunner::class.java).warn(
+                                "OpenCode 请求已结束但缺少有效终态 sessionId={} submitted={} httpStatus={}",
+                                id, submitted, (outcome.exceptionOrNull() as? OpenCodeHttpFailure)?.status ?: 200)
+                            return@coroutineScope failure(if (handle.stopRequested) AgentResult.Kind.STOPPED else AgentResult.Kind.PROTOCOL)
+                        }
                     }
                     if (handle.stopRequested && submitted && System.nanoTime() >= nextInterruptAt) {
                         server.request("POST", "/session/$id/abort", directory = directory)

@@ -217,8 +217,8 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
         return updates
     }
 
-    fun sendReply(route: ReplyRoute, text: String): CompletableFuture<Unit> = scope.future {
-        for (chunk in splitAnswer(text, 4000)) {
+    fun sendReply(route: ReplyRoute, text: String, transform: suspend (String) -> String = { it }): CompletableFuture<Unit> = scope.future {
+        for (chunk in splitAnswer(transform(text), 4000)) {
             ensureActive()
             sendMessage(route.chatId, chunk, replyToMessageId = route.messageId)
         }
