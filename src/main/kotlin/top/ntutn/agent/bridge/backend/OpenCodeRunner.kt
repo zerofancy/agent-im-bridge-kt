@@ -118,6 +118,7 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
             try { Result.success(server.request("POST", "/session/$id/message", body, directory, waitForTurn = true)) }
             catch (e: IOException) { Result.failure<JsonElement>(e) }
         }
+        val images = NativeImages()
         var submitted = false
         var previous: AgentProgress? = null
         var nextInterruptAt = 0L
@@ -136,7 +137,8 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                     if (payload != null && payload.objectValue("info")?.string("parentID") == messageId) {
                         submitted()
                         val final = openCodeFinal(payload, id, messageId)
-                        if (final != null) return@coroutineScope if (handle.stopRequested) failure(AgentResult.Kind.STOPPED) else final
+                        if (final is AgentResult.Failure && final.kind != AgentResult.Kind.EMPTY) return@coroutineScope if (handle.stopRequested) failure(AgentResult.Kind.STOPPED) else final
+                        // Collect all current-request tool messages through the snapshot path below.
                     }
                     val error = result.exceptionOrNull()
                     // The verified server awaits prompt termination before producing a 400 response.
@@ -155,15 +157,19 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                         val info = it.objectValue("info")
                         info?.string("sessionID") == id && info.string("parentID") == messageId && info.string("role") == "assistant"
                     }
+                    images.openCode(own, id, messageId)
                     val progress = openCodeProgress(own)
                     if (progress != previous) { handle.onProgress(progress); previous = progress }
                     val status = server.request("GET", "/session/status", directory = directory).objectOrNull()
                         ?: throw IOException("Invalid OpenCode status")
                     val idle = !status.has(id) || status.objectValue(id)?.string("type") == "idle"
                     // Status alone is not sufficient: idle also describes a prompt not yet admitted.
-                    val final = own.lastOrNull()?.let { openCodeFinal(it, id, messageId) }
+                    val final = own.lastOrNull()?.let { message ->
+                        val terminal = openCodeFinal(message, id, messageId)
+                        if (terminal is AgentResult.Failure && terminal.kind == AgentResult.Kind.EMPTY) images.result("", id) else terminal
+                    }
                     if (submitted && idle && final != null) {
-                        return@coroutineScope if (handle.stopRequested) failure(AgentResult.Kind.STOPPED) else final
+                        return@coroutineScope if (handle.stopRequested) failure(AgentResult.Kind.STOPPED) else if (final is AgentResult.Success) images.result(final.text, id) else final
                     }
                     // A fully received synchronous HTTP response plus a subsequent idle snapshot
                     // confirms request termination even when OpenCode omitted its assistant terminal.

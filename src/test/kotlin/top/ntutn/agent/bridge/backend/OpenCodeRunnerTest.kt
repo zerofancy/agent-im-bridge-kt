@@ -20,6 +20,16 @@ class OpenCodeRunnerTest {
     }
     private suspend fun waitFile(name: String) = withTimeout(5000) { while (!Files.exists(temp.resolve(name))) delay(20) }
 
+    @Test fun `read image in intermediate assistant message survives an empty final answer`(): Unit = runBlocking {
+        runner().use { runner ->
+            val result = assertIs<AgentResult.Success>(withTimeout(5000) { runner.run("read-image", null, temp, mode) })
+            assertEquals("", result.text)
+            assertEquals(1, result.images.size)
+            assertEquals("read-image-part/0", result.images.single().sourceId)
+            assertEquals("data:image/png;base64,AA==", result.images.single().base64)
+        }
+    }
+
     @Test fun `unsupported sandbox fails closed and opencode has independent directories`() {
         val spec = BackendSpec(BackendId.OPENCODE, "unused", temp)
         for (mode in listOf(SandboxMode.READ_ONLY, SandboxMode.WORKSPACE_WRITE)) {

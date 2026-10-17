@@ -11,6 +11,7 @@ import kotlin.coroutines.resumeWithException
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import org.slf4j.LoggerFactory
 import java.io.IOException
 import java.io.OutputStream
@@ -53,6 +54,8 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
         .readTimeout(70, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
+    private val mediaHttpClient = httpClient.newBuilder().retryOnConnectionFailure(false)
+        .followRedirects(false).followSslRedirects(false).build()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     private var offset = 0L
@@ -169,9 +172,9 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
         pollingJob = null
     }
 
-    private suspend fun <T> request(request: Request, consume: (Response) -> T): T =
+    private suspend fun <T> request(request: Request, client: OkHttpClient = httpClient, consume: (Response) -> T): T =
         suspendCancellableCoroutine { continuation ->
-            val call = httpClient.newCall(request)
+            val call = client.newCall(request)
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
@@ -197,7 +200,7 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
             })
         }
 
-    private suspend fun json(request: Request): JsonObject = request(request) { response ->
+    private suspend fun json(request: Request, client: OkHttpClient = httpClient): JsonObject = request(request, client) { response ->
         val body = response.body?.string() ?: throw IOException("Telegram 空响应")
         val parsed = try { JsonParser.parseString(body).asJsonObject }
         catch (_: RuntimeException) { throw IOException("Telegram 响应格式错误") }
@@ -246,6 +249,29 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
             addProperty("keep_on_stop", true)
         }))
         Unit
+    }
+
+    suspend fun sendImage(route: ReplyRoute, image: PreparedImage): ImageSendResult {
+        return try {
+            withTimeout(30_000) {
+                val body = MultipartBody.Builder().setType(MultipartBody.FORM)
+                    .addFormDataPart("chat_id", route.chatId)
+                    .addFormDataPart("reply_parameters", JsonObject().apply {
+                        addProperty("message_id", route.messageId.toLong())
+                    }.toString())
+                    .addFormDataPart("photo", "image.png", image.path.toFile().asRequestBody(image.mime.toMediaType()))
+                    .build()
+                val response = json(Request.Builder().url("$baseUrl/sendPhoto").post(body).build(), mediaHttpClient)
+                if (response.getAsJsonObject("result")?.get("message_id")?.isJsonPrimitive == true)
+                    ImageSendResult.SENT else ImageSendResult.UNCERTAIN
+            }
+        } catch (e: TimeoutCancellationException) {
+            currentCoroutineContext().ensureActive()
+            ImageSendResult.UNCERTAIN
+        } catch (e: CancellationException) { throw e }
+        catch (e: TelegramApiException) {
+            if (e.status in 400..499) ImageSendResult.REJECTED else ImageSendResult.UNCERTAIN
+        } catch (_: IOException) { ImageSendResult.UNCERTAIN }
     }
 
     suspend fun sendRichMessage(route: ReplyRoute, rich: JsonObject): TelegramMessage = withTimeout(10_000) {

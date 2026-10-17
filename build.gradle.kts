@@ -17,6 +17,7 @@ dependencies {
     implementation(libs.lark.oapi)
     implementation(libs.gson)
     implementation(libs.okhttp)
+    implementation("com.twelvemonkeys.imageio:imageio-webp:3.12.0")
     implementation(libs.slf4j.api)
     runtimeOnly(libs.logback.classic)
     testImplementation(libs.kotlin.test.junit5)

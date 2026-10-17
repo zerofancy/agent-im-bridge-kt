@@ -135,13 +135,14 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                     catch (e: Exception) { FatalErrorHandler.rethrowProgrammingError(e); log.warn("${displayName} 中断未获确认 requestId={}；继续等待轮次结束，可用本机 --stop 退出", handle.requestId) }
                 }
                 val messages = linkedMapOf<String, Pair<String?, String>>()
+                val images = NativeImages()
                 var sawAuthoritativeAgentMessage = false
                 val progress = AgentProgressReducer(id, turnId)
                 fun finishSuccessOrEmpty(): AgentResult {
                     val final = messages.values.filter { it.first == "final_answer" }
                     val answer = (if (final.isNotEmpty()) final.joinToString("\n\n") { it.second }
                         else messages.values.lastOrNull { it.first == null }?.second.orEmpty()).trim()
-                    return if (answer.isEmpty()) failure(AgentResult.Kind.EMPTY) else AgentResult.Success(answer, id)
+                    return images.result(answer, id)
                 }
                 for (event in events) {
                     progress.accept(event)?.let(handle.onProgress)
@@ -149,6 +150,8 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                     when (event.string("method")) {
                         "item/completed" -> if (p.string("turnId") == turnId) {
                             val item = p.getAsJsonObject("item") ?: continue
+                            if (backend.id == BackendId.CODEX && p.string("threadId") == id)
+                                images.codex(item, "$id/$turnId", listOf(workspace, backend.runtimeRoot))
                             if (item.string("type") == "agentMessage") {
                                 val itemId = item.string("id") ?: continue
                                 messages[itemId] = item.string("phase") to item.string("text").orEmpty()

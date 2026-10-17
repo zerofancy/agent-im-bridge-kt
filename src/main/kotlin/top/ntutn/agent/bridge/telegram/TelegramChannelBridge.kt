@@ -74,8 +74,10 @@ fun createTelegramChannel(
     val appDirectory = MessageDigest.getInstance("SHA-256").digest(config.appId.toByteArray())
         .joinToString("") { "%02x".format(it) }
     val source = TelegramMessageSource(client)
+    val attachmentRoot = lifecycle?.environment?.attachments ?: Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)
+    val outgoingImages = OutgoingImages(attachmentRoot.resolve("outgoing-images").toAbsolutePath(), client::sendImage)
     val context = ReplyContext(source,
-        AttachmentStore(lifecycle?.environment?.attachments ?: Path.of(System.getProperty("java.io.tmpdir"), "agent-im-bridge-attachments", appDirectory)),
+        AttachmentStore(attachmentRoot),
         config.appId, source)
 
     suspend fun workspace(chatId: String) = sessions.workspace(
@@ -90,7 +92,7 @@ fun createTelegramChannel(
     service = ChatService(runner, sessions, { chatId ->
         SessionKey(config.appId, chatId, options.workspace.toString(), backend.runtimeRoot.toString(), backend.id.configValue)
     }, options.maxConcurrentRuns, SandboxMode.parse(config.sandboxMode), context, reactions, lifecycle, initiallyHeld,
-        cardReplies = cards, localReplies = localReplies) { route, text ->
+        cardReplies = cards, localReplies = localReplies, outgoingImages = outgoingImages) { route, text ->
         client.sendReply(route, text) { raw -> fileLinks?.rewrite(raw, workspace(route.chatId)) ?: raw }
     }
 

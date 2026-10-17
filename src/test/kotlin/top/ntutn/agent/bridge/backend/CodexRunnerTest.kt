@@ -9,6 +9,16 @@ import kotlinx.coroutines.*
 
 class CodexRunnerTest {
     @TempDir lateinit var temp: Path
+    @Test fun `native image only turn succeeds without leaking other turns or failed outputs`(): Unit = runBlocking {
+        AppServerAgentRunner(fakeAppServer(temp)).use { runner ->
+            val result = assertIs<AgentResult.Success>(runner.run("image-only", workspace = temp))
+            assertEquals("", result.text)
+            assertEquals(1, result.images.size)
+            assertEquals("generated", result.images.single().sourceId)
+            assertEquals(temp.resolve("image.png"), result.images.single().path)
+            assertIs<AgentResult.Failure>(runner.run("image-failed", workspace = temp))
+        }
+    }
     @Test fun `both backends publish public streaming snapshots and retain authoritative final`(): Unit = runBlocking {
         for (backend in listOf(BackendId.CODEX, BackendId.TRAEX)) {
             val snapshots = mutableListOf<AgentProgress>()

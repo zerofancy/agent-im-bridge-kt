@@ -9,7 +9,8 @@ import top.ntutn.agent.bridge.backend.OpenCodeRunner
 
 sealed class AgentResult {
     abstract val sessionId: String?
-    data class Success(val text: String, override val sessionId: String? = null) : AgentResult()
+    data class Success(val text: String, override val sessionId: String? = null,
+                       val images: List<AgentImage> = emptyList(), val deliveryIssues: List<ImageIssue> = emptyList()) : AgentResult()
     data class Failure(val kind: Kind, val exitCode: Int? = null, override val sessionId: String? = null) : AgentResult()
     enum class Kind { START, EXECUTION, EMPTY, PROTOCOL, STORAGE, SESSION_MISSING, STOPPED }
 }

@@ -45,6 +45,11 @@ class Handler(BaseHTTPRequestHandler):
    user={'info':{'id':mid,'role':'user','sessionID':sid},'parts':[]}
    assistant={'info':{'id':'msg_answer'+mid,'role':'assistant','sessionID':sid,'parentID':mid,'time':{'created':1}},'parts':[{'type':'text','text':'partial'},{'type':'reasoning','text':'SECRET REASONING'},{'type':'tool','tool':'bash','state':{'status':'running','input':{'command':'pwd'},'output':'SECRET OUTPUT'}}]}
    s['messages'] += [user,assistant]
+   if text=='read-image':
+    assistant['parts']=[{'id':'read-image-part','type':'tool','tool':'read','state':{'status':'completed','attachments':[{'type':'file','mime':'image/png','url':'data:image/png;base64,AA=='}]}}]
+    assistant['info']['time']['completed']=2;assistant['info']['finish']='tool-calls'
+    assistant={'info':{'id':'msg_final'+mid,'role':'assistant','sessionID':sid,'parentID':mid,'time':{'created':2}},'parts':[{'type':'text','text':''}]}
+    s['messages'].append(assistant)
    if text in ['empty-response','failed-response']:
     s['messages'].remove(assistant);s['busy']=False
     return self.reply(None, 200 if text=='empty-response' else 500)
@@ -63,7 +68,7 @@ class Handler(BaseHTTPRequestHandler):
      while not (root/'finish').exists():time.sleep(.02)
     time.sleep(.4)
    else:time.sleep(.5)
-   assistant['parts'][0]['text']='final '+text
+   assistant['parts'][0]['text']='' if text=='read-image' else 'final '+text
    assistant['info']['time']['completed']=2;assistant['info']['finish']='stop'
    if s['stop']:assistant['info']['error']={'name':'MessageAbortedError'}
    s['busy']=False

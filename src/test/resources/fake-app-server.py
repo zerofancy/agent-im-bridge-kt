@@ -60,6 +60,15 @@ for line in sys.stdin:
                 child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); children.append(child)
                 with open(os.path.join(root, 'child'),'w') as f:f.write(str(child.pid))
             continue
+        if prompt in ('image-only', 'image-failed'):
+            # Mirrors codex-cli 0.154.0 ImageGenerationItem (no real model invocation).
+            image={'id':'generated','type':'imageGeneration','status':'completed','result':'AA==','failure':None,'savedPath':os.path.join(p['cwd'],'image.png')}
+            event('item/completed',tid,'unrelated-turn',item=dict(image,id='foreign'))
+            event('item/completed',tid,turn,item=image)
+            event('item/completed',tid,turn,item=image)
+            event('item/completed',tid,turn,item={'id':'view','type':'imageView','path':'ignored.png'})
+            completed(tid,turn,'failed' if prompt=='image-failed' else 'completed')
+            continue
         if prompt == 'stream-card':
             event('item/started',tid,turn,item={'id':'p','type':'agentMessage','phase':'commentary','text':''})
             event('item/agentMessage/delta',tid,turn,itemId='p',delta='checking')
