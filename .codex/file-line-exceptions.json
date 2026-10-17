@@ -1,0 +1,10 @@
+{
+  "deployment/bridgectl.py": {
+    "max_lines": 1099,
+    "reason": "存量跨平台部署 CLI，包含发布事务和守护管理；后续按部署职责拆分，期间不增加行数。"
+  },
+  "deployment/test_bridgectl.py": {
+    "max_lines": 948,
+    "reason": "存量部署事务测试集合，与 bridgectl 分模块重构同步拆分，期间不增加行数。"
+  }
+}
