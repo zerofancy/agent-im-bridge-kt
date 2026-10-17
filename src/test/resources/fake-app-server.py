@@ -66,9 +66,18 @@ for line in sys.stdin:
             event('item/completed',tid,'unrelated-turn',item=dict(image,id='foreign'))
             event('item/completed',tid,turn,item=image)
             event('item/completed',tid,turn,item=image)
-            event('item/completed',tid,turn,item={'id':'view','type':'imageView','path':'ignored.png'})
+            event('item/completed',tid,'old-turn',item={'id':'view','type':'imageView','path':'ignored.png'})
             completed(tid,turn,'failed' if prompt=='image-failed' else 'completed')
             continue
+        if prompt in ('view-only', 'view-failed'):
+            from pathlib import Path
+            view={'id':'view','type':'imageView','path':Path(p['cwd']).joinpath('existing image.png').as_uri()}
+            event('item/started',tid,turn,item=dict(view,id='pending'))
+            event('item/completed',tid,'old-turn',item=dict(view,id='old'))
+            event('item/completed','other-thread',turn,item=dict(view,id='other'))
+            event('item/completed',tid,turn,item=view)
+            event('item/completed',tid,turn,item=view)
+            completed(tid,turn,'failed' if prompt == 'view-failed' else 'completed'); continue
         if prompt == 'stream-card':
             event('item/started',tid,turn,item={'id':'p','type':'agentMessage','phase':'commentary','text':''})
             event('item/agentMessage/delta',tid,turn,itemId='p',delta='checking')

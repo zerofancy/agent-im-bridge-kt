@@ -19,6 +19,15 @@ class CodexRunnerTest {
             assertIs<AgentResult.Failure>(runner.run("image-failed", workspace = temp))
         }
     }
+    @Test fun `viewed images require current completed items and a successful turn`(): Unit = runBlocking {
+        AppServerAgentRunner(fakeAppServer(temp)).use { runner ->
+            val result = assertIs<AgentResult.Success>(runner.run("view-only", workspace = temp))
+            assertEquals("", result.text)
+            assertEquals("view", result.images.single().sourceId)
+            assertEquals(temp.resolve("existing image.png"), result.images.single().path)
+            assertIs<AgentResult.Failure>(runner.run("view-failed", workspace = temp))
+        }
+    }
     @Test fun `both backends publish public streaming snapshots and retain authoritative final`(): Unit = runBlocking {
         for (backend in listOf(BackendId.CODEX, BackendId.TRAEX)) {
             val snapshots = mutableListOf<AgentProgress>()

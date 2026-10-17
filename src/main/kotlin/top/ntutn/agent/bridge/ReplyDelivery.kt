@@ -9,6 +9,7 @@ internal class ReplyDelivery(
     private val outgoingImages: OutgoingImages?,
     private val backendName: String,
     private val send: suspend (ReplyRoute, String) -> Unit,
+    private val localReplies: LocalReplies?,
 ) {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
 
@@ -48,14 +49,20 @@ internal class ReplyDelivery(
     }
 
     private suspend fun deliverImages(route: ReplyRoute, handle: AgentRunHandle, result: AgentResult.Success, presentation: StreamingReply?) {
-        val media = outgoingImages.takeIf { route.origin == ReplyOrigin.IM && route.documentComment == null }
+        val media = when {
+            route.origin == ReplyOrigin.DESKTOP -> localReplies?.outgoingImages
+            route.documentComment == null -> outgoingImages
+            else -> null
+        }
         var preparationFailed = false
         val prepared = try { if (media != null && result.images.isNotEmpty()) media.prepare(result.images) else null }
             catch (_: java.io.IOException) { preparationFailed = true; null }
         try {
             // Keep the progress card open until media delivery settles. Send the authoritative
             // answer once through the normal text entry point, followed by individual images.
-            if (result.text.isNotBlank()) {
+            if (result.text.isNotBlank() && route.origin == ReplyOrigin.DESKTOP) {
+                localReplies?.imageAnswer(route, result.text)
+            } else if (result.text.isNotBlank()) {
                 for (chunk in splitAnswer(presentation?.fallbackText(result.text) ?: result.text)) {
                     if (handle.stopRequested) return
                     send(route, chunk)
@@ -67,7 +74,7 @@ internal class ReplyDelivery(
             val pictures = prepared?.images.orEmpty()
             for ((index, image) in pictures.withIndex()) {
                 if (handle.stopRequested) return
-                if (index > 0 || result.text.isNotBlank()) delay(1100)
+                if (route.origin == ReplyOrigin.IM && (index > 0 || result.text.isNotBlank())) delay(1100)
                 if (handle.stopRequested) return
                 presentation?.progress(AgentProgress("正在发送图片 ${sent + rejected + uncertain + 1}/${pictures.size}", ""))
                 when (media!!.send(route, image)) {

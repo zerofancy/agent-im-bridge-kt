@@ -24,6 +24,8 @@ fun interface ReplySender { fun send(route: ReplyRoute, text: String): Completab
 
 /** Local delivery is independent of the IM network and of any connected GUI. */
 interface LocalReplies : CardReplies {
+    val outgoingImages: OutgoingImages? get() = null
+    suspend fun imageAnswer(route: ReplyRoute, text: String) = send(route, text)
     suspend fun starting(route: ReplyRoute)
     suspend fun send(route: ReplyRoute, text: String)
 }
@@ -60,7 +62,7 @@ class ChatService(private val runner: AgentRunner, private val sessions: Session
     private val scope = CoroutineScope(job + Dispatchers.Default + FatalErrorHandler.context)
     private val senderNames = replyContext?.nameCache(scope)
     private val turnExecutor = ChatTurnExecutor(runner, sessions, sessionKey, sandboxMode, replyContext, senderNames, documentRoutes, ::send)
-    private val replyDelivery = ReplyDelivery(outgoingImages, runner.displayName, ::send)
+    private val replyDelivery = ReplyDelivery(outgoingImages, runner.displayName, ::send, localReplies)
     private val sharedTyping = typingReactions?.let { SharedTypingReactions(it) }
     private var closed = false
     private var draining = initiallyHeld

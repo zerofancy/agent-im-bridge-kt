@@ -19,6 +19,8 @@ class DesktopHistory(private val path: Path) : LocalReplies {
     private val changes = MutableStateFlow(0L)
     val revision = changes.asStateFlow()
     private var data = json("version" to 1, "conversations" to JsonArray())
+    private val imageDirectory = path.toAbsolutePath().parent.resolve("images")
+    override val outgoingImages = OutgoingImages(path.toAbsolutePath().parent.resolve("image-staging"), ::sendImage)
     private val previews = mutableMapOf<String, AgentProgress>()
 
     init {
@@ -101,6 +103,34 @@ class DesktopHistory(private val path: Path) : LocalReplies {
             }
         }
         json("revision" to changes.value, "conversations" to chats, "selected" to selected)
+    }
+
+    override suspend fun imageAnswer(route: ReplyRoute, text: String) = change(route.chatId, route.messageId) {
+        it.addProperty("imageAnswer", text)
+    }
+
+    /** Copy first, then atomically publish the reference. Staging may be released immediately afterwards. */
+    private suspend fun sendImage(route: ReplyRoute, image: PreparedImage): ImageSendResult = mutex.withLock {
+        withContext(NonCancellable + Dispatchers.IO) {
+            val next = data.deepCopy()
+            val chat = requireNotNull(find(next, route.chatId))
+            val request = chat.getAsJsonArray("requests").map { it.asJsonObject }
+                .first { it.string("id") == route.messageId }
+            Files.createDirectories(imageDirectory)
+            PlatformFiles.setPrivatePermissions(imageDirectory, directory = true)
+            val target = imageDirectory.resolve("${java.util.UUID.randomUUID()}.png")
+            try {
+                Files.copy(image.path, target)
+                PlatformFiles.setPrivatePermissions(target, directory = false)
+                val images = request.getAsJsonArray("images") ?: JsonArray().also { request.add("images", it) }
+                images.add(json("path" to target.toString(), "mime" to image.mime))
+                commit(next)
+            } catch (e: java.io.IOException) {
+                try { Files.deleteIfExists(target) } catch (cleanup: java.io.IOException) { e.addSuppressed(cleanup) }
+                return@withContext ImageSendResult.REJECTED
+            }
+            ImageSendResult.SENT
+        }
     }
 
     override suspend fun send(route: ReplyRoute, text: String) = change(route.chatId, route.messageId) {

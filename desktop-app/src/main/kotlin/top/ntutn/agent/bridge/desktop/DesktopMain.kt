@@ -151,7 +151,7 @@ private fun Workbench(model: DesktopModel, owner: Frame) {
                     }
                 }
             } else {
-                History(selected, Modifier.weight(1f).fillMaxWidth())
+                History(selected, state.target, Modifier.weight(1f).fillMaxWidth())
                 Composer(model, state, selected, canWrite)
             }
         }
@@ -168,7 +168,7 @@ private fun Banner(text: String, color: Color) {
 }
 
 @Composable
-private fun History(chat: JsonObject, modifier: Modifier) {
+private fun History(chat: JsonObject, target: ConnectionTarget, modifier: Modifier) {
     val requests = chat.getAsJsonArray("requests")?.map { it.asJsonObject }.orEmpty()
     val scroll = rememberLazyListState()
     LaunchedEffect(chat.text("id"), requests.size) { if (requests.isNotEmpty()) scroll.animateScrollToItem(requests.lastIndex) }
@@ -206,6 +206,14 @@ private fun History(chat: JsonObject, modifier: Modifier) {
                             SelectionContainer { Text(request.text("process"), color = Muted, fontSize = 12.sp, lineHeight = 21.sp,
                                 modifier = Modifier.fillMaxWidth().padding(14.dp)) }
                         }
+                    }
+                    if (request.text("imageAnswer").isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        MarkdownMessageContent(request.text("imageAnswer"), chat.text("workspace"))
+                    }
+                    request.getAsJsonArray("images")?.forEach { raw ->
+                        Spacer(Modifier.height(10.dp))
+                        NativeReplyImage(target, raw.asJsonObject.text("path"))
                     }
                     if (request.text("answer").isNotBlank()) {
                         Spacer(Modifier.height(10.dp))
