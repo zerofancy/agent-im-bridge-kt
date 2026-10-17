@@ -34,23 +34,9 @@ private val Paper = Color(0xFFF9FAF7)
 private val Sidebar = Color(0xFFEDF1EB)
 
 fun main(args: Array<String>) {
-    var root = Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt")
-    var environment = "dev"
-    require(args.size % 2 == 0) { "用法：--root <状态目录> --env <dev|prod>" }
-    args.toList().chunked(2).forEach { (key, value) ->
-        when (key) {
-            "--root" -> {
-                root = Path.of(value).toAbsolutePath().normalize()
-            }
-            "--env" -> {
-                environment = value
-            }
-            else -> {
-                error("未知桌面参数")
-            }
-        }
-    }
-    val target = ConnectionTarget(root, environment)
+    val defaultRoot = Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt")
+    val preferences = DesktopPreferences(defaultRoot.resolve("desktop-preferences.json"))
+    val target = startupTarget(args, preferences.load(), defaultRoot)
     application {
         Window(
             onCloseRequest = ::exitApplication,
@@ -59,7 +45,7 @@ fun main(args: Array<String>) {
             state = rememberWindowState(width = 1180.dp, height = 820.dp),
         ) {
             val scope = rememberCoroutineScope()
-            val model = remember { DesktopModel(scope, target) }
+            val model = remember { DesktopModel(scope, target, saveTarget = preferences::save) }
             DisposableEffect(model) { onDispose { model.close() } }
             MaterialTheme(
                 colors =

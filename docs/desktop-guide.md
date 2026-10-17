@@ -16,7 +16,7 @@
 ./gradlew :desktop-app:run --args="--env dev"
 ```
 
-macOS 应用位于 `desktop-app/build/compose/binaries/main/app/Agent Bridge.app`，自带运行时，可直接双击。首次默认连接 dev；在“连接设置”中显式选择 prod 或自定义状态根目录。旧版服务没有桌面 API，需要先升级服务。核心与桌面代码统一以 JDK 21 为目标；原生打包需 JDK 21。
+macOS 应用位于 `desktop-app/build/compose/binaries/main/app/Agent Bridge.app`，自带运行时，可直接双击。首次默认连接 dev；在“连接设置”中选择的环境和状态根目录会保存到 `~/.agent-im-bridge-kt/desktop-preferences.json`，下次启动自动恢复，服务暂时离线也不会切回 dev。显式 `--env` / `--root` 参数优先于保存值，仅覆盖本次启动；设置文件不可读取或无效时回退到首次默认值，可在界面重新选择。旧版服务没有桌面 API，需要先升级服务。核心与桌面代码统一以 JDK 21 为目标；原生打包需 JDK 21。
 
 首版保留每个服务实例一个后端及本机权限配置，只记录新建的桌面会话；不导入旧 IM 历史，不提供交互审批、diff 或每会话切换后端。执行摘要是有界预览，最终答案完整保存。用户消息和 Agent 回答支持 Markdown、代码高亮、滚动表格与图片，详见 [Markdown 接入说明](desktop-markdown.html)。详细启动、升级、隔离测试和 API 说明见 [桌面端使用说明](desktop-app.html)。
 

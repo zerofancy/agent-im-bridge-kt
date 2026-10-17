@@ -24,6 +24,7 @@ class DesktopModel(
     private val scope: CoroutineScope,
     target: ConnectionTarget,
     private val client: DesktopClient = DesktopClient(),
+    private val saveTarget: suspend (ConnectionTarget) -> Unit = {},
 ) : AutoCloseable {
     private val mutable = MutableStateFlow(DesktopState(target))
     val state = mutable.asStateFlow()
@@ -47,6 +48,18 @@ class DesktopModel(
             return
         }
         mutable.value = DesktopState(target)
+        // Enter the ordered persistence operation before accepting another UI selection.
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                saveTarget(target)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: IOException) {
+                if (mutable.value.target == target) {
+                    mutable.update { it.copy(error = "连接设置未能保存，下次启动可能恢复旧设置。") }
+                }
+            }
+        }
         subscribe()
     }
 
