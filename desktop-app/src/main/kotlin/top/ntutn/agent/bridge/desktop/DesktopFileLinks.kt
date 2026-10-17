@@ -30,34 +30,51 @@ internal class WorkspaceUriHandler(
     }
 }
 
-internal fun resolveMarkdownFileLink(workspace: String, rawTarget: String): ResolvedMarkdownFileLink? {
-    if (workspace.isBlank()) return null
-    val root = try {
-        Path.of(workspace).toRealPath()
-    } catch (_: InvalidPathException) {
-        return null
-    } catch (_: IOException) {
-        return null
-    } catch (_: SecurityException) {
+internal fun resolveMarkdownFileLink(
+    workspace: String,
+    rawTarget: String,
+): ResolvedMarkdownFileLink? {
+    if (workspace.isBlank()) {
         return null
     }
+    val root =
+        try {
+            Path.of(workspace).toRealPath()
+        } catch (_: InvalidPathException) {
+            return null
+        } catch (_: IOException) {
+            return null
+        } catch (_: SecurityException) {
+            return null
+        }
     val link = rawTarget.trim().removeSurrounding("<", ">")
-    if (link.isBlank()) return null
+    if (link.isBlank()) {
+        return null
+    }
     for (parsed in parseMarkdownFileTargetCandidates(link)) {
         val rawPath = parsed.path
-        val path = try {
-            Path.of(rawPath)
-        } catch (_: InvalidPathException) {
+        val path =
+            try {
+                Path.of(rawPath)
+            } catch (_: InvalidPathException) {
+                continue
+            }
+        val resolved =
+            try {
+                (if (path.isAbsolute) {
+                        path
+                    } else {
+                        root.resolve(path)
+                    })
+                    .toRealPath()
+            } catch (_: IOException) {
+                continue
+            } catch (_: SecurityException) {
+                continue
+            }
+        if (!resolved.startsWith(root) || !Files.isRegularFile(resolved)) {
             continue
         }
-        val resolved = try {
-            (if (path.isAbsolute) path else root.resolve(path)).toRealPath()
-        } catch (_: IOException) {
-            continue
-        } catch (_: SecurityException) {
-            continue
-        }
-        if (!resolved.startsWith(root) || !Files.isRegularFile(resolved)) continue
         return ResolvedMarkdownFileLink(root, resolved, parsed.line, parsed.column)
     }
     return null
@@ -72,7 +89,8 @@ private fun parseMarkdownFileTargetCandidates(rawTarget: String): List<ParsedMar
         val column = parts.last().toIntOrNull()
         val line = parts[parts.lastIndex - 1].toIntOrNull()
         if (line != null && column != null) {
-            candidates += ParsedMarkdownFileTarget(parts.dropLast(2).joinToString(":"), line, column)
+            candidates +=
+                ParsedMarkdownFileTarget(parts.dropLast(2).joinToString(":"), line, column)
         }
     }
     if (parts.size >= 2) {
@@ -91,28 +109,49 @@ internal fun openMarkdownFileInEditor(
     launch: (List<String>) -> Boolean = ::launchDetachedCommand,
 ): Boolean = editorLaunchCommands(target, osName).any(launch)
 
-internal fun editorLaunchCommands(target: ResolvedMarkdownFileLink, osName: String): List<List<String>> {
+internal fun editorLaunchCommands(
+    target: ResolvedMarkdownFileLink,
+    osName: String,
+): List<List<String>> {
     val goto = buildEditorGotoTarget(target)
     return when {
-        osName.startsWith("Mac", ignoreCase = true) -> listOf(
-            listOf("/Applications/Trae CN.app/Contents/Resources/app/bin/trae-cn", "-r", target.workspace.toString(), "-g", goto),
-            listOf("/Applications/Trae CN.app/Contents/Resources/app/bin/code", "-r", target.workspace.toString(), "-g", goto),
-            listOf("trae-cn", "-r", target.workspace.toString(), "-g", goto),
-            listOf("code", "-r", target.workspace.toString(), "-g", goto),
-            listOf("open", "-a", "Trae CN", target.file.toString()),
-            listOf("open", "-a", "Trae", target.file.toString()),
-            listOf("open", "-a", "Visual Studio Code", target.file.toString()),
-        )
+        osName.startsWith("Mac", ignoreCase = true) -> {
+            listOf(
+                listOf(
+                    "/Applications/Trae CN.app/Contents/Resources/app/bin/trae-cn",
+                    "-r",
+                    target.workspace.toString(),
+                    "-g",
+                    goto,
+                ),
+                listOf(
+                    "/Applications/Trae CN.app/Contents/Resources/app/bin/code",
+                    "-r",
+                    target.workspace.toString(),
+                    "-g",
+                    goto,
+                ),
+                listOf("trae-cn", "-r", target.workspace.toString(), "-g", goto),
+                listOf("code", "-r", target.workspace.toString(), "-g", goto),
+                listOf("open", "-a", "Trae CN", target.file.toString()),
+                listOf("open", "-a", "Trae", target.file.toString()),
+                listOf("open", "-a", "Visual Studio Code", target.file.toString()),
+            )
+        }
 
-        osName.startsWith("Linux", ignoreCase = true) -> listOf(
-            listOf("trae", target.workspace.toString(), "--goto", goto),
-            listOf("code", target.workspace.toString(), "--goto", goto),
-            listOf("code", "-g", goto, target.workspace.toString()),
-            listOf("trae", target.file.toString()),
-            listOf("code", "-g", goto),
-        )
+        osName.startsWith("Linux", ignoreCase = true) -> {
+            listOf(
+                listOf("trae", target.workspace.toString(), "--goto", goto),
+                listOf("code", target.workspace.toString(), "--goto", goto),
+                listOf("code", "-g", goto, target.workspace.toString()),
+                listOf("trae", target.file.toString()),
+                listOf("code", "-g", goto),
+            )
+        }
 
-        else -> emptyList()
+        else -> {
+            emptyList()
+        }
     }
 }
 
@@ -124,11 +163,16 @@ private fun buildEditorGotoTarget(target: ResolvedMarkdownFileLink): String = bu
     }
 }
 
-private fun launchDetachedCommand(command: List<String>): Boolean = try {
-    val process = ProcessBuilder(command).redirectErrorStream(true).start()
-    if (process.waitFor(750, TimeUnit.MILLISECONDS)) process.exitValue() == 0 else true
-} catch (_: IOException) {
-    false
-} catch (_: SecurityException) {
-    false
-}
+private fun launchDetachedCommand(command: List<String>): Boolean =
+    try {
+        val process = ProcessBuilder(command).redirectErrorStream(true).start()
+        if (process.waitFor(750, TimeUnit.MILLISECONDS)) {
+            process.exitValue() == 0
+        } else {
+            true
+        }
+    } catch (_: IOException) {
+        false
+    } catch (_: SecurityException) {
+        false
+    }

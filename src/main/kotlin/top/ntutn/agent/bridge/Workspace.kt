@@ -4,14 +4,21 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 enum class SandboxMode(val cliValue: String) {
-    READ_ONLY("read-only"), WORKSPACE_WRITE("workspace-write"), FULL_ACCESS("danger-full-access");
+    READ_ONLY("read-only"),
+    WORKSPACE_WRITE("workspace-write"),
+    FULL_ACCESS("danger-full-access");
+
     companion object {
-        fun parse(value: String): SandboxMode = entries.firstOrNull { it.cliValue == value }
-            ?: throw IllegalArgumentException("sandboxMode 必须为 read-only、workspace-write 或 danger-full-access。")
+        fun parse(value: String): SandboxMode =
+            entries.firstOrNull { it.cliValue == value }
+                ?: throw IllegalArgumentException(
+                    "sandboxMode 必须为 read-only、workspace-write 或 danger-full-access。"
+                )
     }
 }
 
-fun isCdCommand(text: String): Boolean = text == "/cd" || (text.startsWith("/cd") && text.getOrNull(3)?.isWhitespace() == true)
+fun isCdCommand(text: String): Boolean =
+    text == "/cd" || (text.startsWith("/cd") && text.getOrNull(3)?.isWhitespace() == true)
 
 fun resolveWorkspace(argument: String, current: Path): Path {
     var value = argument.trim()
@@ -21,11 +28,18 @@ fun resolveWorkspace(argument: String, current: Path): Path {
     }
     require(value.isNotEmpty()) { "路径不能为空。" }
     val home = System.getProperty("user.home")
-    val expanded = when {
-        value == "~" -> home
-        value.startsWith("~/") -> home + value.substring(1)
-        else -> value
-    }
+    val expanded =
+        when {
+            value == "~" -> {
+                home
+            }
+            value.startsWith("~/") -> {
+                home + value.substring(1)
+            }
+            else -> {
+                value
+            }
+        }
     return checkedWorkspace(current.resolve(expanded))
 }
 

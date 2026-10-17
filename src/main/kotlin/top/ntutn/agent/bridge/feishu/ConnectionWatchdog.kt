@@ -5,19 +5,21 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import org.slf4j.LoggerFactory
 import top.ntutn.agent.bridge.FatalErrorHandler
 
 /**
- * Checks the owned transport as well as callbacks, so a stale connected flag cannot suppress recovery.
- * Sequence: debounce -> bounded in-process socket rebuilds -> graceful exit so the supervisor restarts the JVM.
+ * Checks the owned transport as well as callbacks, so a stale connected flag cannot suppress
+ * recovery. Sequence: debounce -> bounded in-process socket rebuilds -> graceful exit so the
+ * supervisor restarts the JVM.
  */
-class ConnectionWatchdog internal constructor(
+class ConnectionWatchdog
+internal constructor(
     private val reconnect: suspend () -> Unit,
     private val status: suspend () -> JsonObject,
     private val escalate: () -> Unit,
@@ -30,9 +32,14 @@ class ConnectionWatchdog internal constructor(
     private val escalationIntervalMs: Long = 30_000,
     private val activityFreshMs: Long = 30_000,
     private val nowMillis: () -> Long = System::currentTimeMillis,
-    autoStart: Boolean = true
+    autoStart: Boolean = true,
 ) : AutoCloseable {
-    private enum class State { HEALTHY, SUSPECTED, QUICK_RETRY, ESCALATING }
+    private enum class State {
+        HEALTHY,
+        SUSPECTED,
+        QUICK_RETRY,
+        ESCALATING,
+    }
 
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -47,20 +54,27 @@ class ConnectionWatchdog internal constructor(
     private var escalated = false
 
     init {
-        if (autoStart) start()
+        if (autoStart) {
+            start()
+        }
     }
 
     fun onConnectionChanged(value: Boolean) {
         connected = value
     }
 
-    /** Any inbound dispatch proves the physical link works even when no connected=true callback fired. */
+    /**
+     * Any inbound dispatch proves the physical link works even when no connected=true callback
+     * fired.
+     */
     fun noteActivity() {
         lastActivityAt = nowMillis()
     }
 
     fun start() {
-        if (!started.compareAndSet(false, true)) return
+        if (!started.compareAndSet(false, true)) {
+            return
+        }
         scope.launch {
             while (isActive) {
                 delay(tickMs)
@@ -70,10 +84,14 @@ class ConnectionWatchdog internal constructor(
     }
 
     internal suspend fun tick() {
-        if (state != State.HEALTHY) elapsed += tickMs
+        if (state != State.HEALTHY) {
+            elapsed += tickMs
+        }
         val freshActivity = lastActivityAt != 0L && nowMillis() - lastActivityAt <= activityFreshMs
         if (transportHealthy() && (connected || freshActivity)) {
-            if (state != State.HEALTHY) markHealthy()
+            if (state != State.HEALTHY) {
+                markHealthy()
+            }
             return
         }
         when (state) {
@@ -82,15 +100,23 @@ class ConnectionWatchdog internal constructor(
                 elapsed = 0
                 attempts = 0
             }
-            State.SUSPECTED -> if (elapsed >= debounceMs) {
-                state = State.QUICK_RETRY
-                attempts = 0
-                nextAttemptAt = elapsed
+            State.SUSPECTED -> {
+                if (elapsed >= debounceMs) {
+                    state = State.QUICK_RETRY
+                    attempts = 0
+                    nextAttemptAt = elapsed
+                }
             }
-            State.QUICK_RETRY -> if (elapsed >= nextAttemptAt) attemptRebuild()
+            State.QUICK_RETRY -> {
+                if (elapsed >= nextAttemptAt) {
+                    attemptRebuild()
+                }
+            }
             State.ESCALATING -> {
                 tryEscalate()
-                if (elapsed >= nextAttemptAt) attemptRebuild()
+                if (elapsed >= nextAttemptAt) {
+                    attemptRebuild()
+                }
             }
         }
     }
@@ -105,7 +131,12 @@ class ConnectionWatchdog internal constructor(
         } catch (e: Throwable) {
             FatalErrorHandler.rethrowProgrammingError(e)
             attempts += 1
-            val interval = if (state == State.QUICK_RETRY) retryIntervalMs else escalationIntervalMs
+            val interval =
+                if (state == State.QUICK_RETRY) {
+                    retryIntervalMs
+                } else {
+                    escalationIntervalMs
+                }
             nextAttemptAt = elapsed + interval
             log.warn("飞书连接重建失败 attempt={} type={}", attempts, e.javaClass.simpleName)
             if (state == State.QUICK_RETRY && attempts >= maxAttempts) {
@@ -116,15 +147,17 @@ class ConnectionWatchdog internal constructor(
     }
 
     private suspend fun tryEscalate() {
-        val snapshot = try {
-            status()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Throwable) {
-            FatalErrorHandler.rethrowProgrammingError(e)
-            null
-        } ?: return
-        val busy = listOf("running", "pending", "queued", "incoming").any { snapshot.count(it) != 0L }
+        val snapshot =
+            try {
+                status()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                FatalErrorHandler.rethrowProgrammingError(e)
+                null
+            } ?: return
+        val busy =
+            listOf("running", "pending", "queued", "incoming").any { snapshot.count(it) != 0L }
         if (!escalated && !snapshot.bool("closed") && !snapshot.bool("draining") && !busy) {
             escalated = true
             escalate()
@@ -139,8 +172,11 @@ class ConnectionWatchdog internal constructor(
         recovered()
     }
 
-    private fun JsonObject.count(key: String): Long = get(key)?.takeUnless { it.isJsonNull }?.asLong ?: 0L
-    private fun JsonObject.bool(key: String): Boolean = get(key)?.takeUnless { it.isJsonNull }?.asBoolean ?: false
+    private fun JsonObject.count(key: String): Long =
+        get(key)?.takeUnless { it.isJsonNull }?.asLong ?: 0L
+
+    private fun JsonObject.bool(key: String): Boolean =
+        get(key)?.takeUnless { it.isJsonNull }?.asBoolean ?: false
 
     override fun close() {
         runBlocking { scope.coroutineContext[kotlinx.coroutines.Job]!!.cancelAndJoin() }

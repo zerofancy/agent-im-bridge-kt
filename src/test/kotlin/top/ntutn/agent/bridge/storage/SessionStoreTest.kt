@@ -1,63 +1,92 @@
 package top.ntutn.agent.bridge.storage
 
-import top.ntutn.agent.bridge.*
-import kotlinx.coroutines.runBlocking
-import org.junit.jupiter.api.condition.DisabledOnOs
-import org.junit.jupiter.api.condition.OS
-import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
 import java.util.concurrent.Executors
 import kotlin.test.*
+import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.condition.DisabledOnOs
+import org.junit.jupiter.api.condition.OS
+import org.junit.jupiter.api.io.TempDir
+import top.ntutn.agent.bridge.*
 
 class SessionStoreTest {
     @TempDir lateinit var temp: Path
-    private fun key(chat: String) = SessionKey("cli_test", chat, temp.toString(), temp.resolve("codex").toString())
-    @Test fun `bindings persist privately and isolate every namespace dimension`(): Unit = runBlocking {
+
+    private fun key(chat: String) =
+        SessionKey("cli_test", chat, temp.toString(), temp.resolve("codex").toString())
+
+    @Test
+    fun `bindings persist privately and isolate every namespace dimension`(): Unit = runBlocking {
         val path = temp.resolve("sessions.json")
         val store = SessionStore(path)
         val id = UUID.randomUUID().toString()
         store.set(key("private"), id)
         assertEquals(id, SessionStore(path).get(key("private")))
-        for (other in listOf(key("group"), key("private").copy(appId = "other"),
-            key("private").copy(workspace = "/other"), key("private").copy(runtimeRoot = "/other"))) assertNull(store.get(other))
+        for (other in
+            listOf(
+                key("group"),
+                key("private").copy(appId = "other"),
+                key("private").copy(workspace = "/other"),
+                key("private").copy(runtimeRoot = "/other"),
+            )) {
+            assertNull(store.get(other))
+        }
         store.remove(key("private"))
         assertNull(SessionStore(path).get(key("private")))
     }
+
     @Test
     @DisabledOnOs(OS.WINDOWS) // Windows 无 posix 权限视图；私有性由 ACL / 用户主目录保证
     fun `sessions file is private on POSIX platforms`(): Unit = runBlocking {
         val path = temp.resolve("sessions.json")
         SessionStore(path).set(key("private"), UUID.randomUUID().toString())
-        assertEquals(PosixFilePermissions.fromString("rw-------"), Files.getPosixFilePermissions(path))
+        assertEquals(
+            PosixFilePermissions.fromString("rw-------"),
+            Files.getPosixFilePermissions(path),
+        )
     }
-    @Test fun `concurrent writes are not lost`(): Unit = runBlocking {
+
+    @Test
+    fun `concurrent writes are not lost`(): Unit = runBlocking {
         val store = SessionStore(temp.resolve("sessions.json"))
         val pool = Executors.newFixedThreadPool(10)
         try {
             val ids = (1..30).associateWith { UUID.randomUUID().toString() }
-            ids.map { (chat, id) -> pool.submit { runBlocking { store.set(key(chat.toString()), id) } } }.forEach { it.get() }
+            ids.map { (chat, id) ->
+                    pool.submit { runBlocking { store.set(key(chat.toString()), id) } }
+                }
+                .forEach { it.get() }
             val restored = SessionStore(temp.resolve("sessions.json"))
             ids.forEach { (chat, id) -> assertEquals(id, restored.get(key(chat.toString()))) }
-        } finally { pool.shutdownNow() }
+        } finally {
+            pool.shutdownNow()
+        }
     }
-    @Test fun `corrupt file is not overwritten and failed save preserves old binding`(): Unit = runBlocking {
-        val path = temp.resolve("sessions.json")
-        Files.writeString(path, "broken")
-        assertFailsWith<IllegalArgumentException> { SessionStore(path) }
-        assertEquals("broken", Files.readString(path))
-        Files.delete(path)
-        val store = SessionStore(path)
-        val id = UUID.randomUUID().toString()
-        store.set(key("a"), id)
-        Files.delete(path)
-        Files.createDirectory(path)
-        assertFailsWith<SessionPersistenceException> { store.set(key("a"), UUID.randomUUID().toString()) }
-        assertEquals(id, store.get(key("a")))
-    }
-    @Test fun `instance lock rejects second process owner and can be reacquired`(): Unit = runBlocking {
+
+    @Test
+    fun `corrupt file is not overwritten and failed save preserves old binding`(): Unit =
+        runBlocking {
+            val path = temp.resolve("sessions.json")
+            Files.writeString(path, "broken")
+            assertFailsWith<IllegalArgumentException> { SessionStore(path) }
+            assertEquals("broken", Files.readString(path))
+            Files.delete(path)
+            val store = SessionStore(path)
+            val id = UUID.randomUUID().toString()
+            store.set(key("a"), id)
+            Files.delete(path)
+            Files.createDirectory(path)
+            assertFailsWith<SessionPersistenceException> {
+                store.set(key("a"), UUID.randomUUID().toString())
+            }
+            assertEquals(id, store.get(key("a")))
+        }
+
+    @Test
+    fun `instance lock rejects second process owner and can be reacquired`(): Unit = runBlocking {
         InstanceLock.acquire(temp).use {
             assertFailsWith<IllegalArgumentException> { InstanceLock.acquire(temp) }
         }

@@ -1,9 +1,9 @@
 package top.ntutn.agent.bridge
 
-import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.system.exitProcess
+import kotlinx.coroutines.runBlocking
 import top.ntutn.agent.bridge.storage.BridgeConfig
 import top.ntutn.agent.bridge.storage.ConfigStore
 import top.ntutn.agent.bridge.telegram.TelegramClient
@@ -18,19 +18,28 @@ object DevRegistration {
             val destination = Path.of(args[0])
             require(!Files.exists(destination))
             val console = System.console()
-            val platform = console?.readLine("选择平台 (feishu/telegram，默认 feishu): ")?.trim()?.takeIf { it.isNotBlank() } ?: "feishu"
-            val backend = parseBackendSelection(console?.readLine("选择后端 (codex/traex/opencode，默认 codex): "))
+            val platform =
+                console?.readLine("选择平台 (feishu/telegram，默认 feishu): ")?.trim()?.takeIf {
+                    it.isNotBlank()
+                } ?: "feishu"
+            val backend =
+                parseBackendSelection(console?.readLine("选择后端 (codex/traex/opencode，默认 codex): "))
             if (backend.id == BackendId.OPENCODE) {
                 println("OpenCode 仅支持 danger-full-access，已为该环境设置完整访问权限。")
             }
-            val config = when (platform) {
-                "feishu" -> register(false)
-                "telegram" -> registerTelegram()
-                else -> {
-                    System.err.println("不支持的平台: $platform")
-                    exitProcess(1)
+            val config =
+                when (platform) {
+                    "feishu" -> {
+                        register(false)
+                    }
+                    "telegram" -> {
+                        registerTelegram()
+                    }
+                    else -> {
+                        System.err.println("不支持的平台: $platform")
+                        exitProcess(1)
+                    }
                 }
-            }
             val peer = JsonFiles.read(Path.of(args[1]))
             if (peer?.get("appId")?.asString == config.appId) {
                 System.err.println("选中了另一环境的机器人；请重新运行初始化，选择或创建独立机器人。另一环境未改动。")
@@ -50,25 +59,41 @@ object DevRegistration {
 internal data class BackendSelection(val id: BackendId, val sandboxMode: SandboxMode)
 
 internal fun parseBackendSelection(input: String?): BackendSelection {
-    val value = input?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: BackendId.CODEX.configValue
+    val value =
+        input?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: BackendId.CODEX.configValue
     return when (BackendId.parse(value)) {
-        BackendId.CODEX -> BackendSelection(BackendId.CODEX, SandboxMode.READ_ONLY)
-        BackendId.TRAEX -> BackendSelection(BackendId.TRAEX, SandboxMode.READ_ONLY)
-        BackendId.OPENCODE -> BackendSelection(BackendId.OPENCODE, SandboxMode.FULL_ACCESS)
+        BackendId.CODEX -> {
+            BackendSelection(BackendId.CODEX, SandboxMode.READ_ONLY)
+        }
+        BackendId.TRAEX -> {
+            BackendSelection(BackendId.TRAEX, SandboxMode.READ_ONLY)
+        }
+        BackendId.OPENCODE -> {
+            BackendSelection(BackendId.OPENCODE, SandboxMode.FULL_ACCESS)
+        }
     }
 }
 
 internal fun BridgeConfig.withBackend(selection: BackendSelection) =
-    BridgeConfig(appId, appSecret, allowedUserId, tenant, selection.sandboxMode.cliValue, selection.id.configValue)
+    BridgeConfig(
+        appId,
+        appSecret,
+        allowedUserId,
+        tenant,
+        selection.sandboxMode.cliValue,
+        selection.id.configValue,
+    )
 
 fun registerTelegram(): BridgeConfig {
     val console = System.console()
     println("正在配置 Telegram Bot……")
-    val token = console?.readLine("请输入 Telegram Bot Token (从 @BotFather 获取): ")?.trim()
-        ?: throw IllegalArgumentException("需要 Bot Token")
+    val token =
+        console?.readLine("请输入 Telegram Bot Token (从 @BotFather 获取): ")?.trim()
+            ?: throw IllegalArgumentException("需要 Bot Token")
     require(token.isNotBlank()) { "Bot Token 不能为空" }
-    val userId = console?.readLine("请输入你的 Telegram 用户 ID (数字，可通过 @userinfobot 获取): ")?.trim()
-        ?: throw IllegalArgumentException("需要用户 ID")
+    val userId =
+        console?.readLine("请输入你的 Telegram 用户 ID (数字，可通过 @userinfobot 获取): ")?.trim()
+            ?: throw IllegalArgumentException("需要用户 ID")
     require(userId.isNotBlank() && userId.all { it.isDigit() }) { "用户 ID 必须是数字" }
     println("正在验证 Bot Token……")
     val client = TelegramClient(token)
@@ -78,10 +103,6 @@ fun registerTelegram(): BridgeConfig {
     } finally {
         client.close()
     }
-    return BridgeConfig(
-        appId = token,
-        appSecret = "",
-        allowedUserId = userId,
-        tenant = "telegram"
-    ).also { it.validate() }
+    return BridgeConfig(appId = token, appSecret = "", allowedUserId = userId, tenant = "telegram")
+        .also { it.validate() }
 }

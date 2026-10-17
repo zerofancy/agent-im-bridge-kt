@@ -1,36 +1,52 @@
 package top.ntutn.agent.bridge.backend
 
-import top.ntutn.agent.bridge.*
-import kotlinx.coroutines.*
-import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.*
+import kotlinx.coroutines.*
+import org.junit.jupiter.api.io.TempDir
+import top.ntutn.agent.bridge.*
 
 class OpenCodeRunnerTest {
     @TempDir lateinit var temp: Path
     private val mode = SandboxMode.FULL_ACCESS
+
     private fun runner(): OpenCodeRunner {
         val executable = temp.resolve("opencode")
         Files.writeString(executable, javaClass.getResource("/fake-opencode.py")!!.readText())
         executable.toFile().setExecutable(true)
         val (binary, arguments) = testScriptCommand(executable)
-        return OpenCodeRunner(BackendSpec(BackendId.OPENCODE, binary, temp, binaryArguments = arguments), mode)
+        return OpenCodeRunner(
+            BackendSpec(BackendId.OPENCODE, binary, temp, binaryArguments = arguments),
+            mode,
+        )
     }
-    private suspend fun waitFile(name: String) = withTimeout(5000) { while (!Files.exists(temp.resolve(name))) delay(20) }
 
-    @Test fun `read image in intermediate assistant message survives an empty final answer`(): Unit = runBlocking {
-        runner().use { runner ->
-            val result = assertIs<AgentResult.Success>(withTimeout(5000) { runner.run("read-image", null, temp, mode) })
-            assertEquals("", result.text)
-            assertEquals(1, result.images.size)
-            assertEquals("read-image-part/0", result.images.single().sourceId)
-            assertEquals("data:image/png;base64,AA==", result.images.single().base64)
+    private suspend fun waitFile(name: String) =
+        withTimeout(5000) {
+            while (!Files.exists(temp.resolve(name))) {
+                delay(20)
+            }
         }
-    }
 
-    @Test fun `unsupported sandbox fails closed and opencode has independent directories`() {
+    @Test
+    fun `read image in intermediate assistant message survives an empty final answer`(): Unit =
+        runBlocking {
+            runner().use { runner ->
+                val result =
+                    assertIs<AgentResult.Success>(
+                        withTimeout(5000) { runner.run("read-image", null, temp, mode) }
+                    )
+                assertEquals("", result.text)
+                assertEquals(1, result.images.size)
+                assertEquals("read-image-part/0", result.images.single().sourceId)
+                assertEquals("data:image/png;base64,AA==", result.images.single().base64)
+            }
+        }
+
+    @Test
+    fun `unsupported sandbox fails closed and opencode has independent directories`() {
         val spec = BackendSpec(BackendId.OPENCODE, "unused", temp)
         for (mode in listOf(SandboxMode.READ_ONLY, SandboxMode.WORKSPACE_WRITE)) {
             assertFailsWith<IllegalArgumentException> { OpenCodeRunner(spec, mode) }
@@ -40,14 +56,18 @@ class OpenCodeRunnerTest {
         assertEquals("opencode", BackendId.parse("opencode").configValue)
     }
 
-    @Test fun `streams public text resumes session and keeps final authoritative`(): Unit = runBlocking {
+    @Test
+    fun `streams public text resumes session and keeps final authoritative`(): Unit = runBlocking {
         runner().use { runner ->
             runner.checkAvailable()
             assertTrue(runner.healthy())
             val progress = mutableListOf<AgentProgress>()
             val handle = AgentRunHandle().apply { onProgress = { progress += it } }
             var saved: String? = null
-            val first = withTimeout(7000) { runner.runControlled(handle, "hello", null, temp, mode) { saved = it } }
+            val first =
+                withTimeout(7000) {
+                    runner.runControlled(handle, "hello", null, temp, mode) { saved = it }
+                }
             assertEquals("final hello", assertIs<AgentResult.Success>(first).text)
             assertEquals(saved, first.sessionId)
             assertTrue(progress.any { it.answer == "partial" })
@@ -58,27 +78,54 @@ class OpenCodeRunnerTest {
             assertEquals(saved, second.sessionId)
             val requests = Files.readAllLines(temp.resolve("requests"))
             assertEquals(1, requests.count { it.contains("\"path\": \"/session\"") })
-            requests.map { com.google.gson.JsonParser.parseString(it).asJsonObject }
-                .filter { it.string("method") == "POST" && it.string("path")?.endsWith("/message") == true }
+            requests
+                .map { com.google.gson.JsonParser.parseString(it).asJsonObject }
+                .filter {
+                    it.string("method") == "POST" && it.string("path")?.endsWith("/message") == true
+                }
                 .forEach {
-                    assertEquals("fixture", it.objectValue("body")?.objectValue("model")?.string("providerID"))
-                    assertEquals("current", it.objectValue("body")?.objectValue("model")?.string("modelID"))
+                    assertEquals(
+                        "fixture",
+                        it.objectValue("body")?.objectValue("model")?.string("providerID"),
+                    )
+                    assertEquals(
+                        "current",
+                        it.objectValue("body")?.objectValue("model")?.string("modelID"),
+                    )
                 }
         }
         val pid = Files.readString(temp.resolve("pid")).toLong()
         assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false))
     }
 
-    @Test fun `storage failure and pre-submission stop never send prompt`(): Unit = runBlocking {
+    @Test
+    fun `storage failure and pre-submission stop never send prompt`(): Unit = runBlocking {
         runner().use { runner ->
-            assertEquals(AgentResult.Kind.STORAGE, assertIs<AgentResult.Failure>(runner.run("hello", null, temp, mode) { throw IOException() }).kind)
+            assertEquals(
+                AgentResult.Kind.STORAGE,
+                assertIs<AgentResult.Failure>(
+                        runner.run("hello", null, temp, mode) { throw IOException() }
+                    )
+                    .kind,
+            )
             val handle = AgentRunHandle()
-            assertEquals(AgentResult.Kind.STOPPED, assertIs<AgentResult.Failure>(runner.runControlled(handle, "hello", null, temp, mode) { handle.requestStop() }).kind)
-            assertTrue(Files.readAllLines(temp.resolve("requests")).none { it.contains("/message") })
+            assertEquals(
+                AgentResult.Kind.STOPPED,
+                assertIs<AgentResult.Failure>(
+                        runner.runControlled(handle, "hello", null, temp, mode) {
+                            handle.requestStop()
+                        }
+                    )
+                    .kind,
+            )
+            assertTrue(
+                Files.readAllLines(temp.resolve("requests")).none { it.contains("/message") }
+            )
         }
     }
 
-    @Test fun `native stop waits for terminal and leaves another session running`(): Unit = runBlocking {
+    @Test
+    fun `native stop waits for terminal and leaves another session running`(): Unit = runBlocking {
         runner().use { runner ->
             val handle = AgentRunHandle()
             val first = async { runner.runControlled(handle, "ignore-stop", null, temp, mode) {} }
@@ -90,24 +137,35 @@ class OpenCodeRunnerTest {
             val other = withTimeout(5000) { runner.run("other", null, temp, mode) }
             assertIs<AgentResult.Success>(other)
             Files.writeString(temp.resolve("finish"), "yes")
-            assertEquals(AgentResult.Kind.STOPPED, assertIs<AgentResult.Failure>(withTimeout(5000) { first.await() }).kind)
+            assertEquals(
+                AgentResult.Kind.STOPPED,
+                assertIs<AgentResult.Failure>(withTimeout(5000) { first.await() }).kind,
+            )
         }
     }
 
-    @Test fun `completed HTTP without assistant terminal releases idle request and permits next run`(): Unit = runBlocking {
+    @Test
+    fun `completed HTTP without assistant terminal releases idle request and permits next run`():
+        Unit = runBlocking {
         runner().use { runner ->
             for (prompt in listOf("empty-response", "failed-response")) {
                 val result = withTimeout(5000) { runner.run(prompt, null, temp, mode) }
                 assertEquals(AgentResult.Kind.PROTOCOL, assertIs<AgentResult.Failure>(result).kind)
             }
-            assertIs<AgentResult.Success>(withTimeout(5000) { runner.run("next", null, temp, mode) })
-            assertEquals(3, Files.readAllLines(temp.resolve("requests")).count {
-                it.contains("\"method\": \"POST\"") && it.contains("/message")
-            })
+            assertIs<AgentResult.Success>(
+                withTimeout(5000) { runner.run("next", null, temp, mode) }
+            )
+            assertEquals(
+                3,
+                Files.readAllLines(temp.resolve("requests")).count {
+                    it.contains("\"method\": \"POST\"") && it.contains("/message")
+                },
+            )
         }
     }
 
-    @Test fun `unknown HTTP outcome holds slot and reconciles without replay`(): Unit = runBlocking {
+    @Test
+    fun `unknown HTTP outcome holds slot and reconciles without replay`(): Unit = runBlocking {
         runner().use { runner ->
             val handle = AgentRunHandle()
             val task = async { runner.runControlled(handle, "disconnect", null, temp, mode) {} }
@@ -115,50 +173,100 @@ class OpenCodeRunnerTest {
             delay(400)
             assertFalse(task.isCompleted)
             Files.writeString(temp.resolve("finish"), "yes")
-            assertEquals("final disconnect", assertIs<AgentResult.Success>(withTimeout(5000) { task.await() }).text)
-            val submissions = Files.readAllLines(temp.resolve("requests")).count { it.contains("\"method\": \"POST\"") && it.contains("/message") }
+            assertEquals(
+                "final disconnect",
+                assertIs<AgentResult.Success>(withTimeout(5000) { task.await() }).text,
+            )
+            val submissions =
+                Files.readAllLines(temp.resolve("requests")).count {
+                    it.contains("\"method\": \"POST\"") && it.contains("/message")
+                }
             assertEquals(1, submissions)
         }
     }
 
-    @Test fun `shutdown kills owned process after native stop and refuses new work`(): Unit = runBlocking {
-        val runner = runner()
-        val handle = AgentRunHandle()
-        val task = async { runner.runControlled(handle, "ignore-stop", null, temp, mode) {} }
-        try { withTimeout(5000) { handle.turnId.await() } }
-        finally { withContext(NonCancellable + Dispatchers.IO) { runner.close() } }
-        assertTrue(task.isCompleted || withTimeout(2000) { task.join(); true })
-        assertFalse(ProcessHandle.of(Files.readString(temp.resolve("pid")).toLong()).map { it.isAlive }.orElse(false))
-        assertEquals(AgentResult.Kind.START, assertIs<AgentResult.Failure>(runner.run("late", null, temp, mode)).kind)
-    }
+    @Test
+    fun `shutdown kills owned process after native stop and refuses new work`(): Unit =
+        runBlocking {
+            val runner = runner()
+            val handle = AgentRunHandle()
+            val task = async { runner.runControlled(handle, "ignore-stop", null, temp, mode) {} }
+            try {
+                withTimeout(5000) { handle.turnId.await() }
+            } finally {
+                withContext(NonCancellable + Dispatchers.IO) { runner.close() }
+            }
+            assertTrue(
+                task.isCompleted ||
+                    withTimeout(2000) {
+                        task.join()
+                        true
+                    }
+            )
+            assertFalse(
+                ProcessHandle.of(Files.readString(temp.resolve("pid")).toLong())
+                    .map { it.isAlive }
+                    .orElse(false)
+            )
+            assertEquals(
+                AgentResult.Kind.START,
+                assertIs<AgentResult.Failure>(runner.run("late", null, temp, mode)).kind,
+            )
+        }
 
-    @Test fun `stop between user persistence and loop admission is retried`(): Unit = runBlocking {
+    @Test
+    fun `stop between user persistence and loop admission is retried`(): Unit = runBlocking {
         runner().use { runner ->
             val handle = AgentRunHandle()
             handle.onSubmitted = { handle.requestStop() }
-            val result = withTimeout(5000) { runner.runControlled(handle, "early-stop", null, temp, mode) {} }
+            val result =
+                withTimeout(5000) {
+                    runner.runControlled(handle, "early-stop", null, temp, mode) {}
+                }
             assertEquals(AgentResult.Kind.STOPPED, assertIs<AgentResult.Failure>(result).kind)
-            assertTrue(Files.readAllLines(temp.resolve("requests")).count { it.contains("/abort") } >= 2)
+            assertTrue(
+                Files.readAllLines(temp.resolve("requests")).count { it.contains("/abort") } >= 2
+            )
         }
     }
 
-    @Test fun `more than five long prompts cannot starve native abort requests`(): Unit = runBlocking {
+    @Test
+    fun `more than five long prompts cannot starve native abort requests`(): Unit = runBlocking {
         runner().use { runner ->
             val handles = List(7) { AgentRunHandle() }
-            val tasks = handles.map { handle -> async { runner.runControlled(handle, "stop", null, temp, mode) {} } }
+            val tasks =
+                handles.map { handle ->
+                    async { runner.runControlled(handle, "stop", null, temp, mode) {} }
+                }
             withTimeout(7000) { handles.forEach { it.turnId.await() } }
             handles.forEach { it.requestStop() }
-            withTimeout(7000) { tasks.forEach { assertEquals(AgentResult.Kind.STOPPED, assertIs<AgentResult.Failure>(it.await()).kind) } }
+            withTimeout(7000) {
+                tasks.forEach {
+                    assertEquals(
+                        AgentResult.Kind.STOPPED,
+                        assertIs<AgentResult.Failure>(it.await()).kind,
+                    )
+                }
+            }
         }
     }
 
-    @Test fun `tool parameters are readable bounded and separate from tool output`() {
-        fun tool(name: String, input: com.google.gson.JsonElement) = json("type" to "tool", "tool" to name,
-            "state" to json("status" to "completed", "input" to input, "output" to "hidden output"))
-        val parts = com.google.gson.JsonArray().apply {
-            add(tool("bash", json("command" to "pwd\nprintf '```'", "timeout" to 1000)))
-            add(tool("read", json("filePath" to "/work/Main.kt", "offset" to 10, "limit" to 20)))
-        }
+    @Test
+    fun `tool parameters are readable bounded and separate from tool output`() {
+        fun tool(name: String, input: com.google.gson.JsonElement) =
+            json(
+                "type" to "tool",
+                "tool" to name,
+                "state" to
+                    json("status" to "completed", "input" to input, "output" to "hidden output"),
+            )
+        val parts =
+            com.google.gson.JsonArray().apply {
+                add(tool("bash", json("command" to "pwd\nprintf '```'", "timeout" to 1000)))
+                add(
+                    tool("read", json("filePath" to "/work/Main.kt", "offset" to 10, "limit" to 20))
+                )
+            }
         val message = json("parts" to parts)
         val process = openCodeProgress(listOf(message)).process
         assertTrue(process.contains("pwd\nprintf '```'"))
@@ -168,22 +276,42 @@ class OpenCodeRunnerTest {
         assertTrue(process.contains("\"offset\": 10"))
         assertTrue(process.contains("\"limit\": 20"))
         assertFalse(process.contains("hidden output"))
-        repeat(8) { parts.add(tool("custom", json("query" to "x".repeat(2500), "nested" to json("value" to 1)))) }
+        repeat(8) {
+            parts.add(
+                tool("custom", json("query" to "x".repeat(2500), "nested" to json("value" to 1)))
+            )
+        }
         val long = openCodeProgress(listOf(message)).process
         assertTrue(long.length <= 1800)
         assertTrue(long.contains("参数过长，已截断"))
         assertTrue(long.endsWith("```"))
     }
 
-    @Test fun `final excludes other turns reasoning synthetic text and tool call steps`() {
-        val message = json("info" to json("role" to "assistant", "sessionID" to "ses_1", "parentID" to "msg_1",
-            "time" to json("completed" to 2), "finish" to "tool-calls"), "parts" to com.google.gson.JsonArray().apply {
-            add(json("type" to "text", "text" to "answer")); add(json("type" to "reasoning", "text" to "secret"))
-            add(json("type" to "text", "text" to "synthetic", "synthetic" to true))
-        })
+    @Test
+    fun `final excludes other turns reasoning synthetic text and tool call steps`() {
+        val message =
+            json(
+                "info" to
+                    json(
+                        "role" to "assistant",
+                        "sessionID" to "ses_1",
+                        "parentID" to "msg_1",
+                        "time" to json("completed" to 2),
+                        "finish" to "tool-calls",
+                    ),
+                "parts" to
+                    com.google.gson.JsonArray().apply {
+                        add(json("type" to "text", "text" to "answer"))
+                        add(json("type" to "reasoning", "text" to "secret"))
+                        add(json("type" to "text", "text" to "synthetic", "synthetic" to true))
+                    },
+            )
         assertNull(openCodeFinal(message, "ses_1", "msg_1"))
         message.objectValue("info")!!.addProperty("finish", "stop")
         assertNull(openCodeFinal(message, "ses_1", "msg_other"))
-        assertEquals("answer", assertIs<AgentResult.Success>(openCodeFinal(message, "ses_1", "msg_1")).text)
+        assertEquals(
+            "answer",
+            assertIs<AgentResult.Success>(openCodeFinal(message, "ses_1", "msg_1")).text,
+        )
     }
 }

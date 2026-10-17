@@ -1,8 +1,6 @@
 pluginManagement {
     repositories {
-        maven("https://jitpack.io") {
-            content { includeGroup("com.github.zerofancy") }
-        }
+        maven("https://jitpack.io") { content { includeGroup("com.github.zerofancy") } }
         gradlePluginPortal()
         mavenCentral()
         google()
@@ -21,5 +19,7 @@ plugins {
     // 其余插件版本统一由 gradle/libs.versions.toml 管理。
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
 }
+
 rootProject.name = "agent-im-bridge-kt"
+
 include("desktop-app")

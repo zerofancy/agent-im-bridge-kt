@@ -1,25 +1,34 @@
 package top.ntutn.agent.bridge
 
-import org.junit.jupiter.api.io.TempDir
+import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.FileSystemException
-import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.*
+import org.junit.jupiter.api.Assumptions.assumeTrue
+import org.junit.jupiter.api.io.TempDir
 import top.ntutn.agent.bridge.storage.BridgeConfig
 
 class RuntimeEnvironmentTest {
     @TempDir lateinit var temp: Path
-    @Test fun `uncreated child of symlink resolves to actual directory`() {
+
+    @Test
+    fun `uncreated child of symlink resolves to actual directory`() {
         val real = Files.createDirectory(temp.resolve("real"))
-        val link = try { Files.createSymbolicLink(temp.resolve("link"), real) }
-        catch (_: FileSystemException) {
-            assumeTrue(false, "当前 Windows 账户没有创建符号链接的权限")
-            return
-        }
-        assertEquals(real.toRealPath().resolve("future/child"), realRuntimePath(link.resolve("future/child")))
+        val link =
+            try {
+                Files.createSymbolicLink(temp.resolve("link"), real)
+            } catch (_: FileSystemException) {
+                assumeTrue(false, "当前 Windows 账户没有创建符号链接的权限")
+                return
+            }
+        assertEquals(
+            real.toRealPath().resolve("future/child"),
+            realRuntimePath(link.resolve("future/child")),
+        )
     }
-    @Test fun `environment never inherits ambient backend roots and rejects overlap`() {
+
+    @Test
+    fun `environment never inherits ambient backend roots and rejects overlap`() {
         val env = RuntimeEnvironment(temp, "dev", "version")
         val work = Files.createDirectory(temp.resolve("dev-work"))
         JsonFiles.write(env.directory.resolve("runtime.json"), json("workspace" to work.toString()))
@@ -36,20 +45,34 @@ class RuntimeEnvironmentTest {
         JsonFiles.write(peer.resolve("config.json"), json("appId" to "prod-app"))
         assertFailsWith<IllegalArgumentException> { env.validate(config) }
     }
-    @Test fun `OpenCode custom state cannot overlap the other environment`() {
+
+    @Test
+    fun `OpenCode custom state cannot overlap the other environment`() {
         val env = RuntimeEnvironment(temp, "dev", "version")
         val work = Files.createDirectory(temp.resolve("work"))
         val peerWork = Files.createDirectory(temp.resolve("peer-work"))
         val shared = temp.resolve("shared-opencode")
-        JsonFiles.write(env.directory.resolve("runtime.json"), json("workspace" to work.toString(), "opencodeHome" to shared.toString()))
-        JsonFiles.write(temp.resolve("environments/prod/runtime.json"), json("workspace" to peerWork.toString(), "opencodeHome" to shared.toString()))
-        assertFailsWith<IllegalArgumentException> { env.validate(BridgeConfig("cli_dev", "secret", "ou_owner", "feishu")) }
+        JsonFiles.write(
+            env.directory.resolve("runtime.json"),
+            json("workspace" to work.toString(), "opencodeHome" to shared.toString()),
+        )
+        JsonFiles.write(
+            temp.resolve("environments/prod/runtime.json"),
+            json("workspace" to peerWork.toString(), "opencodeHome" to shared.toString()),
+        )
+        assertFailsWith<IllegalArgumentException> {
+            env.validate(BridgeConfig("cli_dev", "secret", "ou_owner", "feishu"))
+        }
     }
-    @Test fun `same bot rejected and mutable classpath cannot start as a release`() {
+
+    @Test
+    fun `same bot rejected and mutable classpath cannot start as a release`() {
         val env = RuntimeEnvironment(temp, "dev", "version")
         JsonFiles.write(env.directory.resolve("runtime.json"), json("workspace" to temp.toString()))
         JsonFiles.write(temp.resolve("environments/prod/config.json"), json("appId" to "same"))
-        assertFailsWith<IllegalArgumentException> { env.validate(BridgeConfig("same", "secret", "ou_owner", "feishu")) }
+        assertFailsWith<IllegalArgumentException> {
+            env.validate(BridgeConfig("same", "secret", "ou_owner", "feishu"))
+        }
         Files.createDirectories(env.releaseDirectory.resolve("lib"))
         assertFailsWith<IllegalArgumentException> { env.verifyClasspath() }
     }

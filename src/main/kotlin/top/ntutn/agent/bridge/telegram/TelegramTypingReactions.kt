@@ -1,19 +1,22 @@
 package top.ntutn.agent.bridge.telegram
 
-import top.ntutn.agent.bridge.*
+import java.io.IOException
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withTimeout
-import java.io.IOException
-import kotlin.time.Duration.Companion.milliseconds
+import top.ntutn.agent.bridge.*
 
 class TelegramTypingReactions(
     private val client: TelegramClient,
     private val sendNotice: suspend (ReplyRoute) -> String = { route ->
-        client.sendMessage(route.chatId, "正在处理…", replyToMessageId = route.messageId).messageId.toString()
-    }
+        client
+            .sendMessage(route.chatId, "正在处理…", replyToMessageId = route.messageId)
+            .messageId
+            .toString()
+    },
 ) : TypingReactions {
     override suspend fun add(route: ReplyRoute): String {
         try {

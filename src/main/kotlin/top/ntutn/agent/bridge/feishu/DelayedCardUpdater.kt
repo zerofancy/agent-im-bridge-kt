@@ -11,11 +11,17 @@ internal class DelayedCardUpdater(private val client: FeishuOpenApiClient) {
 }
 
 internal fun delayedCardUpdateRequireSuccessful(response: FeishuApiResponse) {
-    val payload = runCatching {
-        JsonParser.parseString(response.body).asJsonObject
-    }.getOrNull() ?: throw IllegalStateException("delay update failed: httpStatus=${response.statusCode}, code=unknown")
+    val payload =
+        runCatching { JsonParser.parseString(response.body).asJsonObject }.getOrNull()
+            ?: throw IllegalStateException(
+                "delay update failed: httpStatus=${response.statusCode}, code=unknown"
+            )
     val code = payload["code"]?.asInt ?: -1
-    if (response.statusCode in 200..299 && code == 0) return
+    if (response.statusCode in 200..299 && code == 0) {
+        return
+    }
     val msg = payload["msg"]?.asString.orEmpty()
-    throw IllegalStateException("delay update failed: httpStatus=${response.statusCode}, code=$code, msg=$msg")
+    throw IllegalStateException(
+        "delay update failed: httpStatus=${response.statusCode}, code=$code, msg=$msg"
+    )
 }

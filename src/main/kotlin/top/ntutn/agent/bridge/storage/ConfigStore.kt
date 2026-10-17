@@ -1,6 +1,5 @@
 package top.ntutn.agent.bridge.storage
 
-import top.ntutn.agent.bridge.*
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
 import java.nio.file.Files
@@ -8,27 +7,49 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import top.ntutn.agent.bridge.*
 
-class BridgeConfig(val appId: String, val appSecret: String, val allowedUserId: String, val tenant: String, val sandboxMode: String = "read-only", val backend: String = "codex") {
-    val platform: String get() = when (tenant) {
-        "feishu", "lark" -> "feishu"
-        "telegram" -> "telegram"
-        else -> "unknown"
-    }
+class BridgeConfig(
+    val appId: String,
+    val appSecret: String,
+    val allowedUserId: String,
+    val tenant: String,
+    val sandboxMode: String = "read-only",
+    val backend: String = "codex",
+) {
+    val platform: String
+        get() =
+            when (tenant) {
+                "feishu",
+                "lark" -> {
+                    "feishu"
+                }
+                "telegram" -> {
+                    "telegram"
+                }
+                else -> {
+                    "unknown"
+                }
+            }
 
     fun validate() {
         SandboxMode.parse(sandboxMode)
         BackendId.parse(backend)
         when (tenant) {
-            "feishu", "lark" -> {
+            "feishu",
+            "lark" -> {
                 require(appId.startsWith("cli_") && appSecret.isNotBlank()) { "飞书应用配置不完整，请重新绑定。" }
-                require(allowedUserId.startsWith("ou_") && allowedUserId.length > 3) { "需要有效的用户 open_id（ou_ 开头）。" }
+                require(allowedUserId.startsWith("ou_") && allowedUserId.length > 3) {
+                    "需要有效的用户 open_id（ou_ 开头）。"
+                }
             }
             "telegram" -> {
                 require(appId.isNotBlank()) { "需要 Telegram Bot Token。" }
                 require(allowedUserId.isNotBlank()) { "需要 Telegram 用户 ID（数字）。" }
             }
-            else -> error("tenant 必须为 feishu/lark/telegram。")
+            else -> {
+                error("tenant 必须为 feishu/lark/telegram。")
+            }
         }
     }
     // Deliberately not a data class: generated toString must never expose credentials.
@@ -38,23 +59,34 @@ class ConfigStore(val path: Path) {
     private val gson = GsonBuilder().setPrettyPrinting().create()
 
     fun load(): BridgeConfig? {
-        if (!Files.exists(path, NOFOLLOW_LINKS)) return null
+        if (!Files.exists(path, NOFOLLOW_LINKS)) {
+            return null
+        }
         require(Files.isRegularFile(path, NOFOLLOW_LINKS)) { "配置必须是普通文件，不能是符号链接。" }
         PlatformFiles.setPrivatePermissions(path, directory = false)
         return try {
             val json = JsonParser.parseString(Files.readString(path)).asJsonObject
-            BridgeConfig(json["appId"].asString, json["appSecret"].asString,
-                json["allowedUserId"].asString, json["tenant"].asString,
-                if (json.has("sandboxMode")) {
-                    val mode = json["sandboxMode"]
-                    require(mode.isJsonPrimitive && mode.asJsonPrimitive.isString)
-                    mode.asString
-                } else "read-only",
-                if (json.has("backend")) {
-                    val backend = json["backend"]
-                    require(backend.isJsonPrimitive && backend.asJsonPrimitive.isString)
-                    backend.asString
-                } else "codex").also { it.validate() }
+            BridgeConfig(
+                    json["appId"].asString,
+                    json["appSecret"].asString,
+                    json["allowedUserId"].asString,
+                    json["tenant"].asString,
+                    if (json.has("sandboxMode")) {
+                        val mode = json["sandboxMode"]
+                        require(mode.isJsonPrimitive && mode.asJsonPrimitive.isString)
+                        mode.asString
+                    } else {
+                        "read-only"
+                    },
+                    if (json.has("backend")) {
+                        val backend = json["backend"]
+                        require(backend.isJsonPrimitive && backend.asJsonPrimitive.isString)
+                        backend.asString
+                    } else {
+                        "codex"
+                    },
+                )
+                .also { it.validate() }
         } catch (_: Exception) {
             throw IllegalArgumentException("配置文件无效，请检查 $path；不会自动覆盖已有配置。")
         }

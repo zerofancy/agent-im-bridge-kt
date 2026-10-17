@@ -1,39 +1,49 @@
 package top.ntutn.agent.bridge.feishu
 
 import com.google.gson.JsonObject
-import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.runBlocking
 
 private fun testStatus(
-    running: Long = 0, pending: Long = 0, queued: Long = 0, incoming: Long = 0,
-    closed: Boolean = false, draining: Boolean = false
-): JsonObject = JsonObject().apply {
-    addProperty("running", running); addProperty("pending", pending)
-    addProperty("queued", queued); addProperty("incoming", incoming)
-    addProperty("closed", closed); addProperty("draining", draining)
-}
+    running: Long = 0,
+    pending: Long = 0,
+    queued: Long = 0,
+    incoming: Long = 0,
+    closed: Boolean = false,
+    draining: Boolean = false,
+): JsonObject =
+    JsonObject().apply {
+        addProperty("running", running)
+        addProperty("pending", pending)
+        addProperty("queued", queued)
+        addProperty("incoming", incoming)
+        addProperty("closed", closed)
+        addProperty("draining", draining)
+    }
 
 class ConnectionWatchdogTest {
     private class Harness(
         private val reconnectFailUntil: Int = Int.MAX_VALUE,
-        val snapshot: () -> JsonObject = { testStatus() }
+        val snapshot: () -> JsonObject = { testStatus() },
     ) {
         var reconnectCalls = 0
         var escalateCalls = 0
         var recoveredCalls = 0
-        val watchdog = ConnectionWatchdog(
-            reconnect = {
-                reconnectCalls += 1
-                if (reconnectCalls <= reconnectFailUntil) throw java.io.IOException("down")
-            },
-            status = { snapshot() },
-            escalate = { escalateCalls += 1 },
-            recovered = { recoveredCalls += 1 },
-            autoStart = false
-        )
+        val watchdog =
+            ConnectionWatchdog(
+                reconnect = {
+                    reconnectCalls += 1
+                    if (reconnectCalls <= reconnectFailUntil) {
+                        throw java.io.IOException("down")
+                    }
+                },
+                status = { snapshot() },
+                escalate = { escalateCalls += 1 },
+                recovered = { recoveredCalls += 1 },
+                autoStart = false,
+            )
 
         fun ticks(n: Int) = runBlocking { repeat(n) { watchdog.tick() } }
     }
@@ -78,7 +88,19 @@ class ConnectionWatchdogTest {
     @Test
     fun `busy service defers escalation`() {
         var busy = true
-        val h = Harness(snapshot = { testStatus(running = if (busy) 1 else 0) })
+        val h =
+            Harness(
+                snapshot = {
+                    testStatus(
+                        running =
+                            if (busy) {
+                                1
+                            } else {
+                                0
+                            }
+                    )
+                }
+            )
         h.watchdog.onConnectionChanged(false)
         h.ticks(120)
         assertTrue(h.reconnectCalls >= 3)
@@ -114,25 +136,33 @@ class ConnectionWatchdogTest {
         h.ticks(200)
         assertEquals(0, h.escalateCalls)
     }
-    @Test
-    fun `stale connected callback cannot hide dead transport and triggers socket rebuild`() = runBlocking {
-        var transportAlive = false
-        var rebuilds = 0
-        val watchdog = ConnectionWatchdog(
-            reconnect = { rebuilds++; transportAlive = true },
-            status = { testStatus(running = 1) },
-            escalate = { error("Active model turn must not be killed") },
-            transportHealthy = { transportAlive },
-            autoStart = false
-        )
-        try {
-            watchdog.onConnectionChanged(true)
-            watchdog.noteActivity() // Recent user activity cannot mask a subsequently failed heartbeat.
-            repeat(40) { watchdog.tick() }
-            assertEquals(1, rebuilds)
-            repeat(100) { watchdog.tick() }
-            assertEquals(1, rebuilds)
-        } finally { watchdog.close() }
-    }
 
+    @Test
+    fun `stale connected callback cannot hide dead transport and triggers socket rebuild`() =
+        runBlocking {
+            var transportAlive = false
+            var rebuilds = 0
+            val watchdog =
+                ConnectionWatchdog(
+                    reconnect = {
+                        rebuilds++
+                        transportAlive = true
+                    },
+                    status = { testStatus(running = 1) },
+                    escalate = { error("Active model turn must not be killed") },
+                    transportHealthy = { transportAlive },
+                    autoStart = false,
+                )
+            try {
+                watchdog.onConnectionChanged(true)
+                watchdog.noteActivity() // Recent user activity cannot mask a subsequently failed
+                // heartbeat.
+                repeat(40) { watchdog.tick() }
+                assertEquals(1, rebuilds)
+                repeat(100) { watchdog.tick() }
+                assertEquals(1, rebuilds)
+            } finally {
+                watchdog.close()
+            }
+        }
 }

@@ -1,6 +1,5 @@
 package top.ntutn.agent.bridge.storage
 
-import top.ntutn.agent.bridge.*
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
 import java.nio.file.Files
@@ -8,18 +7,34 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
-import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import top.ntutn.agent.bridge.*
 
-data class SessionKey(val appId: String, val chatId: String, val workspace: String, val runtimeRoot: String, val backendId: String = "codex")
-data class ChatKey(val appId: String, val chatId: String, val runtimeRoot: String, val backendId: String = "codex")
+data class SessionKey(
+    val appId: String,
+    val chatId: String,
+    val workspace: String,
+    val runtimeRoot: String,
+    val backendId: String = "codex",
+)
+
+data class ChatKey(
+    val appId: String,
+    val chatId: String,
+    val runtimeRoot: String,
+    val backendId: String = "codex",
+)
+
 data class WorkspaceEntry(val key: ChatKey, val workspace: String)
+
 fun SessionKey.chatKey() = ChatKey(appId, chatId, runtimeRoot, backendId)
 
 data class SessionEntry(val key: SessionKey, val sessionId: String, val updatedAt: Long)
+
 class SessionPersistenceException : RuntimeException("会话存储失败，请检查本机会话文件及磁盘权限。")
 
 class SessionStore(private val path: Path) {
@@ -36,73 +51,117 @@ class SessionStore(private val path: Path) {
                 val root = JsonParser.parseString(Files.readString(path)).asJsonObject
                 val version = root["version"].asInt
                 require(version in 1..3)
-                val homeField = if (version < 3) "codexHome" else "runtimeRoot"
-                fun backend(key: com.google.gson.JsonObject): String = if (version < 3) "codex"
-                    else BackendId.parse(requireNotNull(key.string("backendId"))).configValue
-                if (version >= 2) for (raw in root["workspaces"].asJsonArray) {
-                    val item = raw.asJsonObject
-                    val key = item["key"].asJsonObject
-                    val chat = ChatKey(key["appId"].asString, key["chatId"].asString, key[homeField].asString, backend(key))
-                    val entry = WorkspaceEntry(chat, item["workspace"].asString)
-                    require(chat.appId.isNotBlank() && chat.chatId.isNotBlank())
-                    require(Path.of(chat.runtimeRoot).isAbsolute && Path.of(entry.workspace).isAbsolute)
-                    require(directories.put(chat, entry) == null)
+                val homeField =
+                    if (version < 3) {
+                        "codexHome"
+                    } else {
+                        "runtimeRoot"
+                    }
+                fun backend(key: com.google.gson.JsonObject): String =
+                    if (version < 3) {
+                        "codex"
+                    } else {
+                        BackendId.parse(requireNotNull(key.string("backendId"))).configValue
+                    }
+                if (version >= 2) {
+                    for (raw in root["workspaces"].asJsonArray) {
+                        val item = raw.asJsonObject
+                        val key = item["key"].asJsonObject
+                        val chat =
+                            ChatKey(
+                                key["appId"].asString,
+                                key["chatId"].asString,
+                                key[homeField].asString,
+                                backend(key),
+                            )
+                        val entry = WorkspaceEntry(chat, item["workspace"].asString)
+                        require(chat.appId.isNotBlank() && chat.chatId.isNotBlank())
+                        require(
+                            Path.of(chat.runtimeRoot).isAbsolute &&
+                                Path.of(entry.workspace).isAbsolute
+                        )
+                        require(directories.put(chat, entry) == null)
+                    }
                 }
                 for (raw in root["sessions"].asJsonArray) {
                     val item = raw.asJsonObject
                     val k = item["key"].asJsonObject
-                    val key = SessionKey(k["appId"].asString, k["chatId"].asString, k["workspace"].asString, k[homeField].asString, backend(k))
-                    val entry = SessionEntry(key, item["sessionId"].asString, item["updatedAt"].asLong)
+                    val key =
+                        SessionKey(
+                            k["appId"].asString,
+                            k["chatId"].asString,
+                            k["workspace"].asString,
+                            k[homeField].asString,
+                            backend(k),
+                        )
+                    val entry =
+                        SessionEntry(key, item["sessionId"].asString, item["updatedAt"].asLong)
                     validate(entry)
                     require(entries.put(key, entry) == null)
                 }
-            } catch (_: Exception) { throw IllegalArgumentException("sessions.json 无效或不可读取；请修复或备份后重试，文件未被覆盖。") }
+            } catch (_: Exception) {
+                throw IllegalArgumentException("sessions.json 无效或不可读取；请修复或备份后重试，文件未被覆盖。")
+            }
         }
     }
 
     suspend fun get(key: SessionKey): String? = mutex.withLock { entries[key]?.sessionId }
 
-    suspend fun workspace(key: SessionKey): Path = mutex.withLock {
-        Path.of(directories[key.chatKey()]?.workspace ?: key.workspace)
-    }
+    suspend fun workspace(key: SessionKey): Path =
+        mutex.withLock { Path.of(directories[key.chatKey()]?.workspace ?: key.workspace) }
 
-    suspend fun latestChat(appId: String, runtimeRoot: String, backendId: String): String? = mutex.withLock {
-        BackendId.parse(backendId)
-        entries.values
-            .asSequence()
-            .filter { it.key.appId == appId && it.key.runtimeRoot == runtimeRoot && it.key.backendId == backendId }
-            .maxByOrNull { it.updatedAt }
-            ?.key
-            ?.chatId
-    }
-
-    suspend fun changeWorkspace(base: SessionKey, target: Path) = mutex.withLock {
-        BackendId.parse(base.backendId)
-        require(target.isAbsolute)
-        val nextDirectories = LinkedHashMap(directories).apply {
-            put(base.chatKey(), WorkspaceEntry(base.chatKey(), target.toString()))
+    suspend fun latestChat(appId: String, runtimeRoot: String, backendId: String): String? =
+        mutex.withLock {
+            BackendId.parse(backendId)
+            entries.values
+                .asSequence()
+                .filter {
+                    it.key.appId == appId &&
+                        it.key.runtimeRoot == runtimeRoot &&
+                        it.key.backendId == backendId
+                }
+                .maxByOrNull { it.updatedAt }
+                ?.key
+                ?.chatId
         }
-        val current = directories[base.chatKey()]?.workspace ?: base.workspace
-        val next = LinkedHashMap(entries).apply {
-            if (target.toString() != current) remove(base.copy(workspace = target.toString()))
+
+    suspend fun changeWorkspace(base: SessionKey, target: Path) =
+        mutex.withLock {
+            BackendId.parse(base.backendId)
+            require(target.isAbsolute)
+            val nextDirectories =
+                LinkedHashMap(directories).apply {
+                    put(base.chatKey(), WorkspaceEntry(base.chatKey(), target.toString()))
+                }
+            val current = directories[base.chatKey()]?.workspace ?: base.workspace
+            val next =
+                LinkedHashMap(entries).apply {
+                    if (target.toString() != current) {
+                        remove(base.copy(workspace = target.toString()))
+                    }
+                }
+            commit(next, nextDirectories)
         }
-        commit(next, nextDirectories)
-    }
 
-    suspend fun set(key: SessionKey, sessionId: String) = mutex.withLock {
-        val entry = SessionEntry(key, sessionId, System.currentTimeMillis())
-        validate(entry)
-        val next = LinkedHashMap(entries).apply { put(key, entry) }
-        commit(next, directories)
-    }
+    suspend fun set(key: SessionKey, sessionId: String) =
+        mutex.withLock {
+            val entry = SessionEntry(key, sessionId, System.currentTimeMillis())
+            validate(entry)
+            val next = LinkedHashMap(entries).apply { put(key, entry) }
+            commit(next, directories)
+        }
 
-    suspend fun remove(key: SessionKey) = mutex.withLock {
-        val next = LinkedHashMap(entries).apply { remove(key) }
-        commit(next, directories)
-    }
+    suspend fun remove(key: SessionKey) =
+        mutex.withLock {
+            val next = LinkedHashMap(entries).apply { remove(key) }
+            commit(next, directories)
+        }
 
     // Once the atomic replacement begins, finish its matching memory update even on cancellation.
-    private suspend fun commit(next: LinkedHashMap<SessionKey, SessionEntry>, nextDirectories: LinkedHashMap<ChatKey, WorkspaceEntry>) {
+    private suspend fun commit(
+        next: LinkedHashMap<SessionKey, SessionEntry>,
+        nextDirectories: LinkedHashMap<ChatKey, WorkspaceEntry>,
+    ) {
         withContext(NonCancellable + Dispatchers.IO) {
             persist(next, nextDirectories)
             entries = next
@@ -113,15 +172,26 @@ class SessionStore(private val path: Path) {
     private fun validate(entry: SessionEntry) {
         val backend = BackendId.parse(entry.key.backendId)
         require(entry.key.appId.isNotBlank() && entry.key.chatId.isNotBlank())
-        require(Path.of(entry.key.workspace).isAbsolute && Path.of(entry.key.runtimeRoot).isAbsolute)
-        val validId = when (backend) {
-            BackendId.OPENCODE -> openCodeId(entry.sessionId, "ses")
-            BackendId.CODEX, BackendId.TRAEX -> validSessionId(entry.sessionId)
-        }
+        require(
+            Path.of(entry.key.workspace).isAbsolute && Path.of(entry.key.runtimeRoot).isAbsolute
+        )
+        val validId =
+            when (backend) {
+                BackendId.OPENCODE -> {
+                    openCodeId(entry.sessionId, "ses")
+                }
+                BackendId.CODEX,
+                BackendId.TRAEX -> {
+                    validSessionId(entry.sessionId)
+                }
+            }
         require(validId && entry.updatedAt > 0)
     }
 
-    private fun persist(next: Map<SessionKey, SessionEntry>, nextDirectories: Map<ChatKey, WorkspaceEntry>) {
+    private fun persist(
+        next: Map<SessionKey, SessionEntry>,
+        nextDirectories: Map<ChatKey, WorkspaceEntry>,
+    ) {
         var temp: Path? = null
         try {
             val parent = path.toAbsolutePath().parent
@@ -129,9 +199,25 @@ class SessionStore(private val path: Path) {
             require(Files.isDirectory(parent, NOFOLLOW_LINKS))
             require(!Files.isSymbolicLink(path))
             temp = PlatformFiles.createTempFile(parent, ".sessions-", ".tmp")
-            Files.writeString(temp, gson.toJson(mapOf("version" to 3, "sessions" to next.values, "workspaces" to nextDirectories.values)) + "\n")
+            Files.writeString(
+                temp,
+                gson.toJson(
+                    mapOf(
+                        "version" to 3,
+                        "sessions" to next.values,
+                        "workspaces" to nextDirectories.values,
+                    )
+                ) + "\n",
+            )
             Files.move(temp, path, ATOMIC_MOVE, REPLACE_EXISTING)
-        } catch (_: Exception) { throw SessionPersistenceException() }
-        finally { temp?.let { try { Files.deleteIfExists(it) } catch (_: Exception) {} } }
+        } catch (_: Exception) {
+            throw SessionPersistenceException()
+        } finally {
+            temp?.let {
+                try {
+                    Files.deleteIfExists(it)
+                } catch (_: Exception) {}
+            }
+        }
     }
 }

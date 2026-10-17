@@ -1,44 +1,63 @@
 package top.ntutn.agent.bridge
 
-import top.ntutn.agent.bridge.feishu.FeishuConnection
 import com.lark.oapi.channel.exception.LarkChannelException
 import com.lark.oapi.scene.registration.RegisterAppException
-import kotlinx.coroutines.runBlocking
-import org.slf4j.LoggerFactory
 import java.nio.file.Path
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
-import kotlinx.coroutines.withTimeout
 import kotlin.system.exitProcess
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import org.slf4j.LoggerFactory
+import top.ntutn.agent.bridge.desktop.DesktopApi
+import top.ntutn.agent.bridge.desktop.DesktopHistory
 import top.ntutn.agent.bridge.feishu.ConnectionWatchdog
+import top.ntutn.agent.bridge.feishu.FeishuConnection
 import top.ntutn.agent.bridge.feishu.createAgentChannel
 import top.ntutn.agent.bridge.storage.ConfigStore
 import top.ntutn.agent.bridge.storage.InstanceLock
 import top.ntutn.agent.bridge.storage.SessionStore
 import top.ntutn.agent.bridge.telegram.TelegramClient
 import top.ntutn.agent.bridge.telegram.createTelegramChannel
-import top.ntutn.agent.bridge.desktop.DesktopHistory
-import top.ntutn.agent.bridge.desktop.DesktopApi
-import java.security.MessageDigest
 
-// Do not render exception messages, payloads or stacks from external SDKs: they can contain credentials.
+// Do not render exception messages, payloads or stacks from external SDKs: they can contain
+// credentials.
 fun safeError(error: Throwable): String {
     val cause = generateSequence(error) { it.cause }.take(10).last()
     return when (cause) {
-        is RegisterAppException -> when (cause.code) {
-            "expired_token" -> "授权链接已过期，请重新运行。"
-            "access_denied" -> "用户拒绝了授权，请重新运行后完成授权。"
-            "abort" -> "授权已取消。"
-            "network_error" -> "授权网络请求失败，请检查网络后重试。"
-            else -> "授权失败（${cause.code.filter { it.isLetterOrDigit() || it == '_' }.take(60)}），请重试或检查应用权限。"
+        is RegisterAppException -> {
+            when (cause.code) {
+                "expired_token" -> {
+                    "授权链接已过期，请重新运行。"
+                }
+                "access_denied" -> {
+                    "用户拒绝了授权，请重新运行后完成授权。"
+                }
+                "abort" -> {
+                    "授权已取消。"
+                }
+                "network_error" -> {
+                    "授权网络请求失败，请检查网络后重试。"
+                }
+                else -> {
+                    "授权失败（${cause.code.filter { it.isLetterOrDigit() || it == '_' }.take(60)}），请重试或检查应用权限。"
+                }
+            }
         }
-        is LarkChannelException -> "飞书通道失败（${cause.code}），请检查凭证、长连接和收发消息权限；参见 README。"
-        else -> "${cause.javaClass.simpleName}：请检查网络、配置及应用权限；参见 README。"
+        is LarkChannelException -> {
+            "飞书通道失败（${cause.code}），请检查凭证、长连接和收发消息权限；参见 README。"
+        }
+        else -> {
+            "${cause.javaClass.simpleName}：请检查网络、配置及应用权限；参见 README。"
+        }
     }
 }
 
 fun main(args: Array<String>) {
     if (args.contains("--help")) {
-        println("使用 bridgectl dev 调试；bridgectl start/status/stop --env prod 管理正式环境；bridgectl --help 查看部署命令。")
+        println(
+            "使用 bridgectl dev 调试；bridgectl start/status/stop --env prod 管理正式环境；bridgectl --help 查看部署命令。"
+        )
         return
     }
     FatalErrorHandler.install()
@@ -53,9 +72,12 @@ fun main(args: Array<String>) {
     var lifecycle: RuntimeLifecycle? = null
     var watchdog: top.ntutn.agent.bridge.feishu.ConnectionWatchdog? = null
     try {
-        // Preserve only the legacy stop operation for migration. New environments use bridgectl stop.
+        // Preserve only the legacy stop operation for migration. New environments use bridgectl
+        // stop.
         if (args.contentEquals(arrayOf("--stop"))) {
-            println(InstanceLock.stop(Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt")))
+            println(
+                InstanceLock.stop(Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt"))
+            )
             return
         }
         require(args.isEmpty()) { "使用 bridgectl 管理环境，不再直接传入运行参数" }
@@ -64,17 +86,23 @@ fun main(args: Array<String>) {
         instance = InstanceLock.acquire(environment.directory)
         lifecycle = RuntimeLifecycle(environment)
         FatalErrorHandler.attach(lifecycle)
-        val config = ConfigStore(environment.directory.resolve("config.json")).load()
-            ?: throw IllegalArgumentException("环境尚未绑定机器人，请使用 bridgectl init")
+        val config =
+            ConfigStore(environment.directory.resolve("config.json")).load()
+                ?: throw IllegalArgumentException("环境尚未绑定机器人，请使用 bridgectl init")
         environment.validate(config)
         val options = environment.options()
         val sessions = SessionStore(environment.directory.resolve("sessions.json"))
         val backend = environment.backend(BackendId.parse(config.backend), options)
         // Changing bot, backend or model state root creates a separate desktop history namespace.
-        val desktopNamespace = MessageDigest.getInstance("SHA-256")
-            .digest("${config.appId}\u0000${backend.id.configValue}\u0000${backend.runtimeRoot}".toByteArray())
-            .joinToString("") { "%02x".format(it) }
-        val desktopHistory = DesktopHistory(environment.directory.resolve("desktop/$desktopNamespace/history.json"))
+        val desktopNamespace =
+            MessageDigest.getInstance("SHA-256")
+                .digest(
+                    "${config.appId}\u0000${backend.id.configValue}\u0000${backend.runtimeRoot}"
+                        .toByteArray()
+                )
+                .joinToString("") { "%02x".format(it) }
+        val desktopHistory =
+            DesktopHistory(environment.directory.resolve("desktop/$desktopNamespace/history.json"))
         runner = createAgentRunner(backend, SandboxMode.parse(config.sandboxMode))
         runner.checkAvailable()
         val held = System.getenv("BRIDGE_HOLD") == "1"
@@ -82,21 +110,57 @@ fun main(args: Array<String>) {
         when (config.platform) {
             "feishu" -> {
                 fileLinks = top.ntutn.agent.bridge.localfiles.LocalFileServer()
-                val bridge = createAgentChannel(config, runner, sessions, options, backend, lifecycle, held, desktopHistory,
-                    fileLinks = fileLinks, onInboundActivity = { onInboundActivity?.invoke() })
-                larkChannel = bridge.first; service = bridge.second
+                val bridge =
+                    createAgentChannel(
+                        config,
+                        runner,
+                        sessions,
+                        options,
+                        backend,
+                        lifecycle,
+                        held,
+                        desktopHistory,
+                        fileLinks = fileLinks,
+                        onInboundActivity = { onInboundActivity?.invoke() },
+                    )
+                larkChannel = bridge.first
+                service = bridge.second
             }
             "telegram" -> {
                 fileLinks = top.ntutn.agent.bridge.localfiles.LocalFileServer()
-                val bridge = createTelegramChannel(config, runner, sessions, options, backend, lifecycle, held, desktopHistory, fileLinks)
-                telegramClient = bridge.first; service = bridge.second
+                val bridge =
+                    createTelegramChannel(
+                        config,
+                        runner,
+                        sessions,
+                        options,
+                        backend,
+                        lifecycle,
+                        held,
+                        desktopHistory,
+                        fileLinks,
+                    )
+                telegramClient = bridge.first
+                service = bridge.second
             }
-            else -> error("不支持的平台: ${config.platform}")
+            else -> {
+                error("不支持的平台: ${config.platform}")
+            }
         }
         val monitoredRunner = runner
-        val desktop = DesktopApi(desktopHistory, service, json("apiVersion" to 1,
-            "environment" to environment.name, "backend" to backend.displayName, "sandboxMode" to config.sandboxMode,
-            "release" to environment.release, "bootId" to lifecycle.bootId))
+        val desktop =
+            DesktopApi(
+                desktopHistory,
+                service,
+                json(
+                    "apiVersion" to 1,
+                    "environment" to environment.name,
+                    "backend" to backend.displayName,
+                    "sandboxMode" to config.sandboxMode,
+                    "release" to environment.release,
+                    "bootId" to lifecycle.bootId,
+                ),
+            )
         control = RuntimeControl(lifecycle, service, desktop) { monitoredRunner.healthy() }
         val activeLarkChannel = larkChannel
         val activeTelegramClient = telegramClient
@@ -108,17 +172,19 @@ fun main(args: Array<String>) {
         val activeLifecycle = lifecycle
         if (config.platform == "feishu") {
             val channel = activeLarkChannel!!
-            val created = ConnectionWatchdog(
-                reconnect = { channel.reconnect() },
-                transportHealthy = channel::healthy,
-                autoStart = false,
-                status = { activeService.deploymentStatus() },
-                escalate = {
-                    activeLifecycle.stopReason = "飞书连接长时间不可恢复"
-                    activeLifecycle.finish("飞书连接长时间不可恢复", 1)
-                    exitProcess(1)
-                },
-                recovered = { activeControl.connected(true) })
+            val created =
+                ConnectionWatchdog(
+                    reconnect = { channel.reconnect() },
+                    transportHealthy = channel::healthy,
+                    autoStart = false,
+                    status = { activeService.deploymentStatus() },
+                    escalate = {
+                        activeLifecycle.stopReason = "飞书连接长时间不可恢复"
+                        activeLifecycle.finish("飞书连接长时间不可恢复", 1)
+                        exitProcess(1)
+                    },
+                    recovered = { activeControl.connected(true) },
+                )
             watchdog = created
             onInboundActivity = created::noteActivity
             channel.connectionChanged = { connected ->
@@ -127,51 +193,80 @@ fun main(args: Array<String>) {
                 log.info("飞书连接状态 connected={}", connected)
             }
         }
-        Runtime.getRuntime().addShutdownHook(Thread {
-            closeBridgeResources(
-                { activeTelegramClient?.stopPolling() }, { watchdog?.close() }, { activeControl.close() }, { activeFileLinks?.close() }, { activeService.close() }, { activeRunner.close() },
-                { runBlocking { withTimeout(5_000) { activeLarkChannel?.disconnect() } } },
-                { activeTelegramClient?.close() },
-                { activeLifecycle.finish(activeLifecycle.stopReason, 0) }, { activeInstance.close() }
+        Runtime.getRuntime()
+            .addShutdownHook(
+                Thread {
+                    closeBridgeResources(
+                        { activeTelegramClient?.stopPolling() },
+                        { watchdog?.close() },
+                        { activeControl.close() },
+                        { activeFileLinks?.close() },
+                        { activeService.close() },
+                        { activeRunner.close() },
+                        { runBlocking { withTimeout(5_000) { activeLarkChannel?.disconnect() } } },
+                        { activeTelegramClient?.close() },
+                        { activeLifecycle.finish(activeLifecycle.stopReason, 0) },
+                        { activeInstance.close() },
+                    )
+                }
             )
-        })
         if (config.platform == "feishu") {
             val channel = activeLarkChannel!!
             log.info("正在连接飞书…… environment={} release={}", environment.name, environment.release)
             runBlocking { withTimeout(45_000) { channel.connect() } }
         } else {
-            log.info("正在连接 Telegram…… environment={} release={}", environment.name, environment.release)
+            log.info(
+                "正在连接 Telegram…… environment={} release={}",
+                environment.name,
+                environment.release,
+            )
             val client = telegramClient!!
             val bot = runBlocking { client.getMe() }
             log.info("Telegram Bot 已连接: @{}", bot.username ?: bot.displayName)
         }
         control.connected(true)
         watchdog?.start()
-        log.info("{} Bridge 已连接 environment={} release={}", backend.displayName, environment.name, environment.release)
+        log.info(
+            "{} Bridge 已连接 environment={} release={}",
+            backend.displayName,
+            environment.name,
+            environment.release,
+        )
         CountDownLatch(1).await()
     } catch (e: Exception) {
         FatalErrorHandler.rethrowProgrammingError(e)
         log.error("启动失败 type={}", e.javaClass.simpleName)
         closeBridgeResources(
-            { telegramClient?.stopPolling() }, { watchdog?.close() }, { control?.close() }, { fileLinks?.close() }, { service?.close() }, { runner?.close() },
+            { telegramClient?.stopPolling() },
+            { watchdog?.close() },
+            { control?.close() },
+            { fileLinks?.close() },
+            { service?.close() },
+            { runner?.close() },
             { runBlocking { withTimeout(5_000) { larkChannel?.disconnect() } } },
             { telegramClient?.close() },
-            { lifecycle?.finish("启动失败 ${e.javaClass.simpleName}", 1) }, { instance?.close() }
+            { lifecycle?.finish("启动失败 ${e.javaClass.simpleName}", 1) },
+            { instance?.close() },
         )
         exitProcess(1)
     }
-
 }
 
 // Shutdown is best-effort for every resource, including after a JVM linkage error.
 internal fun closeBridgeResources(vararg actions: () -> Unit) {
     fun closeAt(index: Int) {
-        if (index == actions.size) return
-        try { actions[index]() }
-        catch (error: Throwable) {
+        if (index == actions.size) {
+            return
+        }
+        try {
+            actions[index]()
+        } catch (error: Throwable) {
             FatalErrorHandler.rethrowProgrammingError(error)
-            LoggerFactory.getLogger("top.ntutn.agent.bridge").warn("退出清理失败 type={}", error.javaClass.simpleName)
-        } finally { closeAt(index + 1) }
+            LoggerFactory.getLogger("top.ntutn.agent.bridge")
+                .warn("退出清理失败 type={}", error.javaClass.simpleName)
+        } finally {
+            closeAt(index + 1)
+        }
     }
     closeAt(0)
 }

@@ -1,23 +1,29 @@
 package top.ntutn.agent.bridge
 
 import com.google.gson.JsonArray
+import java.io.IOException
+import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.updateAndGet
 import org.slf4j.LoggerFactory
-import java.io.IOException
-import kotlin.time.Duration.Companion.milliseconds
 
 /** A non-idempotent send may already have reached the server; do not replay it as plain text. */
 internal class ReplyDeliveryUncertain : IOException("Reply delivery could not be confirmed")
 
-internal enum class CardDelivery { DELIVERED, FALLBACK_REQUIRED }
+internal enum class CardDelivery {
+    DELIVERED,
+    FALLBACK_REQUIRED,
+}
 
 internal interface ResultDelivery {
     suspend fun send(text: String, status: String): CardDelivery
+
     suspend fun fallbackStarting(chunk: Int) {}
+
     suspend fun fallbackProgress(confirmedChunks: Int, complete: Boolean)
+
     fun fallbackText(text: String): String = text
 }
 
@@ -27,43 +33,156 @@ internal interface SplitCardReplies : CardReplies {
 
 /** Implementations own external I/O, safe retries and durable quote snapshots. */
 interface CardReplies {
-    val refreshIntervalMs: Long? get() = null
+    val refreshIntervalMs: Long?
+        get() = null
+
     suspend fun refresh(card: CardReference) {}
+
     suspend fun release(card: CardReference) {}
+
     suspend fun create(route: ReplyRoute): CardReference
+
     suspend fun progress(card: CardReference, progress: AgentProgress)
+
     suspend fun finish(card: CardReference, text: String, process: String, status: String): Boolean
 }
 
-data class CardReference(val cardId: String, val messageId: String, val chatId: String,
-                         var sequence: Int = 0, var streamingSince: Long = System.nanoTime(),
-                         val workspace: java.nio.file.Path? = null)
+data class CardReference(
+    val cardId: String,
+    val messageId: String,
+    val chatId: String,
+    var sequence: Int = 0,
+    var streamingSince: Long = System.nanoTime(),
+    val workspace: java.nio.file.Path? = null,
+)
 
 internal object ReplyCard {
     const val MAX_BYTES = 28_000
+
     // Escaped JSON can expand a UTF-16 character to six ASCII bytes. Keep both components bounded.
-    fun render(answer: String, process: String, status: String, streaming: Boolean, showProcess: Boolean = true): String = json(
-        "schema" to "2.0",
-        "config" to json("update_multi" to true, "width_mode" to "default", "streaming_mode" to streaming,
-            "summary" to json("content" to bounded(if (streaming) "正在处理…" else "$status：$answer", 100))),
-        "header" to json("title" to json("tag" to "plain_text", "content" to status),
-            "template" to if (streaming) "blue" else if (status in setOf("已完成", "回复完成")) "green" else "grey"),
-        "body" to json("direction" to "vertical", "vertical_spacing" to "12px", "elements" to JsonArray().apply {
-            val answerElement = json("tag" to "markdown", "element_id" to "answer",
-                "content" to safeMarkdown(answer.ifBlank { if (status == "已终止") "终止前尚未输出答案。" else "正在处理，请稍候…" }))
-            if (status == "已终止") {
-                add(json("tag" to "markdown", "content" to "本次执行已终止，以下保留终止前的输出，内容可能尚未完成。"))
-                add(json("tag" to "collapsible_panel", "element_id" to "answer_panel", "expanded" to false,
-                    "header" to json("title" to json("tag" to "plain_text", "content" to "终止前的输出")),
-                    "elements" to JsonArray().apply { add(answerElement) }))
-            } else add(answerElement)
-            if (showProcess) add(json("tag" to "collapsible_panel", "element_id" to "process_panel", "expanded" to streaming,
-                "header" to json("title" to json("tag" to "plain_text", "content" to "执行过程")),
-                "border" to json("color" to "grey", "corner_radius" to "8px"), "padding" to "8px",
-                "elements" to JsonArray().apply {
-                    add(json("tag" to "markdown", "element_id" to "process", "content" to safeMarkdown(process.ifBlank { "正在处理…" })))
-                }))
-        })).toString()
+    fun render(
+        answer: String,
+        process: String,
+        status: String,
+        streaming: Boolean,
+        showProcess: Boolean = true,
+    ): String =
+        json(
+                "schema" to "2.0",
+                "config" to
+                    json(
+                        "update_multi" to true,
+                        "width_mode" to "default",
+                        "streaming_mode" to streaming,
+                        "summary" to
+                            json(
+                                "content" to
+                                    bounded(
+                                        if (streaming) {
+                                            "正在处理…"
+                                        } else {
+                                            "$status：$answer"
+                                        },
+                                        100,
+                                    )
+                            ),
+                    ),
+                "header" to
+                    json(
+                        "title" to json("tag" to "plain_text", "content" to status),
+                        "template" to
+                            if (streaming) {
+                                "blue"
+                            } else if (status in setOf("已完成", "回复完成")) {
+                                "green"
+                            } else {
+                                "grey"
+                            },
+                    ),
+                "body" to
+                    json(
+                        "direction" to "vertical",
+                        "vertical_spacing" to "12px",
+                        "elements" to
+                            JsonArray().apply {
+                                val answerElement =
+                                    json(
+                                        "tag" to "markdown",
+                                        "element_id" to "answer",
+                                        "content" to
+                                            safeMarkdown(
+                                                answer.ifBlank {
+                                                    if (status == "已终止") {
+                                                        "终止前尚未输出答案。"
+                                                    } else {
+                                                        "正在处理，请稍候…"
+                                                    }
+                                                }
+                                            ),
+                                    )
+                                if (status == "已终止") {
+                                    add(
+                                        json(
+                                            "tag" to "markdown",
+                                            "content" to "本次执行已终止，以下保留终止前的输出，内容可能尚未完成。",
+                                        )
+                                    )
+                                    add(
+                                        json(
+                                            "tag" to "collapsible_panel",
+                                            "element_id" to "answer_panel",
+                                            "expanded" to false,
+                                            "header" to
+                                                json(
+                                                    "title" to
+                                                        json(
+                                                            "tag" to "plain_text",
+                                                            "content" to "终止前的输出",
+                                                        )
+                                                ),
+                                            "elements" to JsonArray().apply { add(answerElement) },
+                                        )
+                                    )
+                                } else {
+                                    add(answerElement)
+                                }
+                                if (showProcess) {
+                                    add(
+                                        json(
+                                            "tag" to "collapsible_panel",
+                                            "element_id" to "process_panel",
+                                            "expanded" to streaming,
+                                            "header" to
+                                                json(
+                                                    "title" to
+                                                        json(
+                                                            "tag" to "plain_text",
+                                                            "content" to "执行过程",
+                                                        )
+                                                ),
+                                            "border" to
+                                                json("color" to "grey", "corner_radius" to "8px"),
+                                            "padding" to "8px",
+                                            "elements" to
+                                                JsonArray().apply {
+                                                    add(
+                                                        json(
+                                                            "tag" to "markdown",
+                                                            "element_id" to "process",
+                                                            "content" to
+                                                                safeMarkdown(
+                                                                    process.ifBlank { "正在处理…" }
+                                                                ),
+                                                        )
+                                                    )
+                                                },
+                                        )
+                                    )
+                                }
+                            },
+                    ),
+            )
+            .toString()
 
     // Model text is Markdown, not trusted card markup: avoid introducing mentions/person resources.
     fun safeMarkdown(text: String): String {
@@ -73,41 +192,83 @@ internal object ReplyCard {
             val active = fence
             when {
                 active != null -> {
-                    if (marker != null && marker.groupValues[1].first() == active.first() &&
-                        marker.groupValues[1].length >= active.length && marker.groupValues[2].isBlank()) fence = null
+                    if (
+                        marker != null &&
+                            marker.groupValues[1].first() == active.first() &&
+                            marker.groupValues[1].length >= active.length &&
+                            marker.groupValues[2].isBlank()
+                    ) {
+                        fence = null
+                    }
                     line
                 }
-                marker != null -> { fence = marker.groupValues[1]; line }
+                marker != null -> {
+                    fence = marker.groupValues[1]
+                    line
+                }
                 else -> {
-                    val escaped = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                    val escaped =
+                        line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                     // Feishu keeps HTML entities literal in Markdown link destinations.
                     // Restore query separators only; keep markup/entity escaping intact.
                     top.ntutn.agent.bridge.localfiles.rewriteFileLinks(escaped) { destination ->
-                        if (destination.startsWith("http://") || destination.startsWith("https://"))
+                        if (
+                            destination.startsWith("http://") || destination.startsWith("https://")
+                        ) {
                             destination.replace(Regex("&amp;(?=[A-Za-z][A-Za-z0-9_-]*=)"), "&")
-                        else null
+                        } else {
+                            null
+                        }
                     }
                 }
             }
         }
     }
+
     fun fits(value: String) = value.toByteArray(Charsets.UTF_8).size <= MAX_BYTES
+
     fun preview(progress: AgentProgress, terminated: Boolean = false): AgentProgress {
         var answer = bounded(progress.answer, 6000)
         var process = bounded(progress.process, 1800)
-        while (!fits(render(answer, process, if (terminated) "已终止" else "正在处理", !terminated))) {
-            if (answer.length > process.length) answer = bounded(answer, answer.length / 2)
-            else process = bounded(process, process.length / 2)
+        while (
+            !fits(
+                render(
+                    answer,
+                    process,
+                    if (terminated) {
+                        "已终止"
+                    } else {
+                        "正在处理"
+                    },
+                    !terminated,
+                )
+            )
+        ) {
+            if (answer.length > process.length) {
+                answer = bounded(answer, answer.length / 2)
+            } else {
+                process = bounded(process, process.length / 2)
+            }
         }
         return AgentProgress(process, answer)
     }
 }
 
 /** A child of the chat task; only complete snapshots cross this conflated mailbox. */
-internal class StreamingReply(scope: CoroutineScope, private val api: CardReplies, private val route: ReplyRoute,
-                              private val beforeReply: suspend () -> Unit, private val intervalMs: Long = 1000,
-                              private val requestId: String = route.messageId) {
-    private data class Update(val progress: AgentProgress, val final: String? = null, val status: String = "已完成")
+internal class StreamingReply(
+    scope: CoroutineScope,
+    private val api: CardReplies,
+    private val route: ReplyRoute,
+    private val beforeReply: suspend () -> Unit,
+    private val intervalMs: Long = 1000,
+    private val requestId: String = route.messageId,
+) {
+    private data class Update(
+        val progress: AgentProgress,
+        val final: String? = null,
+        val status: String = "已完成",
+    )
+
     private val updates = Channel<Update>(Channel.CONFLATED)
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private var card: CardReference? = null // Accessed by worker, then by close only after join.
@@ -119,126 +280,248 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
     private var deliveryStarted = false
     private var finalProcessStatus: String? = null
     private val terminal = MutableStateFlow<Update?>(null)
-    private data class Observed(val progress: AgentProgress = AgentProgress(), val stopping: Boolean = false)
+
+    private data class Observed(
+        val progress: AgentProgress = AgentProgress(),
+        val stopping: Boolean = false,
+    )
+
     private val observed = MutableStateFlow(Observed())
-    private val worker = scope.launch {
-        var enabled = true
-        try {
-            beforeReply()
-            if (api is SplitCardReplies && route.documentComment == null) resultDelivery = api.prepareResult(route, requestId)
-            card = api.create(route)
-        } catch (e: CancellationException) { throw e }
-        catch (_: IOException) { enabled = false; log.warn("过程卡片创建失败，将独立交付最终回复 messageId={}", route.messageId) }
-        while (true) {
-            val refresh = if (enabled && card != null) api.refreshIntervalMs else null
-            val received = if (refresh == null) updates.receiveCatching()
-                else withTimeoutOrNull(refresh) { updates.receiveCatching() }
-            if (received == null) {
-                try { api.refresh(card!!) }
-                catch (e: CancellationException) { throw e }
-                catch (_: IOException) { enabled = false }
-                continue
+    private val worker =
+        scope.launch {
+            var enabled = true
+            try {
+                beforeReply()
+                if (api is SplitCardReplies && route.documentComment == null) {
+                    resultDelivery = api.prepareResult(route, requestId)
+                }
+                card = api.create(route)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: IOException) {
+                enabled = false
+                log.warn("过程卡片创建失败，将独立交付最终回复 messageId={}", route.messageId)
             }
-            val initial = received.getOrNull() ?: break
-            var update = terminal.value ?: initial
-            if (update.final == null) {
-                delay(intervalMs)
-                while (true) update = updates.tryReceive().getOrNull() ?: break
-            }
-            update = terminal.value ?: update
-            if (update.final == null) {
-                val state = observed.value
-                update = update.copy(progress = if (state.stopping)
-                    state.progress.copy(process = "正在停止，等待后端确认…\n\n" + state.progress.process) else state.progress)
-            }
-            val ref = card
-            if (update.final != null) {
-                if (ref != null) try {
-                    rendered = if (api is SplitCardReplies && observed.value.stopping) {
-                        val stoppedStatus = if (update.status == "执行失败") "执行失败" else "已终止"
-                        api.finish(ref, if (stoppedStatus == "已终止") observed.value.progress.answer else update.final,
-                            update.progress.process, stoppedStatus)
-                    } else if (api is SplitCardReplies && update.status != "已终止") {
-                        withTimeoutOrNull(1500) {
-                            api.finish(ref, "最终答案将通过新消息发送。", update.progress.process, "正在发送结果")
+            while (true) {
+                val refresh =
+                    if (enabled && card != null) {
+                        api.refreshIntervalMs
+                    } else {
+                        null
+                    }
+                val received =
+                    if (refresh == null) {
+                        updates.receiveCatching()
+                    } else {
+                        withTimeoutOrNull(refresh) { updates.receiveCatching() }
+                    }
+                if (received == null) {
+                    try {
+                        api.refresh(card!!)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: IOException) {
+                        enabled = false
+                    }
+                    continue
+                }
+                val initial = received.getOrNull() ?: break
+                var update = terminal.value ?: initial
+                if (update.final == null) {
+                    delay(intervalMs)
+                    while (true) {
+                        update = updates.tryReceive().getOrNull() ?: break
+                    }
+                }
+                update = terminal.value ?: update
+                if (update.final == null) {
+                    val state = observed.value
+                    update =
+                        update.copy(
+                            progress =
+                                if (state.stopping) {
+                                    state.progress.copy(
+                                        process = "正在停止，等待后端确认…\n\n" + state.progress.process
+                                    )
+                                } else {
+                                    state.progress
+                                }
+                        )
+                }
+                val ref = card
+                if (update.final != null) {
+                    if (ref != null) {
+                        try {
+                            rendered =
+                                if (api is SplitCardReplies && observed.value.stopping) {
+                                    val stoppedStatus =
+                                        if (update.status == "执行失败") {
+                                            "执行失败"
+                                        } else {
+                                            "已终止"
+                                        }
+                                    api.finish(
+                                        ref,
+                                        if (stoppedStatus == "已终止") {
+                                            observed.value.progress.answer
+                                        } else {
+                                            update.final
+                                        },
+                                        update.progress.process,
+                                        stoppedStatus,
+                                    )
+                                } else if (api is SplitCardReplies && update.status != "已终止") {
+                                    withTimeoutOrNull(1500) {
+                                        api.finish(
+                                            ref,
+                                            "最终答案将通过新消息发送。",
+                                            update.progress.process,
+                                            "正在发送结果",
+                                        )
+                                    }
+                                    false
+                                } else {
+                                    api.finish(
+                                        ref,
+                                        update.final,
+                                        update.progress.process,
+                                        update.status,
+                                    )
+                                }
+                            finished = true
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: ReplyDeliveryUncertain) {
+                            finished = true
+                            deliveryFailure = e
+                        } catch (_: IOException) {
+                            log.warn("卡片收束失败，最终回复将使用文本 messageId={}", route.messageId)
                         }
-                        false
-                    } else api.finish(ref, update.final, update.progress.process, update.status)
-                    finished = true
-                } catch (e: CancellationException) { throw e }
-                catch (e: ReplyDeliveryUncertain) { finished = true; deliveryFailure = e }
-                catch (_: IOException) { log.warn("卡片收束失败，最终回复将使用文本 messageId={}", route.messageId) }
-                break
+                    }
+                    break
+                }
+                if (enabled && ref != null) {
+                    try {
+                        val display =
+                            if (api is SplitCardReplies) {
+                                update.progress.copy(answer = "")
+                            } else {
+                                update.progress
+                            }
+                        api.progress(ref, ReplyCard.preview(display))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: IOException) {
+                        enabled = false
+                        log.warn("卡片进度更新失败，等待最终收束 messageId={}", route.messageId)
+                    }
+                }
             }
-            if (enabled && ref != null) try {
-                val display = if (api is SplitCardReplies) update.progress.copy(answer = "") else update.progress
-                api.progress(ref, ReplyCard.preview(display))
-            }
-            catch (e: CancellationException) { throw e }
-            catch (_: IOException) { enabled = false; log.warn("卡片进度更新失败，等待最终收束 messageId={}", route.messageId) }
         }
-    }
 
     fun progress(value: AgentProgress) {
         val state = observed.updateAndGet { it.copy(progress = value) }
         updates.trySend(Update(state.progress))
     }
+
     fun stopping() {
         val state = observed.updateAndGet { it.copy(stopping = true) }
         updates.trySend(Update(state.progress))
     }
+
     suspend fun finish(text: String, status: String = "已完成", timeoutMs: Long = 25_000): Boolean =
         finishDelivery(text, status, timeoutMs) == CardDelivery.DELIVERED
 
-    suspend fun finishDelivery(text: String, status: String = "已完成", timeoutMs: Long = 25_000): CardDelivery {
-        // The runner's final event is authoritative; pending progress is superseded by this terminal update.
+    suspend fun finishDelivery(
+        text: String,
+        status: String = "已完成",
+        timeoutMs: Long = 25_000,
+    ): CardDelivery {
+        // The runner's final event is authoritative; pending progress is superseded by this
+        // terminal update.
         val progress = observed.value.progress
-        val output = if (status == "已终止") progress.answer else text
+        val output =
+            if (status == "已终止") {
+                progress.answer
+            } else {
+                text
+            }
         val update = Update(progress, output, status)
         terminal.value = update
         updates.trySend(update)
         updates.close()
-        val processTimeout = if (api is SplitCardReplies) minOf(timeoutMs, 5000) else timeoutMs
-        if (withTimeoutOrNull(processTimeout) { worker.join(); true } != true) {
+        val processTimeout =
+            if (api is SplitCardReplies) {
+                minOf(timeoutMs, 5000)
+            } else {
+                timeoutMs
+            }
+        if (
+            withTimeoutOrNull(processTimeout) {
+                worker.join()
+                true
+            } != true
+        ) {
             log.warn("卡片收束等待超时 messageId={} timeoutMs={}", route.messageId, processTimeout)
             worker.cancelAndJoin()
         }
         deliveryFailure?.let { throw it }
-        if (api !is SplitCardReplies || status == "已终止")
-            return if (rendered) CardDelivery.DELIVERED else CardDelivery.FALLBACK_REQUIRED
-        finalDelivery?.let { return it }
-        if (deliveryStarted) throw ReplyDeliveryUncertain()
+        if (api !is SplitCardReplies || status == "已终止") {
+            return if (rendered) {
+                CardDelivery.DELIVERED
+            } else {
+                CardDelivery.FALLBACK_REQUIRED
+            }
+        }
+        finalDelivery?.let {
+            return it
+        }
+        if (deliveryStarted) {
+            throw ReplyDeliveryUncertain()
+        }
         currentCoroutineContext().ensureActive()
-        if (observed.value.stopping) throw CancellationException("Request stopped")
+        if (observed.value.stopping) {
+            throw CancellationException("Request stopped")
+        }
         beforeReply()
         deliveryStarted = true
         finished = false
         finalProcessStatus = "交付待确认"
-        val result = try {
-            resultDelivery?.send(text, status) ?: CardDelivery.FALLBACK_REQUIRED
-        } catch (e: ReplyDeliveryUncertain) {
-            deliveryFailure = e
-            settleProcess("结果发送状态未知，请勿重复执行。", "交付待确认")
-            throw e
-        }
+        val result =
+            try {
+                resultDelivery?.send(text, status) ?: CardDelivery.FALLBACK_REQUIRED
+            } catch (e: ReplyDeliveryUncertain) {
+                deliveryFailure = e
+                settleProcess("结果发送状态未知，请勿重复执行。", "交付待确认")
+                throw e
+            }
         finalDelivery = result
-        if (result == CardDelivery.DELIVERED) settleProcess("答案已单独发送，请查看本次请求的结果卡片。", status)
-        else finalProcessStatus = "文本交付未完成"
+        if (result == CardDelivery.DELIVERED) {
+            settleProcess("答案已单独发送，请查看本次请求的结果卡片。", status)
+        } else {
+            finalProcessStatus = "文本交付未完成"
+        }
         return result
     }
 
     suspend fun fallbackProgress(confirmedChunks: Int, complete: Boolean) {
-        if (api !is SplitCardReplies) return
+        if (api !is SplitCardReplies) {
+            return
+        }
         resultDelivery?.fallbackProgress(confirmedChunks, complete)
         if (complete) {
             finalDelivery = CardDelivery.DELIVERED
             settleProcess("答案已通过后续文本消息发送。", terminal.value?.status ?: "已完成")
-        } else finalProcessStatus = "文本交付未完成"
+        } else {
+            finalProcessStatus = "文本交付未完成"
+        }
     }
 
     fun fallbackText(text: String): String = resultDelivery?.fallbackText(text) ?: text
 
-    suspend fun fallbackStarting(chunk: Int) { resultDelivery?.fallbackStarting(chunk) }
+    suspend fun fallbackStarting(chunk: Int) {
+        resultDelivery?.fallbackStarting(chunk)
+    }
 
     private suspend fun settleProcess(text: String, status: String) {
         finalProcessStatus = status
@@ -246,29 +529,65 @@ internal class StreamingReply(scope: CoroutineScope, private val api: CardReplie
             try {
                 withTimeout(1500) { api.finish(ref, text, observed.value.progress.process, status) }
                 finished = true
-            } catch (e: TimeoutCancellationException) { currentCoroutineContext().ensureActive(); finished = false }
-            catch (_: IOException) { finished = false }
+            } catch (e: TimeoutCancellationException) {
+                currentCoroutineContext().ensureActive()
+                finished = false
+            } catch (_: IOException) {
+                finished = false
+            }
         }
     }
+
     suspend fun close(status: String, terminated: Boolean = false) {
         worker.cancelAndJoin()
         updates.close()
         try {
-            if (!finished) card?.let { ref ->
-                // A stop while waiting for card I/O cancels the worker; retain the latest answer and process here too.
-                val snapshot = terminal.value
-                val progress = observed.value.progress
-                val output = if (api is SplitCardReplies && !terminated) "结果状态：${finalProcessStatus ?: "未确认"}"
-                    else snapshot?.final ?: if (terminated) progress.answer else status
-                val finalStatus = if (terminated) "已终止" else finalProcessStatus ?: snapshot?.status ?: status
-                val cleaned = withTimeoutOrNull(1500.milliseconds) {
-                    try { api.finish(ref, output, snapshot?.progress?.process ?: progress.process, finalStatus) }
-                    catch (e: CancellationException) { throw e }
-                    catch (_: IOException) { log.warn("卡片清理失败 messageId={}", ref.messageId) }
-                    true
+            if (!finished) {
+                card?.let { ref ->
+                    // A stop while waiting for card I/O cancels the worker; retain the latest
+                    // answer and process here too.
+                    val snapshot = terminal.value
+                    val progress = observed.value.progress
+                    val output =
+                        if (api is SplitCardReplies && !terminated) {
+                            "结果状态：${finalProcessStatus ?: "未确认"}"
+                        } else {
+                            snapshot?.final
+                                ?: if (terminated) {
+                                    progress.answer
+                                } else {
+                                    status
+                                }
+                        }
+                    val finalStatus =
+                        if (terminated) {
+                            "已终止"
+                        } else {
+                            finalProcessStatus ?: snapshot?.status ?: status
+                        }
+                    val cleaned =
+                        withTimeoutOrNull(1500.milliseconds) {
+                            try {
+                                api.finish(
+                                    ref,
+                                    output,
+                                    snapshot?.progress?.process ?: progress.process,
+                                    finalStatus,
+                                )
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (_: IOException) {
+                                log.warn("卡片清理失败 messageId={}", ref.messageId)
+                            }
+                            true
+                        }
+                    if (cleaned == null) {
+                        log.warn("卡片清理超时 messageId={} timeoutMs=1500", ref.messageId)
+                    }
                 }
-                if (cleaned == null) log.warn("卡片清理超时 messageId={} timeoutMs=1500", ref.messageId)
             }
-        } finally { card?.let { api.release(it) } }
+        } finally {
+            card?.let { api.release(it) }
+        }
     }
 }

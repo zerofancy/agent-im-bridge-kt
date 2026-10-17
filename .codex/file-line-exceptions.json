@@ -6,5 +6,37 @@
   "deployment/test_bridgectl.py": {
     "max_lines": 948,
     "reason": "存量部署事务测试集合，与 bridgectl 分模块重构同步拆分，期间不增加行数。"
+  },
+  "desktop-app/src/main/kotlin/top/ntutn/agent/bridge/desktop/DesktopMain.kt": {
+    "max_lines": 581,
+    "reason": "GUI 存量界面格式展开；后续拆分会话历史与连接设置组件；本次仅登记格式化后的行数，不允许继续增长。"
+  },
+  "src/main/kotlin/top/ntutn/agent/bridge/ChatService.kt": {
+    "max_lines": 880,
+    "reason": "调度存量代码补齐控制块并展开格式；后续围绕接收与调度职责拆分，保留单一状态所有者；本次仅登记格式化后的行数，不允许继续增长。"
+  },
+  "src/main/kotlin/top/ntutn/agent/bridge/StreamingReply.kt": {
+    "max_lines": 593,
+    "reason": "流式交付存量代码格式展开；后续拆分卡片渲染与交付协调；本次仅登记格式化后的行数，不允许继续增长。"
+  },
+  "src/main/kotlin/top/ntutn/agent/bridge/backend/OpenCodeRunner.kt": {
+    "max_lines": 593,
+    "reason": "后端协议存量代码格式展开；后续拆分请求生命周期与快照解析；本次仅登记格式化后的行数，不允许继续增长。"
+  },
+  "src/main/kotlin/top/ntutn/agent/bridge/feishu/LarkChannelBridge.kt": {
+    "max_lines": 507,
+    "reason": "飞书装配存量代码格式展开；后续拆分出站适配与事件装配；本次仅登记格式化后的行数，不允许继续增长。"
+  },
+  "src/main/kotlin/top/ntutn/agent/bridge/telegram/TelegramClient.kt": {
+    "max_lines": 588,
+    "reason": "Telegram 客户端存量代码格式展开；后续拆分轮询与消息发送；本次仅登记格式化后的行数，不允许继续增长。"
+  },
+  "src/test/kotlin/top/ntutn/agent/bridge/ReplyContextTest.kt": {
+    "max_lines": 735,
+    "reason": "上下文存量测试格式展开；后续按引用解析与附件生命周期拆分测试类；本次仅登记格式化后的行数，不允许继续增长。"
+  },
+  "src/test/kotlin/top/ntutn/agent/bridge/StreamingChatServiceTest.kt": {
+    "max_lines": 514,
+    "reason": "流式会话存量测试格式展开；后续按交付与取消场景拆分测试类；本次仅登记格式化后的行数，不允许继续增长。"
   }
 }

@@ -28,16 +28,18 @@ dependencies {
 
 // Compilation and the bundled desktop runtime both use JDK 21.
 kotlin { jvmToolchain(21) }
+
 tasks.test { useJUnitPlatform() }
 
 // Share the source artwork with README without maintaining a second PNG copy.
-val prepareBrandingResources by tasks.registering(Sync::class) {
-    from(rootProject.file("assets/branding/agent-bridge-app-icon.png")) {
-        into("drawable")
-        rename { "agent_bridge_app_icon.png" }
+val prepareBrandingResources by
+    tasks.registering(Sync::class) {
+        from(rootProject.file("assets/branding/agent-bridge-app-icon.png")) {
+            into("drawable")
+            rename { "agent_bridge_app_icon.png" }
+        }
+        into(layout.buildDirectory.dir("generated/brandingResources"))
     }
-    into(layout.buildDirectory.dir("generated/brandingResources"))
-}
 
 compose.resources {
     packageOfResClass = "top.ntutn.agent.bridge.desktop.resources"
@@ -49,8 +51,14 @@ compose.resources {
 
 compose.desktop {
     application {
-        javaHome = javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) }
-            .get().metadata.installationPath.asFile.absolutePath
+        javaHome =
+            javaToolchains
+                .launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) }
+                .get()
+                .metadata
+                .installationPath
+                .asFile
+                .absolutePath
         mainClass = "top.ntutn.agent.bridge.desktop.DesktopMainKt"
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Deb)
@@ -63,9 +71,7 @@ compose.desktop {
                 bundleID = "top.ntutn.agent.bridge.desktop"
                 iconFile.set(rootProject.file("assets/branding/agent-bridge-app-icon.icns"))
             }
-            linux {
-                iconFile.set(rootProject.file("assets/branding/agent-bridge-app-icon.png"))
-            }
+            linux { iconFile.set(rootProject.file("assets/branding/agent-bridge-app-icon.png")) }
         }
     }
 }
