@@ -251,7 +251,12 @@ private constructor(val process: Process, private val password: String) {
 
     /** Events wake snapshot reconciliation; reconnects never presume replay of missing deltas. */
     inner class Subscription
-    internal constructor(private val call: Call, val changes: Channel<Unit>, private val job: Job) {
+    internal constructor(
+        private val call: Call,
+        val changes: Channel<Unit>,
+        val sessionError: Deferred<Unit>,
+        private val job: Job,
+    ) {
         suspend fun close() {
             call.cancel()
             job.cancelAndJoin()
@@ -259,12 +264,14 @@ private constructor(val process: Process, private val password: String) {
         }
     }
 
-    suspend fun subscribe(directory: String): Subscription {
+    suspend fun subscribe(directory: String, session: String): Subscription {
         val call =
             http.newCall(
                 requestBuilder("/event", directory).header("Accept", "text/event-stream").build()
             )
         val changes = Channel<Unit>(Channel.CONFLATED)
+        val ready = CompletableDeferred<Unit>()
+        val sessionError = CompletableDeferred<Unit>()
         val job =
             scope.launch {
                 try {
@@ -273,10 +280,26 @@ private constructor(val process: Process, private val password: String) {
                             if (!response.isSuccessful) {
                                 return@launch
                             }
+                            ready.complete(Unit)
                             response.body?.charStream()?.buffered()?.use { reader ->
                                 while (true) {
                                     val line = runInterruptible { reader.readLine() } ?: break
                                     if (line.startsWith("data:")) {
+                                        val event =
+                                            try {
+                                                JsonParser.parseString(line.substring(5))
+                                                    .objectOrNull()
+                                            } catch (_: com.google.gson.JsonParseException) {
+                                                null
+                                            }
+                                        if (
+                                            event?.string("type") == "session.error" &&
+                                                event
+                                                    .objectValue("properties")
+                                                    ?.string("sessionID") == session
+                                        ) {
+                                            sessionError.complete(Unit)
+                                        }
                                         changes.trySend(Unit)
                                     }
                                 }
@@ -285,10 +308,25 @@ private constructor(val process: Process, private val password: String) {
                 } catch (e: IOException) {
                     /* Periodic authoritative snapshots continue after SSE disconnect. */
                 } finally {
+                    ready.completeExceptionally(IOException("OpenCode event stream unavailable"))
                     changes.trySend(Unit)
                 }
             }
-        return Subscription(call, changes, job)
+        val subscription = Subscription(call, changes, sessionError, job)
+        try {
+            if (
+                withTimeoutOrNull(10_000) {
+                    ready.await()
+                    true
+                } != true
+            ) {
+                throw IOException("OpenCode event stream startup timed out")
+            }
+            return subscription
+        } catch (e: Exception) {
+            withContext(NonCancellable) { subscription.close() }
+            throw e
+        }
     }
 
     suspend fun healthy(): Boolean =

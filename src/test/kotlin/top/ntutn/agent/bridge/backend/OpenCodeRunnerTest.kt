@@ -125,6 +125,48 @@ class OpenCodeRunnerTest {
     }
 
     @Test
+    fun `stop while subscribing never submits prompt even if subscription fails`(): Unit =
+        runBlocking {
+            runner().use { runner ->
+                for (failSubscription in listOf(false, true)) {
+                    Files.writeString(temp.resolve("hold-events"), "yes")
+                    Files.deleteIfExists(temp.resolve("events-waiting"))
+                    Files.deleteIfExists(temp.resolve("release-events"))
+                    if (failSubscription) {
+                        Files.writeString(temp.resolve("fail-events"), "yes")
+                    }
+                    val handle = AgentRunHandle()
+                    val task = async {
+                        runner.runControlled(handle, "cancelled", null, temp, mode) {}
+                    }
+                    try {
+                        waitFile("events-waiting")
+                        handle.requestStop()
+                        Files.writeString(temp.resolve("release-events"), "yes")
+                        assertEquals(
+                            AgentResult.Kind.STOPPED,
+                            assertIs<AgentResult.Failure>(withTimeout(5000) { task.await() }).kind,
+                        )
+                        assertFalse(handle.turnId.isCompleted)
+                        assertTrue(
+                            Files.readAllLines(temp.resolve("requests")).none {
+                                it.contains("/message") || it.contains("/abort")
+                            }
+                        )
+                    } finally {
+                        Files.writeString(temp.resolve("release-events"), "yes")
+                        Files.deleteIfExists(temp.resolve("hold-events"))
+                        Files.deleteIfExists(temp.resolve("fail-events"))
+                    }
+                }
+                assertTrue(runner.healthy())
+                assertIs<AgentResult.Success>(
+                    withTimeout(5000) { runner.run("next", null, temp, mode) }
+                )
+            }
+        }
+
+    @Test
     fun `native stop waits for terminal and leaves another session running`(): Unit = runBlocking {
         runner().use { runner ->
             val handle = AgentRunHandle()
@@ -143,6 +185,58 @@ class OpenCodeRunnerTest {
             )
         }
     }
+
+    @Test
+    fun `session error before assistant creation finishes without waiting for HTTP body`(): Unit =
+        runBlocking {
+            runner().use { runner ->
+                try {
+                    val task = async { runner.run("model-not-found", null, temp, mode) }
+                    val result = withTimeout(5000) { task.await() }
+                    assertEquals(
+                        AgentResult.Kind.EXECUTION,
+                        assertIs<AgentResult.Failure>(result).kind,
+                    )
+                    assertNotNull(result.sessionId)
+                    assertTrue(runner.healthy())
+                    assertIs<AgentResult.Success>(
+                        withTimeout(5000) { runner.run("next", result.sessionId, temp, mode) }
+                    )
+                } finally {
+                    Files.writeString(temp.resolve("release-response"), "yes")
+                }
+            }
+        }
+
+    @Test
+    fun `session error requires idle and errors from other sessions are ignored`(): Unit =
+        runBlocking {
+            runner().use { runner ->
+                for (prompt in listOf("error-while-busy", "other-session-error")) {
+                    Files.deleteIfExists(temp.resolve("finish"))
+                    val handle = AgentRunHandle()
+                    val task = async { runner.runControlled(handle, prompt, null, temp, mode) {} }
+                    try {
+                        withTimeout(5000) { handle.turnId.await() }
+                        delay(500)
+                        assertFalse(task.isCompleted)
+                        Files.writeString(temp.resolve("finish"), "yes")
+                        val result = withTimeout(5000) { task.await() }
+                        if (prompt == "error-while-busy") {
+                            assertEquals(
+                                AgentResult.Kind.EXECUTION,
+                                assertIs<AgentResult.Failure>(result).kind,
+                            )
+                        } else {
+                            assertIs<AgentResult.Success>(result)
+                        }
+                    } finally {
+                        Files.writeString(temp.resolve("finish"), "yes")
+                        Files.writeString(temp.resolve("release-response"), "yes")
+                    }
+                }
+            }
+        }
 
     @Test
     fun `completed HTTP without assistant terminal releases idle request and permits next run`():

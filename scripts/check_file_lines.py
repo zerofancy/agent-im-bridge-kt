@@ -54,9 +54,9 @@ def main():
     args = parser.parse_args()
     try:
         if args.hook:
-            payload = json.load(sys.stdin)
-            if not isinstance(payload, dict) or payload.get('hook_event_name') != 'Stop':
-                raise ValueError('预期 Codex Stop hook 输入')
+            # The configured Stop command checks repository contents, not hook metadata.
+            # Drain opaque bytes so malformed/OS-encoded metadata cannot skip the check.
+            sys.stdin.buffer.read()
         errors = check()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         errors = [f'行数检查无法完成：{error}']
@@ -64,7 +64,8 @@ def main():
               + '\n请按职责拆分文件。确需豁免时，在 .codex/file-line-exceptions.json '
                 '逐文件记录原因和上限；不要压缩代码、删除说明或扩大通配范围绕过检查。')
     if args.hook:
-        print(json.dumps({'decision': 'block', 'reason': reason} if errors else {}, ensure_ascii=False))
+        # ASCII JSON keeps the hook protocol independent of the Windows console encoding.
+        print(json.dumps({'decision': 'block', 'reason': reason} if errors else {}, ensure_ascii=True))
         return 0
     print(reason if errors else '文件行数检查通过（默认上限 500 行）。', file=sys.stderr if errors else sys.stdout)
     return int(bool(errors))

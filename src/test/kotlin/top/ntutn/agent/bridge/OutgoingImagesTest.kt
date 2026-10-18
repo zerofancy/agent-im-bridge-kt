@@ -63,7 +63,7 @@ class OutgoingImagesTest {
                     listOf(
                         image("1"),
                         image("2"),
-                        AgentImage("3", "test", "turn", path = source, allowedRoots = listOf(temp)),
+                        image("3").copy(path = source, allowedRoots = listOf(temp)),
                     )
                 )
         assertEquals(1, result.images.size)
@@ -75,6 +75,48 @@ class OutgoingImagesTest {
         assertFalse(Files.exists(staged))
         assertTrue(Files.exists(source))
     }
+
+    @Test
+    fun `local image reads require secure directory support and allow embedded fallback`() =
+        runBlocking {
+            val source = temp.resolve("local.png")
+            Files.write(source, png())
+            val local =
+                AgentImage("local", "test", "turn", path = source, allowedRoots = listOf(temp))
+            val secure =
+                Files.newDirectoryStream(temp.root).use {
+                    it is java.nio.file.SecureDirectoryStream<*>
+                }
+            val result = store().prepare(listOf(local))
+            try {
+                assertEquals(
+                    if (secure) {
+                        1
+                    } else {
+                        0
+                    },
+                    result.images.size,
+                )
+                assertEquals(
+                    if (secure) {
+                        emptyList()
+                    } else {
+                        listOf(ImageIssue.UNSUPPORTED)
+                    },
+                    result.issues,
+                )
+            } finally {
+                result.release()
+            }
+            val fallback = store().prepare(listOf(local.copy(base64 = image("fallback").base64)))
+            try {
+                assertEquals(1, fallback.images.size)
+                assertTrue(fallback.issues.isEmpty())
+            } finally {
+                fallback.release()
+            }
+            assertTrue(Files.exists(source))
+        }
 
     @Test
     fun `rejects remote invalid spoofed animated and excessive dimensions`() = runBlocking {

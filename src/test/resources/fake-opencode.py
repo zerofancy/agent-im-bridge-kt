@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import urlparse,parse_qs
 root=Path.cwd()
 sessions={}
+events=[]
 lock=threading.Lock()
 (root/'pid').write_text(str(os.getpid()))
 (root/'environment.json').write_text(json.dumps({k:v for k,v in os.environ.items() if k.startswith('XDG_')}))
@@ -23,9 +24,17 @@ class Handler(BaseHTTPRequestHandler):
   if path=='/global/health':return self.reply({'healthy':True,'version':'999.0.0'})
   if path=='/config':return self.reply({'model':'fixture/current'})
   if path=='/event':
+   if (root/'hold-events').exists():
+    (root/'events-waiting').write_text('yes')
+    while not (root/'release-events').exists():time.sleep(.02)
+   if (root/'fail-events').exists():return self.reply({},503)
+   cursor=len(events)
    self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
    try:
-    for i in range(300):self.wfile.write(b'data: {"type":"message.part.updated"}\n\n');self.wfile.flush();time.sleep(.05)
+    for i in range(300):
+     pending=events[cursor:];cursor+=len(pending)
+     for event in pending:self.wfile.write(('data: '+json.dumps(event)+'\n\n').encode())
+     self.wfile.write(b'data: {"type":"message.part.updated"}\n\n');self.wfile.flush();time.sleep(.05)
    except (BrokenPipeError,ConnectionResetError):pass
    return
   if path in ['/permission','/question']:return self.reply([])
@@ -45,6 +54,19 @@ class Handler(BaseHTTPRequestHandler):
    user={'info':{'id':mid,'role':'user','sessionID':sid},'parts':[]}
    assistant={'info':{'id':'msg_answer'+mid,'role':'assistant','sessionID':sid,'parentID':mid,'time':{'created':1}},'parts':[{'type':'text','text':'partial'},{'type':'reasoning','text':'SECRET REASONING'},{'type':'tool','tool':'bash','state':{'status':'running','input':{'command':'pwd'},'output':'SECRET OUTPUT'}}]}
    s['messages'] += [user,assistant]
+   if text in ['model-not-found','error-while-busy','other-session-error']:
+    s['messages'].remove(assistant)
+    if text=='model-not-found':s['busy']=False
+    events.append({'type':'session.error','properties':{'sessionID':'ses_unrelated' if text=='other-session-error' else sid,'error':{'name':'ProviderModelNotFoundError','data':{'message':'SECRET ERROR BODY'}}}})
+    if text=='model-not-found':
+     while not (root/'release-response').exists():time.sleep(.02)
+     return self.reply(None)
+    while not (root/'finish').exists():time.sleep(.02)
+    if text=='error-while-busy':
+     s['busy']=False
+     while not (root/'release-response').exists():time.sleep(.02)
+     return self.reply(None)
+    s['messages'].append(assistant)
    if text=='read-image':
     assistant['parts']=[{'id':'read-image-part','type':'tool','tool':'read','state':{'status':'completed','attachments':[{'type':'file','mime':'image/png','url':'data:image/png;base64,AA=='}]}}]
     assistant['info']['time']['completed']=2;assistant['info']['finish']='tool-calls'

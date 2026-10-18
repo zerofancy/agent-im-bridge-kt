@@ -1,10 +1,14 @@
 package top.ntutn.agent.bridge.backend
 
 import com.google.gson.JsonArray
+import java.nio.file.Path
 import kotlin.test.*
+import org.junit.jupiter.api.io.TempDir
 import top.ntutn.agent.bridge.*
 
 class NativeImageResultsTest {
+    @TempDir lateinit var temp: Path
+
     @Test
     fun `codex accepts completed generated images and replaces duplicate notifications`(): Unit {
         val collector = NativeImages()
@@ -26,19 +30,19 @@ class NativeImageResultsTest {
                 "id" to "image",
                 "status" to "completed",
                 "result" to "AA==",
-                "savedPath" to "/work/out.png",
+                "savedPath" to temp.resolve("out.png").toString(),
             )
         repeat(2) { collector.codex(generated, "turn", emptyList()) }
         val result = assertIs<AgentResult.Success>(collector.result("", "session"))
         assertEquals(1, result.images.size)
-        assertEquals("/work/out.png", result.images.single().path.toString())
+        assertEquals(temp.resolve("out.png"), result.images.single().path)
         assertEquals("AA==", result.images.single().base64)
     }
 
     @Test
     fun `codex view accepts file URLs and workspace paths but never parses arbitrary output`():
         Unit {
-        val root = java.nio.file.Path.of(System.getProperty("java.io.tmpdir")).toAbsolutePath()
+        val root = temp
         val file = root.resolve("image with 空格.png")
         for (value in listOf(file.toString(), file.toUri().toString(), file.fileName.toString())) {
             val collector = NativeImages()
@@ -58,6 +62,10 @@ class NativeImageResultsTest {
             listOf(
                 "https://example.com/a.png",
                 "file://remote/a.png",
+                "file://localhost/a.png",
+                "file:////remote/share/a.png",
+                "\\\\remote\\share\\a.png",
+                "//remote/share/a.png",
                 "file:///bad%XX",
                 "data:image/png;base64,AA==",
                 "",

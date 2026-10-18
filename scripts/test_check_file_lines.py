@@ -1,7 +1,9 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -83,6 +85,28 @@ class FileLinesTest(unittest.TestCase):
             self.assertEqual('block' if failing else None, output.get('decision'))
             if failing:
                 self.assertIn('long.kt: 501', output['reason'])
+
+    def test_malformed_hook_metadata_still_checks_files_and_returns_portable_json(self):
+        script = self.root / 'scripts/check_file_lines.py'
+        script.parent.mkdir()
+        script.write_bytes(Path(checker.__file__).read_bytes())
+        self.write('.codex/file-line-exceptions.json', '{}')
+        for failing in (False, True):
+            if failing:
+                self.write('long.kt', '\n' * 501)
+            for encoding in ('ascii', 'cp936', 'utf-8'):
+                for payload in (b'{"message":"unescaped "quote"}', b'\xff\xfe', b''):
+                    result = subprocess.run(
+                        [sys.executable, str(script), '--hook'], cwd=self.root,
+                        input=payload, capture_output=True, check=True,
+                        env={**os.environ, 'PYTHONIOENCODING': encoding},
+                    )
+                    output = json.loads(result.stdout.decode('ascii'))
+                    self.assertEqual('block' if failing else None, output.get('decision'))
+                    if failing:
+                        self.assertTrue(output['reason'].startswith('项目文件行数检查失败：\n'))
+                        self.assertIn('long.kt: 501 行，上限 500', output['reason'])
+                        self.assertNotIn('\ufffd', output['reason'])
 
 
 if __name__ == '__main__':

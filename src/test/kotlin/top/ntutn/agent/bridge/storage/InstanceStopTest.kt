@@ -1,7 +1,10 @@
 package top.ntutn.agent.bridge.storage
 
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption.READ
+import java.nio.file.StandardOpenOption.WRITE
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +36,7 @@ class InstanceStopTest {
                     StopFixture::class.java.name,
                     temp.toString(),
                 )
+                .directory(temp.toFile())
                 .redirectError(ProcessBuilder.Redirect.INHERIT)
                 .start()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
@@ -73,6 +77,25 @@ class InstanceStopTest {
             assertEquals("旧 Bridge 实例已停止。", InstanceLock.stop(temp))
             assertFalse(process.isAlive)
             assertEquals("没有正在运行的 Bridge 实例。", InstanceLock.stop(temp))
+            InstanceLock.acquire(temp).close()
+        } finally {
+            if (process.isAlive) {
+                process.destroyForcibly()
+            }
+        }
+    }
+
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    fun `stale Windows pid is idle even while the old lock remains unavailable`() {
+        val process = start()
+        try {
+            process.destroy()
+            assertTrue(process.waitFor(5, TimeUnit.SECONDS))
+            // Model the lingering lock/open failure independently of process teardown timing.
+            FileChannel.open(temp.resolve("bridge.lock"), READ, WRITE).use { channel ->
+                channel.lock().use { assertEquals("没有正在运行的 Bridge 实例。", InstanceLock.stop(temp)) }
+            }
             InstanceLock.acquire(temp).close()
         } finally {
             if (process.isAlive) {

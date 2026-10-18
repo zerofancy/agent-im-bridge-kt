@@ -128,7 +128,12 @@ private constructor(
             require(pid != null && pid > 0 && pid != ProcessHandle.current().pid()) {
                 "无法读取实例进程信息。请结束 agent-im-bridge-kt 的 java 进程后重试。"
             }
-            val process = ProcessHandle.of(pid).orElse(null) ?: return "旧实例已退出。"
+            // Windows termination leaves the sidecar behind. A stale PID is an idle instance,
+            // including the short interval where opening its former lock can still fail.
+            val process = ProcessHandle.of(pid).orElse(null)
+            if (process == null || !process.isAlive) {
+                return "没有正在运行的 Bridge 实例。"
+            }
             require(process.destroy()) { "无法停止旧实例，请检查进程权限。" }
             val exited = runBlocking {
                 withTimeoutOrNull(20_000) {

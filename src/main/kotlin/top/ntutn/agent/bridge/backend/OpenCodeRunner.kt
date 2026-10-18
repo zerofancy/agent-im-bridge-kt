@@ -2,7 +2,6 @@ package top.ntutn.agent.bridge.backend
 
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
-import com.google.gson.JsonObject
 import java.io.IOException
 import java.nio.file.Path
 import java.util.UUID
@@ -212,29 +211,46 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                     .toString(16)
                     .padStart(12, '0') +
                 UUID.randomUUID().toString().replace("-", "").take(14)
-        val events = server.subscribe(directory)
-        val response = async {
-            val body =
-                json(
-                        "messageID" to messageId,
-                        "parts" to
-                            JsonArray().apply { add(json("type" to "text", "text" to prompt)) },
-                    )
-                    .apply { model?.let { add("model", it) } }
+        val events =
             try {
-                Result.success(
-                    server.request(
-                        "POST",
-                        "/session/$id/message",
-                        body,
-                        directory,
-                        waitForTurn = true,
-                    )
+                server.subscribe(directory, id)
+            } catch (_: IOException) {
+                return@coroutineScope failure(
+                    if (handle.stopRequested) {
+                        AgentResult.Kind.STOPPED
+                    } else {
+                        AgentResult.Kind.START
+                    }
                 )
-            } catch (e: IOException) {
-                Result.failure<JsonElement>(e)
             }
+        if (handle.stopRequested) {
+            withContext(NonCancellable) { events.close() }
+            return@coroutineScope failure(AgentResult.Kind.STOPPED)
         }
+        // Begin submission in this coroutine, without another dispatch after the stop check.
+        val response =
+            async(start = CoroutineStart.UNDISPATCHED) {
+                val body =
+                    json(
+                            "messageID" to messageId,
+                            "parts" to
+                                JsonArray().apply { add(json("type" to "text", "text" to prompt)) },
+                        )
+                        .apply { model?.let { add("model", it) } }
+                try {
+                    Result.success(
+                        server.request(
+                            "POST",
+                            "/session/$id/message",
+                            body,
+                            directory,
+                            waitForTurn = true,
+                        )
+                    )
+                } catch (e: IOException) {
+                    Result.failure<JsonElement>(e)
+                }
+            }
         val images = NativeImages()
         var submitted = false
         var previous: AgentProgress? = null
@@ -327,6 +343,17 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                             .request("GET", "/session/status", directory = directory)
                             .objectOrNull() ?: throw IOException("Invalid OpenCode status")
                     val idle = !status.has(id) || status.objectValue(id)?.string("type") == "idle"
+                    // A session error can precede assistant creation and leave the synchronous
+                    // HTTP body open. Confirm admission and idle before releasing this request.
+                    if (submitted && events.sessionError.isCompleted && idle) {
+                        return@coroutineScope failure(
+                            if (handle.stopRequested) {
+                                AgentResult.Kind.STOPPED
+                            } else {
+                                AgentResult.Kind.EXECUTION
+                            }
+                        )
+                    }
                     // Status alone is not sufficient: idle also describes a prompt not yet
                     // admitted.
                     val final =
@@ -454,140 +481,3 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
         scope.coroutineContext.job.join()
     }
 }
-
-internal fun JsonElement.objectOrNull(): JsonObject? =
-    if (isJsonObject) {
-        asJsonObject
-    } else {
-        null
-    }
-
-internal fun JsonElement.arrayOrNull(): JsonArray? =
-    if (isJsonArray) {
-        asJsonArray
-    } else {
-        null
-    }
-
-internal fun JsonObject.objectValue(key: String): JsonObject? = get(key)?.objectOrNull()
-
-/** Only a completed assistant message for this request can produce a final answer. */
-internal fun openCodeFinal(message: JsonObject, session: String, parent: String): AgentResult? {
-    val info = message.objectValue("info") ?: return null
-    if (info["summary"]?.toString() == "true") {
-        return null
-    }
-    if (
-        info.string("sessionID") != session ||
-            info.string("parentID") != parent ||
-            info.string("role") != "assistant"
-    ) {
-        return null
-    }
-    if (info.objectValue("time")?.get("completed")?.isJsonPrimitive != true) {
-        return null
-    }
-    if (info.has("error") && !info["error"].isJsonNull) {
-        return AgentResult.Failure(AgentResult.Kind.EXECUTION, sessionId = session)
-    }
-    if (info.string("finish") !in setOf("stop", "length", "content-filter")) {
-        return null
-    }
-    if (info.string("finish") != "stop") {
-        return AgentResult.Failure(AgentResult.Kind.EXECUTION, sessionId = session)
-    }
-    val text = openCodeText(message).trim()
-    return if (text.isBlank()) {
-        AgentResult.Failure(AgentResult.Kind.EMPTY, sessionId = session)
-    } else {
-        AgentResult.Success(text, session)
-    }
-}
-
-private fun openCodeText(message: JsonObject) =
-    message["parts"]
-        ?.arrayOrNull()
-        ?.mapNotNull { part ->
-            part
-                .objectOrNull()
-                ?.takeIf {
-                    it.string("type") == "text" &&
-                        it["synthetic"]?.toString() != "true" &&
-                        it["ignored"]?.toString() != "true"
-                }
-                ?.string("text")
-        }
-        ?.joinToString("\n\n")
-        .orEmpty()
-
-internal fun openCodeProgress(messages: List<JsonObject>): AgentProgress {
-    val publicMessages =
-        messages.filter { it.objectValue("info")?.get("summary")?.toString() != "true" }
-    val tools =
-        publicMessages
-            .flatMap { it["parts"]?.arrayOrNull()?.toList().orEmpty() }
-            .mapNotNull { it.objectOrNull() }
-            .filter { it.string("type") == "tool" }
-            .takeLast(8)
-            .map {
-                val name =
-                    it.string("tool").orEmpty().replace(Regex("[^\\p{L}\\p{N}_.-]"), "").take(60)
-                val state = it.objectValue("state")
-                val status = state?.string("status")
-                val heading =
-                    "${if (status == "completed") { "✓" } else if (status == "error") { "✗" } else { "◌" }} 调用工具：$name"
-                val input = state?.get("input")?.takeUnless { it.isJsonNull }
-                val parameters =
-                    input
-                        ?.let { value ->
-                            // Shell commands retain their real newlines instead of JSON's escaped
-                            // newlines.
-                            val command =
-                                if (name == "bash") {
-                                    value.objectOrNull()?.string("command")
-                                } else {
-                                    null
-                                }
-                            if (command == null) {
-                                openCodeParameterJson.toJson(value)
-                            } else {
-                                val remaining =
-                                    value.asJsonObject.deepCopy().apply { remove("command") }
-                                command +
-                                    if (remaining.size() == 0) {
-                                        ""
-                                    } else {
-                                        "\n\n" + openCodeParameterJson.toJson(remaining)
-                                    }
-                            }
-                        }
-                        .orEmpty()
-                if (parameters.isBlank() || parameters == "{}") {
-                    heading
-                } else {
-                    val preview = bounded(parameters, 1000)
-                    heading +
-                        "\n\n" +
-                        commandBlock(
-                            preview +
-                                if (preview.length < parameters.length) {
-                                    "\n…（参数过长，已截断）"
-                                } else {
-                                    ""
-                                }
-                        )
-                }
-            }
-            .toMutableList()
-    // Keep complete recent entries and code fences within both channels' process budget.
-    while (tools.size > 1 && tools.sumOf { it.length } + (tools.size - 1) * 2 > 1800) {
-        tools.removeAt(0)
-    }
-    return AgentProgress(
-        tools.joinToString("\n\n").ifBlank { "正在处理…" },
-        bounded(publicMessages.lastOrNull()?.let(::openCodeText).orEmpty(), 6000),
-    )
-}
-
-private val openCodeParameterJson =
-    com.google.gson.GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()

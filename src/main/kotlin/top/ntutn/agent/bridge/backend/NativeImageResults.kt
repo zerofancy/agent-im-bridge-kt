@@ -47,12 +47,17 @@ internal class NativeImages(private val outputTools: Set<String> = setOf("read")
     }
 
     private fun localPath(value: String?, workspace: Path?): Path? {
-        if (value.isNullOrBlank()) {
+        if (value.isNullOrBlank() || value.startsWith("\\\\") || value.startsWith("//")) {
             return null
         }
         return try {
             if (value.startsWith("file:", ignoreCase = true)) {
-                Path.of(java.net.URI.create(value))
+                val uri = java.net.URI.create(value)
+                if (!uri.rawAuthority.isNullOrEmpty() || uri.path?.startsWith("//") == true) {
+                    null
+                } else {
+                    Path.of(uri)
+                }
             } else {
                 val path = Path.of(value)
                 when {
