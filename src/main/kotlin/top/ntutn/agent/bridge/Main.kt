@@ -4,7 +4,6 @@ import com.lark.oapi.channel.exception.LarkChannelException
 import com.lark.oapi.scene.registration.RegisterAppException
 import java.nio.file.Path
 import java.security.MessageDigest
-import java.util.concurrent.CountDownLatch
 import kotlin.system.exitProcess
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -71,6 +70,7 @@ fun main(args: Array<String>) {
     var fileLinks: top.ntutn.agent.bridge.localfiles.LocalFileServer? = null
     var lifecycle: RuntimeLifecycle? = null
     var watchdog: top.ntutn.agent.bridge.feishu.ConnectionWatchdog? = null
+    val processExit = ProcessExitRequest()
     try {
         // Preserve only the legacy stop operation for migration. New environments use bridgectl
         // stop.
@@ -181,7 +181,7 @@ fun main(args: Array<String>) {
                     escalate = {
                         activeLifecycle.stopReason = "飞书连接长时间不可恢复"
                         activeLifecycle.finish("飞书连接长时间不可恢复", 1)
-                        exitProcess(1)
+                        processExit.request(1)
                     },
                     recovered = { activeControl.connected(true) },
                 )
@@ -232,7 +232,7 @@ fun main(args: Array<String>) {
             environment.name,
             environment.release,
         )
-        CountDownLatch(1).await()
+        processExit.awaitAndExit()
     } catch (e: Exception) {
         FatalErrorHandler.rethrowProgrammingError(e)
         log.error("启动失败 type={}", e.javaClass.simpleName)
