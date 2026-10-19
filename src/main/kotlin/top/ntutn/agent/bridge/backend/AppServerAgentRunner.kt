@@ -334,12 +334,13 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                         "item/completed" -> {
                             if (p.string("turnId") == turnId) {
                                 val item = p.getAsJsonObject("item") ?: continue
-                                if (backend.id == BackendId.CODEX && p.string("threadId") == id) {
-                                    images.codex(
-                                        item,
-                                        "$id/$turnId",
-                                        listOf(workspace, backend.runtimeRoot),
-                                    )
+                                if (p.string("threadId") == id) {
+                                    val roots = listOf(workspace, backend.runtimeRoot)
+                                    if (backend.id == BackendId.CODEX) {
+                                        images.codex(item, "$id/$turnId", roots)
+                                    } else if (backend.id == BackendId.TRAEX) {
+                                        images.traex(item, "$id/$turnId", roots)
+                                    }
                                 }
                                 if (item.string("type") == "agentMessage") {
                                     val itemId = item.string("id") ?: continue

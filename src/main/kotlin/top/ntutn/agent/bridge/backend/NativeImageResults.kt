@@ -8,6 +8,19 @@ internal class NativeImages(private val outputTools: Set<String> = setOf("read")
     private val images = linkedMapOf<String, AgentImage>()
     private val issues = linkedSetOf<ImageIssue>()
 
+    fun traex(item: JsonObject, request: String, roots: List<Path>) {
+        if (item.string("type") != "imageView") {
+            return
+        }
+        val id = item.string("id") ?: return
+        val path = localPath(item.string("path"), roots.firstOrNull())
+        if (path == null) {
+            issues += ImageIssue.UNREADABLE
+            return
+        }
+        collect(AgentImage(id, "traex", request, path, allowedRoots = roots))
+    }
+
     fun codex(item: JsonObject, request: String, roots: List<Path>) {
         val type = item.string("type")
         if (type !in setOf("imageGeneration", "imageView")) {

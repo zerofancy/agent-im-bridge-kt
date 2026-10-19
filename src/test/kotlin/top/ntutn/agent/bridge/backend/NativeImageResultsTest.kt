@@ -10,6 +10,43 @@ class NativeImageResultsTest {
     @TempDir lateinit var temp: Path
 
     @Test
+    fun `traex collects ordered viewed images without interpreting other tools`(): Unit {
+        val collector = NativeImages()
+        val roots = listOf(temp)
+        for ((index, path) in listOf("first.png", "second image.png").withIndex()) {
+            repeat(2) {
+                collector.traex(
+                    json("type" to "imageView", "id" to "view-$index", "path" to path),
+                    "thread/turn",
+                    roots,
+                )
+            }
+        }
+        collector.traex(
+            json("type" to "commandExecution", "id" to "command", "path" to "ignored.png"),
+            "thread/turn",
+            roots,
+        )
+        collector.traex(
+            json("type" to "imageView", "id" to "remote", "path" to "https://example.com/a.png"),
+            "thread/turn",
+            roots,
+        )
+        val result = assertIs<AgentResult.Success>(collector.result("answer", "thread"))
+        assertEquals(listOf("view-0", "view-1"), result.images.map { it.sourceId })
+        assertEquals(
+            listOf(temp.resolve("first.png"), temp.resolve("second image.png")),
+            result.images.map { it.path },
+        )
+        assertTrue(
+            result.images.all {
+                it.backend == "traex" && it.requestId == "thread/turn" && it.allowedRoots == roots
+            }
+        )
+        assertEquals(listOf(ImageIssue.UNREADABLE), result.deliveryIssues)
+    }
+
+    @Test
     fun `codex accepts completed generated images and replaces duplicate notifications`(): Unit {
         val collector = NativeImages()
         for (type in listOf("userMessage", "functionCallOutput")) {

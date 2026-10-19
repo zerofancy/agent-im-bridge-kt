@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>飞书原生图片回复适配方案</title>
+  <style>
+    :root { color-scheme: light; --accent: #245cdb; --ink: #20324d; --line: #dce5f2; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f3f6fb; color: var(--ink); font: 16px/1.8 system-ui, sans-serif; }
+    main { max-width: 1060px; margin: auto; padding: 36px 22px 64px; }
+    header, section { margin-bottom: 20px; padding: 26px; background: white; border: 1px solid var(--line); border-radius: 14px; }
+    h1 { margin: 6px 0; font-size: 29px; } h2 { margin: 0 0 12px; font-size: 22px; }
+    h3 { font-size: 17px; margin-bottom: 6px; } p { margin: 8px 0; }
+    .tag, a { color: var(--accent); } .tag { font-weight: 700; }
+    .note { padding: 12px 16px; border-left: 4px solid var(--accent); background: #eff4ff; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 11px; text-align: left; vertical-align: top; border: 1px solid var(--line); }
+    th { background: #f2f6fd; } li { margin: 5px 0; }
+    code { padding: 2px 5px; background: #edf2fa; border-radius: 4px; overflow-wrap: anywhere; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: #edf2fa; border-radius: 8px; }
+    @media (max-width: 700px) { table { display: block; overflow-x: auto; } header, section { padding: 18px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="tag">实施方案 · 已实现并部署 dev，待真实图片验收 · 2026-10-19</div>
+    <h1>让飞书复用现有原生图片交付链路</h1>
+    <p>基于当前工作区代码核对。用户确认实施后已补齐飞书媒体适配及离线测试，本次仅发布至 dev，不提交推送、不改 prod；真实图片消息与当前机器人的上传权限仍待 dev 客户端验收。</p>
+    <p class="note"><strong>推荐：</strong>保留公共图片识别、校验、暂存与交付编排，补齐飞书“上传图片 → 回复原消息”的出站适配。首期使用飞书原生图片消息，不嵌入卡片，不增加模型工具或提示词。</p>
+  </header>
+
+  <section>
+    <h2>1. 现状与真正缺口</h2>
+    <table>
+      <thead><tr><th>环节</th><th>已有能力</th><th>本次处理</th></tr></thead>
+      <tbody>
+        <tr><td>后端结果</td><td><code>AgentResult.Success.images</code>；Codex 当前轮 imageGeneration / imageView；OpenCode 已适配的结构化图片附件，包括 read。</td><td>直接复用，不重新解析模型正文、不扫描目录。</td></tr>
+        <tr><td>公共附件准备</td><td><code>OutgoingImages</code> 校验路径、大小、格式、像素与重复内容，统一转 PNG，并清理请求暂存文件。</td><td>继续使用，不放宽路径安全策略。</td></tr>
+        <tr><td>公共交付</td><td><code>ReplyDelivery.deliverImages</code> 已支持文字在先、逐张发送、部分失败汇总、停止及清理。</td><td>优先复用，不另建飞书专用任务队列。</td></tr>
+        <tr><td>Telegram 与桌面</td><td>Telegram 已装配 ImageSender；桌面也已支持图片持久化和展示，并非仅 Telegram 有图片能力。</td><td>保持现有行为和测试。</td></tr>
+        <tr><td>飞书</td><td>已有鉴权、自建 JSON HTTP、双卡片回复；通道装配没有传入 <code>outgoingImages</code>。</td><td>新增飞书图片发送器与 multipart 支持，并接入现有交付入口。</td></tr>
+      </tbody>
+    </table>
+    <p>因此不是缺一套“图片功能”，而是缺飞书媒体出站适配。原生图片 Spec 的早期“现状”段落描述的是实现前状态；此次以当前源码为准。</p>
+  </section>
+
+  <section>
+    <h2>2. 首期用户体验与范围</h2>
+    <pre>图文：过程卡 A → 权威文字（可能分片）→ 图片 1 … 图片 N → 结果卡 B（交付摘要）
+纯图：过程卡 A → 图片 1 … 图片 N → 结果卡 B（例如“已发送 2 张图片”）
+纯文：沿用既有双卡片回复，不改变。
+停止：保留既有停止确认，不继续发送后续图片。</pre>
+    <ul>
+      <li>图片可在飞书中原生查看，不使用服务器本地路径、Base64 或 localhost 图片 URL 冒充附件。</li>
+      <li>图片逐张回复原始请求，沿用传入的 <code>ReplyRoute</code>；不从模型输出推导聊天、用户或话题。</li>
+      <li>复用当前媒体流程：正文通过统一文字入口只发一次；最后的 B 是交付摘要，不再次复制正文。带图片回复是多消息交付，不承诺“一轮严格只有两条消息”。</li>
+      <li>全部选中图片确认交付且无校验问题后，才标记整体完成；部分失败、结果未知均明确说明。</li>
+      <li>文档评论继续硬性旁路媒体发送，保留文字与不支持图片的提示，不向关联 IM 聊天偷发图片。桌面仍走自身图片存储。</li>
+      <li>首期不做卡片内图片、图文富文本合并、相册、任意文件发送、远程图片抓取或跨进程恢复重发。</li>
+    </ul>
+    <p class="note">不把完整答案、图片和最终摘要强行合成一张卡：那需要额外调整结果卡模型、体积预算、引用快照及分阶段交付状态。先让飞书与现有媒体流程保持一致，后续再单独讨论展示升级。</p>
+  </section>
+
+  <section>
+    <h2>3. 飞书接口与鉴权</h2>
+    <table>
+      <thead><tr><th>步骤</th><th>请求设计</th><th>成功条件</th></tr></thead>
+      <tbody>
+        <tr><td>上传</td><td><code>POST /open-apis/im/v1/images</code>，multipart；<code>image_type=message</code>，<code>image</code> 为准备好的 PNG 副本。</td><td>HTTP 与业务状态成功，并返回非空 <code>image_key</code>。</td></tr>
+        <tr><td>发消息</td><td><code>POST /open-apis/im/v1/messages/{原消息ID}/reply</code>；<code>msg_type=image</code>，<code>content</code> 是序列化后的 <code>{"image_key":"…"}</code>；每张分配独立稳定 UUID。</td><td>HTTP 与业务状态成功，并返回非空 <code>message_id</code>。</td></tr>
+      </tbody>
+    </table>
+    <p>飞书官方消息结构已确认：图片消息的 content 使用 image_key，见 <a href="https://open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json">发送消息内容结构</a>；原消息回复接口见 <a href="https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1">消息 API 概述</a>。</p>
+    <ul>
+      <li>使用本环境现有 bot 身份；复用 <code>SdkTenantTokenProvider</code> / SDK 公共 token manager。飞书与 Lark 域名沿用现有配置，不硬编码所有实例使用同一域名。</li>
+      <li>出站请求使用自建 HTTP，不引入新的 SDK 图片对象序列化、反射或 CLI 子进程。CLI 只用于实施前可选的只读权限核验，不成为业务依赖。</li>
+      <li>实施前核验当前机器人具备上传图片资源与回复消息权限。已有授权足够则不新增；不足时仅报告缺失 scope 和必要发布步骤，不自动新建机器人或修改权限。</li>
+      <li>实施时已通过本机 CLI schema 核验上传字段、非空且不超过 10 MB 的限制，以及 im:resource:upload / im:resource 权限选项。未据此认定当前机器人已开通权限；UUID 不依赖未经核验的有效窗口来自动重发，话题沿用既有原消息回复语义。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>4. 工程设计与改动边界</h2>
+    <table>
+      <thead><tr><th>位置</th><th>计划</th></tr></thead>
+      <tbody>
+        <tr><td>新增 <code>feishu/FeishuImageSender.kt</code></td><td>实现 <code>ImageSender</code>：上传 → 检查取消 → 回复原消息 → 返回 SENT / REJECTED / UNCERTAIN。封装阶段诊断与明确错误分类。</td></tr>
+        <tr><td><code>FeishuOpenApiClient.kt</code></td><td>补充受控 multipart 请求能力，复用 token 和可取消 socket 生命周期；为媒体构建独立的禁自动重试、禁重定向客户端，不改变现有卡片／评论客户端的默认行为。</td></tr>
+        <tr><td>飞书通道装配</td><td>创建环境隔离的 <code>OutgoingImages</code>，传入 ChatService 已有参数。暂存路径从环境附件目录明确解析，回退目录延续现有应用隔离规则，不依赖 JVM cwd。</td></tr>
+        <tr><td>装配辅助模块</td><td><code>LarkChannelBridge.kt</code> 已达 507 行豁免上限；先按职责提取媒体／出站装配辅助函数，再接入。不得直接增加文件行数、提高豁免或压缩代码。</td></tr>
+        <tr><td><code>ReplyDelivery.kt</code></td><td>尽量不改调度主体，复用现有媒体分支。确认最终摘要仅调用一次 finishDelivery，过程卡不可用时仍能交付；摘要发送不明时不触发重复兜底。</td></tr>
+        <tr><td>测试与文档</td><td>新增飞书 fake HTTP 与装配回归；扩展媒体交付测试，更新 native-image-reply-spec 和卡片文档的渠道支持说明。单文件均控制在 500 行内。</td></tr>
+      </tbody>
+    </table>
+    <p>不修改 Codex / OpenCode 的产物筛选，不改会话键、不添加模型权限或业务线程池，不重做桌面历史与双卡片框架。</p>
+  </section>
+
+  <section>
+    <h2>5. 错误语义、去重与技术超时</h2>
+    <table>
+      <thead><tr><th>情形</th><th>图片消息结论</th><th>处理</th></tr></thead>
+      <tbody>
+        <tr><td>上传被拒、无有效 image_key、上传响应丢失</td><td>本张 IM 图片消息尚未提交；不能称为图片已送达。</td><td>不发引用不存在 key 的消息；按“上传未完成／图片未发送”汇总，可继续下一张。上传可能留下孤立资源，但不据此自动重传。</td></tr>
+        <tr><td>上传成功，尚未回复原消息时取消</td><td>图片未发到聊天。</td><td>传播取消，停止后续发送；不在 NonCancellable 中补发。</td></tr>
+        <tr><td>消息接口明确拒绝</td><td>REJECTED。</td><td>记录单张未送达，继续其余图片并汇总；权限／参数类错误不能盲目重试。</td></tr>
+        <tr><td>消息提交后超时、断连、5xx 或缺少有效回执</td><td>UNCERTAIN，不等于未发送。</td><td>不换 UUID 重发、不回退文件消息、不重跑模型；摘要说明本张交付未确认。不能把所有非 2xx 都判为确定拒绝。</td></tr>
+        <tr><td>消息接口成功且回执有效</td><td>SENT。</td><td>按顺序处理下一张；已成功文字／图片不重复。</td></tr>
+      </tbody>
+    </table>
+    <ul>
+      <li>单张使用有界上传和消息技术超时，具体预算与现有 30 秒媒体发送约定对齐；不新增模型超时。日志区分 upload / reply 阶段。</li>
+      <li>每轮来源去重与内容去重继续由公共组件负责；同一图片在后续新请求中仍可重新发送，不做会话级全局去重。</li>
+      <li>首期不自动重试可能已产生副作用的请求；稳定 UUID 是防重保护，不是跨进程 exactly-once 保证，不宣称未知结果可安全重放。</li>
+      <li>已获得图片消息 ID 时只保留必要关联回执与计数；不为图片消息写入 CardAnswerStore 的文字答案快照，图片引用继续走既有 IM 资源读取。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>6. 安全、资源与并发</h2>
+    <ul>
+      <li>继续执行项目现有限制：每轮最多 10 张；单张输入与规范化输出均受 10,000,000 字节限制；输入总量与输出总量分别不超过 30,000,000 字节。与实施时确认的平台限制取更严格者。</li>
+      <li>复用 PNG／JPEG／静态 WebP 检测、4000 万像素上限、PNG 规范化和现有尺寸约束。首期不为飞书单独放宽 Telegram 共用的尺寸策略，减少回归。</li>
+      <li>只上传 PreparedImage 的环境暂存副本。路径必须来自已归属后端结果，继续执行 allowedRoots、SecureDirectoryStream 与符号链接一致性检查；不因为“本地文件打开”允许跨目录而放宽图片上传范围。</li>
+      <li>新 sender 不获取正文路径或 HTTP(S) URL，不代模型下载网络图片，不暴露 bot token、本机路径、图片字节或完整外部错误响应。</li>
+      <li>同聊天槽位直到正文、图片、摘要和暂存清理结束才释放；其他聊天继续遵守并发上限，外部 I/O 不进入调度 Mutex。</li>
+      <li>保留公共 IM 图片间隔与逐张有序发送；先复用现有限速，不把 Telegram 的间隔误称为飞书官方限额。必要时在飞书适配器补应用级限流。</li>
+      <li>每张上传前、上传与消息发送之间检查取消；socket 随任务取消。只允许 NonCancellable 清理与必要原子状态提交，不允许继续上传／发送。</li>
+      <li>请求结束、失败、停止均释放暂存副本，保留模型原文件；启动只清理当前环境自身的暂存目录，不清理另一环境和桌面已持久化图片。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>7. 测试与验收</h2>
+    <ol>
+      <li><strong>HTTP：</strong>假服务校验 multipart 字段、PNG 内容、bot bearer token、image_key、原消息 reply 路径、image 消息 content 与稳定 UUID；确认不发生底层自动重试／重定向。</li>
+      <li><strong>阶段失败：</strong>上传拒绝／断连／无 key 时不得调用 reply；回复拒绝与回复状态未知分开计数；无 message_id 不计成功；不泄露响应正文。</li>
+      <li><strong>交付：</strong>图文、纯图、多图、重复候选、混合成功与失败、无效图片、只有 deliveryIssues；正文只发一次，摘要不重复正文，不提前标记全部完成。</li>
+      <li><strong>路由：</strong>私聊、群聊和既有话题语义均回复原请求；没有模型可控目标；文档评论不调用图片上传或 IM 图片发送；桌面与 Telegram 不回归。</li>
+      <li><strong>引用：</strong>已发送图片消息可通过既有受权 IM 读取链路获取资源；不将交付摘要或进度卡伪装成完整图文答案，不扩展权限绕过。</li>
+      <li><strong>取消／队列：</strong>正文等待、上传中、上传完成但回复前、回复等待及摘要等待时停止；同聊天 FIFO、跨聊天并发及上限、失败后继续出队、关闭后不发送后续图片，暂存无泄漏。</li>
+      <li><strong>工程：</strong>定向测试使用 <code>./gradlew :test --tests '*FeishuImage*' :installDist</code>，避免过滤器误作用于桌面模块。随后运行 <code>./gradlew test installDist</code> 与 <code>python3 scripts/check_file_lines.py</code>；如需隔离既有问题用例，明确记录排除项，不声称全量通过。</li>
+      <li><strong>dev：</strong>经授权部署后用固定测试图片验证原生查看、纯图片、原请求回复关系、部分失败提示和停止。真实通知效果按客户端记录，不承诺强制未读；不在 prod 注入故障。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>8. 实施与发布顺序</h2>
+    <p>① 核验接口 schema、已有 scope 和平台限制 → ② 提取装配辅助模块并实现可取消媒体 HTTP → ③ 添加 FeishuImageSender 与阶段失败测试 → ④ 装配 OutgoingImages 并跑交付／路由回归 → ⑤ 更新文档和文件规模检查 → ⑥ 用户要求后通过 bridgectl publish/deploy 部署 dev → ⑦ 验收后再按用户要求提交推送或部署 prod。</p>
+    <p>预计主要工作集中于飞书出站适配及测试，公共图片链路无需重建。若实施核实原消息回复不能满足某类话题语义，应单独补对应路由测试与显式字段，不改成发送到任意新会话来绕开。</p>
+    <p>接口核验入口：<a href="https://open.feishu.cn/document/server-docs/im-v1/image/create">上传图片</a>、<a href="https://open.feishu.cn/document/server-docs/im-v1/message/reply">回复消息</a>、<a href="https://open.feishu.cn/document/server-docs/im-v1/message-content-description/create_json">消息内容结构</a>。上传／回复动态页面抓取受限；上传字段及限制以已核验 CLI schema 为据，不使用第三方转载填补未知约束。</p>
+  </section>
+  <section>
+    <h2>9. 实施验证记录</h2>
+    <p>dev 版本：<code>r-d105f5bbb323a39d1117</code>；部署任务 <code>34b9f90c-b6ae-4398-824b-aac4981b6a9a</code> 已成功，连接正常、已解除排空。未提交推送，未更新 prod。</p>
+    <p>默认 <code>./gradlew test installDist</code> 全量回归两次通过，未排除协议用例。最终单次请求体保护的发布前定向复验共 18 项通过，覆盖图片发送 8 项、飞书交付 5 项、公共图片交付 4 项及 HTTP 基础 1 项；包含 503 Retry-After: 0、不完整响应、两阶段取消、纯图、部分失败、环境隔离及评论旁路。文件规模与差异检查通过。</p>
+    <p>未调用真实模型生成图片、未向实际聊天试发图片；真实客户端展示及当前机器人上传权限仍需 dev 首次图片消息验收。没有修改机器人权限或配置。</p>
+  </section>
+</main>
+</body>
+</html>

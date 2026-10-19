@@ -314,7 +314,6 @@ fun createAgentChannel(
         commentClient.reply(target, text)
     }
     lateinit var launchManaged: (suspend () -> Unit) -> Unit
-    val cardLimiter = CardRateLimiter()
     val service =
         ChatService(
             runner,
@@ -338,19 +337,8 @@ fun createAgentChannel(
             lifecycle,
             initiallyHeld,
             configControls,
-            LarkCardReplies(
-                { channel.rawClient },
-                cardAnswers,
-                fileLinks,
-                FeishuResultCardApi(
-                    FeishuOpenApiClient(
-                        feishuOpenBaseUrl(config),
-                        SdkTenantTokenProvider(sdkOpenApiConfig(config)),
-                    ),
-                    cardLimiter,
-                ),
-                cardLimiter,
-            ) { chatId ->
+            createFeishuCardReplies(config, { channel.rawClient }, cardAnswers, fileLinks) { chatId
+                ->
                 sessions.workspace(
                     SessionKey(
                         config.appId,
@@ -374,6 +362,8 @@ fun createAgentChannel(
                 }
             },
             localReplies = localReplies,
+            outgoingImages =
+                createFeishuOutgoingImages(config, environment?.attachments, appDirectory),
         ) { route, text ->
             val sent = CompletableFuture<Unit>()
             try {

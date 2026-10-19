@@ -9,9 +9,12 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import top.ntutn.agent.bridge.PreparedImage
 import top.ntutn.agent.bridge.storage.BridgeConfig
 
 internal data class FeishuApiResponse(val statusCode: Int, val body: String)
@@ -62,6 +65,27 @@ internal class FeishuOpenApiClient(
         )
     }
 
+    suspend fun uploadMessageImage(image: PreparedImage): FeishuApiResponse {
+        val token = tokenProvider.get()
+        val body =
+            MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("image_type", "message")
+                .addFormDataPart(
+                    "image",
+                    "image.png",
+                    image.path.toFile().asRequestBody(image.mime.toMediaType()),
+                )
+                .build()
+        return execute(
+            Request.Builder()
+                .url(baseUrl.trimEnd('/') + "/open-apis/im/v1/images")
+                .header("Authorization", "Bearer $token")
+                .post(body)
+                .build()
+        )
+    }
+
     private suspend fun execute(request: Request): FeishuApiResponse =
         suspendCancellableCoroutine { continuation ->
             val call = httpClient.newCall(request)
@@ -78,12 +102,20 @@ internal class FeishuOpenApiClient(
                     }
 
                     override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
-                        response.use {
-                            if (continuation.isCancelled) {
-                                return
+                        try {
+                            response.use {
+                                if (continuation.isCancelled) {
+                                    return
+                                }
+                                val body = response.body?.string().orEmpty()
+                                continuation.resume(FeishuApiResponse(response.code, body))
                             }
-                            val body = response.body?.string().orEmpty()
-                            continuation.resume(FeishuApiResponse(response.code, body))
+                        } catch (_: IOException) {
+                            if (!continuation.isCancelled) {
+                                continuation.resumeWithException(
+                                    IOException("Feishu HTTP response incomplete")
+                                )
+                            }
                         }
                     }
                 }
