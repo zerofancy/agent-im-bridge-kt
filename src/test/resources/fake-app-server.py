@@ -77,6 +77,10 @@ for line in sys.stdin:
             event('item/completed','other-thread',turn,item=dict(view,id='other'))
             event('item/completed',tid,turn,item=view)
             event('item/completed',tid,turn,item=view)
+            # TraeX's idle fallback requires an authoritative final answer, even when empty.
+            # A completed image tool alone does not establish that the turn has finished.
+            if os.environ.get('TRAECLI_HOME') == os.path.join(root, 'runtime'):
+                item(tid,turn,'answer','','final_answer')
             completed(tid,turn,'failed' if prompt == 'view-failed' else 'completed'); continue
         if prompt == 'stream-card':
             event('item/started',tid,turn,item={'id':'p','type':'agentMessage','phase':'commentary','text':''})
