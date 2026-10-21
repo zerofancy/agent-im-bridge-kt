@@ -85,7 +85,6 @@ class ChatService(
     private var closed = false
     private var draining = initiallyHeld
     private val outstanding = mutableSetOf<CompletableFuture<Unit>>()
-    private val startupNotice = lifecycle?.let { StartupNotice(it.startedAt) }
 
     suspend fun drain() = mutex.withLock { draining = true }
 
@@ -696,9 +695,6 @@ class ChatService(
                                         if (mutex.withLock { closed }) {
                                             throw CancellationException("Bridge closed")
                                         }
-                                        if (route.origin == ReplyOrigin.IM) {
-                                            startupNotice?.beforeReply(route, sender)
-                                        }
                                     },
                                 )
                             presentation = reply
@@ -831,9 +827,6 @@ class ChatService(
         currentCoroutineContext().ensureActive()
         if (mutex.withLock { closed }) {
             throw CancellationException("Bridge closed")
-        }
-        if (route.origin == ReplyOrigin.IM) {
-            startupNotice?.beforeReply(route, sender)
         }
         return withTimeout(30_000.milliseconds) { action() }
     }

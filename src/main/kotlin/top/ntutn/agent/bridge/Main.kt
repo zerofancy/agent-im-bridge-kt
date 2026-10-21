@@ -226,6 +226,22 @@ fun main(args: Array<String>) {
         }
         control.connected(true)
         watchdog?.start()
+        val notice =
+            StartupNotice(
+                activeLifecycle.startedAt,
+                previousReason = activeLifecycle.previous?.string("reason") ?: "无上次退出记录",
+            )
+        val startupLark = activeLarkChannel
+        val startupTelegram = telegramClient
+        service.launchManaged {
+            notice.send { text ->
+                if (startupLark != null) {
+                    startupLark.sendStartupNotice(text)
+                } else {
+                    checkNotNull(startupTelegram).sendMessage(config.allowedUserId, text)
+                }
+            }
+        }
         log.info(
             "{} Bridge 已连接 environment={} release={}",
             backend.displayName,

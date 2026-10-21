@@ -16,7 +16,7 @@ class BridgeConfig(
     val tenant: String,
     val sandboxMode: String = "read-only",
     val backend: String = "codex",
-    val feishuProgressMode: String = "cardkit",
+    val feishuProgressMode: String = "cot",
 ) {
     val platform: String
         get() =
@@ -92,7 +92,7 @@ class ConfigStore(val path: Path) {
                     json["feishuProgressMode"]?.let {
                         require(it.isJsonPrimitive && it.asJsonPrimitive.isString)
                         it.asString
-                    } ?: "cardkit",
+                    } ?: "cot",
                 )
                 .also { it.validate() }
         } catch (_: Exception) {

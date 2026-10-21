@@ -57,6 +57,18 @@ internal constructor(
 
     fun healthy(): Boolean = socket.healthy()
 
+    suspend fun sendStartupNotice(text: String) {
+        FeishuStartupSender(
+                FeishuOpenApiClient(
+                    feishuOpenBaseUrl(config),
+                    SdkTenantTokenProvider(sdkOpenApiConfig(config)),
+                    feishuMediaHttpClient(),
+                ),
+                config.allowedUserId,
+            )
+            .send(text)
+    }
+
     private fun buildSocket(): FeishuSocket =
         FeishuSocket(
             http = http,

@@ -28,7 +28,7 @@
     <h2>1. 范围与非目标</h2>
     <ul>
       <li>首期覆盖飞书私聊、授权群聊及既有话题回复路由，覆盖 Codex、Traex、OpenCode 三个后端的运行、公开进度和可可靠识别的工具生命周期。</li>
-      <li>新增实例配置 <code>feishuProgressMode=cardkit|cot</code>，缺省为 cardkit，非法值启动失败；重启生效。DEV 显式启用 COT，PROD 不自动切换。启动日志和本机状态诊断显示配置模式与最近降级分类。</li>
+      <li>新增实例配置 <code>feishuProgressMode=cardkit|cot</code>，缺省为 cot，显式设为 cardkit 可回退，非法值启动失败；重启生效。已有 DEV/PROD 配置不自动改写。启动日志和本机状态诊断显示配置模式与最近降级分类。</li>
       <li>文档评论直接沿用评论旁路；桌面、Telegram 行为不变。首期不增加 /card 命令、会话级偏好、模型切换或新的机器人身份。</li>
       <li>不把最终答案合并进 COT，不撤回旧过程消息，不读取或发布模型隐藏推理，不使用未文档化私有接口。</li>
       <li>不改变同聊天 FIFO、跨聊天并发上限、身份校验、会话隔离、持久化顺序及模型无自动超时约定。</li>
@@ -167,7 +167,7 @@
   <section>
     <h2>10. 实施、发布与回退</h2>
     <ol>
-      <li>先落地结构化事件、内存状态机、Fake HTTP 与恢复记录测试；保持 cardkit 默认路径。</li>
+      <li>先落地结构化事件、内存状态机、Fake HTTP 与恢复记录测试；默认路径切到 cot，并保留显式回退到 cardkit 的能力。</li>
       <li>实现 COT HTTP 和 reporter，接入三个后端，再隔离过程策略与现有结果交付；测试全部验收项。</li>
       <li>经用户批准后，在 DEV 显式开启 cot，先最小闭环，再真实任务、中断、话题和图片；记录消息 ID、版本和结果，不对 PROD 注入故障。</li>
       <li>DEV 验收后另行批准 PROD 部署；采用 bridgectl 不可变发布，环境凭证、状态、附件和 COT 存储独立。</li>

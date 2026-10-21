@@ -8,32 +8,24 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import kotlin.test.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.future.await
 import org.junit.jupiter.api.io.TempDir
 
 class RuntimeLifecycleTest {
     @TempDir lateinit var temp: Path
 
     @Test
-    fun `document replies skip startup notice without consuming IM notice`(): Unit = runBlocking {
-        val notice = StartupNotice(Instant.EPOCH)
-        val routes = mutableListOf<ReplyRoute>()
-        val sender = ReplySender { route, _ ->
-            routes += route
-            CompletableFuture.completedFuture(Unit)
+    fun `startup notice includes previous exit reason without an inbound message`(): Unit =
+        runBlocking {
+            val notice = StartupNotice(Instant.EPOCH, previousReason = "版本升级")
+            val messages = mutableListOf<String>()
+            notice.send { messages += it }
+            notice.send { fail("must not send twice") }
+            assertEquals(listOf("应用启动于8时00分\n上次退出原因：版本升级"), messages)
         }
-        val im = ReplyRoute("chat", "message")
-        val document =
-            im.copy(documentComment = DocumentCommentTarget("docx", "file", "comment", "reply"))
-        notice.beforeReply(document, sender)
-        assertTrue(routes.isEmpty())
-        notice.beforeReply(im, sender)
-        notice.beforeReply(document, sender)
-        notice.beforeReply(im, sender)
-        assertEquals(listOf(im), routes)
-    }
 
     @Test
-    fun `startup notice is one global bounded attempt before concurrent replies`(): Unit =
+    fun `startup notice is one bounded attempt without blocking other callers`(): Unit =
         runBlocking {
             val notice = StartupNotice(Instant.parse("2026-09-10T11:42:00Z"))
             val started = CompletableDeferred<Unit>()
@@ -45,16 +37,16 @@ class RuntimeLifecycleTest {
                 sent
             }
             val a = async {
-                notice.beforeReply(ReplyRoute("one", "1"), sender)
+                notice.send { sender.send(ReplyRoute("one", "1"), it).await() }
                 records += "one:answer"
             }
             started.await()
             val b = async {
-                notice.beforeReply(ReplyRoute("two", "2"), sender)
+                notice.send { sender.send(ReplyRoute("two", "2"), it).await() }
                 records += "two:answer"
             }
             yield()
-            assertEquals(listOf("one:应用启动于19时42分"), records)
+            assertTrue(records.any { it.startsWith("one:应用启动于19时42分\n上次退出原因：") })
             sent.complete(Unit)
             awaitAll(a, b)
             assertEquals(1, records.count { it.contains("应用启动于") })
@@ -75,8 +67,8 @@ class RuntimeLifecycleTest {
                 }
             }
             withTimeout(2000) {
-                notice.beforeReply(ReplyRoute("one", "1"), sender)
-                notice.beforeReply(ReplyRoute("two", "2"), sender)
+                notice.send { sender.send(ReplyRoute("one", "1"), it).await() }
+                notice.send { sender.send(ReplyRoute("two", "2"), it).await() }
             }
             assertEquals(1, calls)
         }

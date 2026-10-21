@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>飞书卡片上下文读取：调研与验证</title>
+<style>
+body{margin:0;background:#f4f6fa;color:#202938;font:16px/1.75 system-ui,sans-serif}
+main{max-width:1020px;margin:36px auto;padding:32px;background:white;border-radius:16px}
+h1,h2{line-height:1.4}h2{margin-top:32px}code,pre{background:#edf2f8;border-radius:5px}
+code{padding:2px 5px}pre{padding:16px;overflow:auto}table{width:100%;border-collapse:collapse}
+th,td{padding:12px;border:1px solid #dce3ed;text-align:left;vertical-align:top}
+.ok{border-left:5px solid #17845a;padding:16px;background:#edf9f2}.note{color:#566477}
+a{color:#245ac4}li{margin:8px 0}@media(max-width:700px){main{margin:10px;padding:18px}table{font-size:13px}}
+</style>
+</head>
+<body><main>
+<h1>飞书卡片上下文读取：调研与验证</h1>
+<p class="note">2026-10-21 · 本机 DEV / PROD 既有机器人身份 · 只读在线验证与独立解析原型；未修改业务代码、权限或部署。</p>
+<div class="ok"><strong>结论：可以解决，且已有官方、较简单的读取方式。</strong>
+<p>同一张卡片使用现有机器人身份，在 GET 消息接口添加
+<code>card_msg_content_type=user_card_content</code> 后，可取得原始 Card JSON 2.0 和完整 review 正文。
+不需要用户授权、不需要新权限，也不必优先接入 mget 的内部格式。</p></div>
+
+<h2>1. 修正上一轮方案</h2>
+<p>上一轮发现 CLI 使用 <code>messages/mget + raw_card_content</code> 取得 <code>json_card</code>，
+但这不是本项目必须采用的路线。进一步查阅官方文档后确认，现有单消息 GET 就支持
+<code>user_card_content</code>，返回标准发送格式，而非 CLI 原始内部渲染 AST。</p>
+<pre>GET /open-apis/im/v1/messages/{message_id}
+    ?card_msg_content_type=user_card_content</pre>
+<p>本机 SDK 的 <code>GetMessageReq.Builder.cardMsgContentType(String)</code> 已存在，
+验证使用该公开接口，沿用应用凭据及 SDK 鉴权；没有读取 SDK 私有状态。
+正式实现按项目倾向优先采用既有 HTTP 封装；也可在当前 SDK 读取链路先使用公开参数，技术上不需要升级 SDK。</p>
+
+<h2>2. 在线验证矩阵</h2>
+<table><thead><tr><th>样本 / 身份</th><th>默认 GET</th><th>user_card_content</th></tr></thead><tbody>
+<tr><td>用户转发的 review 卡片 / PROD 机器人</td><td>code=0；title + elements；只含升级占位，无 review 正文</td><td>code=0；body + config + header + schema；原型提取 3703 个 Java 字符，包含两条 review</td></tr>
+<tr><td>原始 review 卡片 / DEV 机器人</td><td>同样只有升级占位</td><td>code=0；同样取得完整标准卡片和两条 review</td></tr>
+<tr><td>DEV 私聊内的原卡片 / PROD 机器人</td><td>code=230002，读取被拒绝</td><td>同样 code=230002；参数不提升访问权限</td></tr>
+<tr><td>普通文本请求 / PROD 机器人</td><td>code=0；text 结构</td><td>code=0；与默认查询的正文 JSON 完全相同</td></tr>
+</tbody></table>
+<p>转发样本：<code>om_x100b62b25096b888cec41cca555da71</code>；
+原始 DEV 样本：<code>om_x100b62b25646d0b4b08e5e7ae0ad4ff</code>。
+仅对用户指定上下文及其原消息执行读取，不尝试绕过拒绝。</p>
+
+<h2>3. 已确认的丢失位置</h2>
+<ol>
+<li><code>LarkMessageSource.get()</code> 目前未传卡片格式参数，获得的是兼容内容，而非完整原卡片。</li>
+<li><code>ReplyContext.renderInteractive()</code> 只从顶层 text / content 开始解析。
+实测默认卡片的 title / elements 和标准卡片的 header / body 都不会进入现有遍历，而是提前返回“【卡片消息】”。</li>
+<li>现有测试把卡片人为封装成顶层 content 字符串，未覆盖真实接口结构。</li>
+<li>转发后发送人为用户、消息 ID 变化，现有按环境与应用隔离的机器人答案快照无法直接复用。
+应从授权的转发消息读取正文，不应按相似内容匹配原卡片或跨环境借用快照。</li>
+</ol>
+<p>独立原型已验证：直接解析标准 header / body，可提取上述两条 review，并保留正文中的 Markdown 链接。
+对两个真实卡片样本均确认其顶层不存在 text / content，现有入口必然提前返回占位。
+这是读取与解析两个独立问题，不能只修其中一处。</p>
+
+<h2>4. 建议实现边界</h2>
+<ol>
+<li><strong>读取：</strong>显式请求 user_card_content；不改变调用身份。
+权限拒绝不切用户身份、不跨环境重试；协议不支持或仅返回占位时记录明确结果。</li>
+<li><strong>解析：</strong>标准 1.0 / 2.0 卡片、旧 text / content 包装与兼容 elements 统一进入有界渲染器。
+优先读取可见 header / body，不遍历所有属性；不把 callback、隐藏参数或 config 摘要当正文。</li>
+<li><strong>保真：</strong>保留段落、列表、代码、链接与重复文本，不用 linkedSet 对正文去重。
+不因正文以方括号、花括号或 URL 开头而整体删除；按明确节点类型处理。</li>
+<li><strong>失败：</strong>将完整、截断、占位、结构不支持、权限拒绝分开表达，保留消息 ID 与错误分类。
+禁止向日志输出正文、token、签名链接或完整外部错误。</li>
+<li><strong>引用安全：</strong>保留历史内容不作为指令的提示，以及获取源消息并校验聊天后才读本地快照的边界。
+继续保护 text_pending，不将未确认交付的答案替换为已完成引用。</li>
+</ol>
+
+<h2>5. 尚未完成的验收</h2>
+<ul>
+<li>正式渲染器与自动化回归尚未编写；当前为 SDK 在线读取和独立解析原型，不代表功能已发布。</li>
+<li>需加入脱敏真实 fixtures，覆盖原始卡片、用户转发、缺失正文、旧包装、重复文本、链接及节点 / 字节预算。</li>
+<li>合并转发中的嵌套卡片、Card JSON 1.0、图片附件与动态控件尚未在线验证；图片不应被宣称已转成文本。</li>
+<li>需验证异常不静默退化、权限不扩张、取消正常传播，然后运行项目全量测试并在 DEV 以真实回复操作验收。</li>
+</ul>
+<h2>6. 官方依据</h2>
+<p><a href="https://open.feishu.cn/document/server-docs/im-v1/message/get.md">获取指定消息内容：身份、权限与 card_msg_content_type 参数</a>。
+该文档明确说明：默认不返回发送时的原始卡片；user_card_content 返回原始 Card JSON，且不影响其他类型消息。</p>
+</main></body></html>

@@ -89,6 +89,12 @@ class LarkMessageSourceTest {
             ),
             source.get("om_parent"),
         )
+        assertTrue(
+            urls.any {
+                it.contains("/messages/om_parent") &&
+                    it.contains("card_msg_content_type=user_card_content")
+            }
+        )
         assertEquals("张三", source.lookup("ou_user", "open_id"))
         assertTrue(
             urls.any {

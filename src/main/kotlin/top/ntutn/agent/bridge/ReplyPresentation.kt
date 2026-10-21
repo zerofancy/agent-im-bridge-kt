@@ -63,7 +63,7 @@ internal fun presentationDiagnostics(replies: CardReplies?) =
     com.google.gson.JsonObject().apply {
         val fields =
             (replies as? RunReplyProvider)?.diagnostics()
-                ?: mapOf("feishuProgressMode" to "cardkit")
+                ?: mapOf("feishuProgressMode" to "cot")
         fields.forEach { (key, value) -> addProperty(key, value) }
     }
 

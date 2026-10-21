@@ -50,7 +50,12 @@ class LarkMessageSource(
                         .im()
                         .v1()
                         .message()
-                        .get(GetMessageReq.newBuilder().messageId(id).build())
+                        .get(
+                            GetMessageReq.newBuilder()
+                                .messageId(id)
+                                .cardMsgContentType("user_card_content")
+                                .build()
+                        )
                 check(response.success()) { "Message lookup failed" }
                 val items = response.data?.items.orEmpty().toList()
                 val root = items.singleOrNull { it.messageId == id } ?: error("Message unavailable")

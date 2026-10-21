@@ -20,7 +20,7 @@ Telegram 的流式回复、最终富文本回复和普通文本回退均转换�
 
 ### 可选 COT 过程展示
 
-实例 JSON 配置新增 `"feishuProgressMode": "cot"`，重启生效；缺省为 `cardkit`，非法值启动失败。不自动修改 DEV 或 PROD 配置。COT 仅替换飞书 IM 的过程展示，最终结果卡片、图片交付、评论旁路与未知发送保护保持原有流程。工具显示实际安全名称（MCP 包括服务名），原生命令执行和 OpenCode bash/shell 显示脱敏命令摘要，超长明确截断；不展示其他参数或原始输出。详见 [接入 Spec](feishu-cot-integration-spec.html)。
+实例 JSON 配置新增 `"feishuProgressMode": "cot"`，重启生效；缺省为 `cot`，显式设为 `cardkit` 可回退，非法值启动失败。不自动修改 DEV 或 PROD 已有配置。COT 仅替换飞书 IM 的过程展示，最终结果卡片、图片交付、评论旁路与未知发送保护保持原有流程。工具显示实际安全名称（MCP 包括服务名），原生命令执行和 OpenCode bash/shell 显示脱敏命令摘要，超长明确截断；不展示其他参数或原始输出。详见 [接入 Spec](feishu-cot-integration-spec.html)。
 
 Codex / Traex 使用原生 thread/turn 事件，OpenCode 使用当前助手消息快照；只上报公开说明和安全工具状态，不发送隐藏推理、工具参数或原始输出。公开说明在完整 item 确认后脱敏上报，不逐 token 转发。缓存为 32 个有界事件，溢出停止中间过程上报，保留独立终态槽。单轮最多同时展示 4 个未结束文本和 4 个未结束工具，为收尾预留容量；未确认工具结果明确标为过程记录不完整，不宣称成功。
 

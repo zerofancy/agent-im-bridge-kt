@@ -118,6 +118,6 @@ class CotChannelTest {
             store.path,
             """{"appId":"cli_test","appSecret":"secret","allowedUserId":"ou_user","tenant":"feishu"}""",
         )
-        assertEquals("cardkit", store.load()!!.feishuProgressMode)
+        assertEquals("cot", store.load()!!.feishuProgressMode)
     }
 }

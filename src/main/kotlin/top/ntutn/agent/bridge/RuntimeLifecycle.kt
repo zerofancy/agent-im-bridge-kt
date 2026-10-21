@@ -7,7 +7,6 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.*
-import kotlinx.coroutines.future.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -198,39 +197,41 @@ object FatalErrorHandler {
         }
 }
 
-/**
- * One attempt per process; other replies wait for that bounded attempt, never holding a scheduler
- * lock.
- */
-class StartupNotice(private val startedAt: Instant, private val timeoutMillis: Long = 30_000) {
+class StartupNotice(
+    private val startedAt: Instant,
+    private val timeoutMillis: Long = 30_000,
+    private val previousReason: String = "无上次退出记录",
+) {
     private val mutex = Mutex()
     private var attempted = false
 
-    suspend fun beforeReply(route: ReplyRoute, sender: ReplySender) {
-        // Document threads contain discussion only; leave the notice for a later IM reply.
-        if (route.documentComment != null) {
+    suspend fun send(sender: suspend (String) -> Unit) {
+        val claimed =
+            mutex.withLock {
+                if (attempted) {
+                    false
+                } else {
+                    attempted = true
+                    true
+                }
+            }
+        if (!claimed) {
             return
         }
-        mutex.withLock {
-            if (attempted) {
-                return
+        try {
+            withTimeout(timeoutMillis) {
+                sender("${RuntimeLifecycle.notice(startedAt)}\n上次退出原因：$previousReason")
             }
-            attempted = true
-            try {
-                withTimeout(timeoutMillis) {
-                    sender.send(route, RuntimeLifecycle.notice(startedAt)).await()
-                }
-            } catch (e: CancellationException) {
-                if (e !is TimeoutCancellationException) {
-                    throw e
-                }
-                currentCoroutineContext().ensureActive()
-                org.slf4j.LoggerFactory.getLogger("top.ntutn.agent.bridge").warn("启动提示发送超时，不重试")
-            } catch (e: Exception) {
-                FatalErrorHandler.rethrowProgrammingError(e)
-                org.slf4j.LoggerFactory.getLogger("top.ntutn.agent.bridge")
-                    .warn("启动提示发送失败 type={}，不重试", e.javaClass.simpleName)
+        } catch (e: CancellationException) {
+            if (e !is TimeoutCancellationException) {
+                throw e
             }
+            currentCoroutineContext().ensureActive()
+            org.slf4j.LoggerFactory.getLogger("top.ntutn.agent.bridge").warn("启动提示发送超时，不重试")
+        } catch (e: Exception) {
+            FatalErrorHandler.rethrowProgrammingError(e)
+            org.slf4j.LoggerFactory.getLogger("top.ntutn.agent.bridge")
+                .warn("启动提示发送失败 type={}，不重试", e.javaClass.simpleName)
         }
     }
 }
