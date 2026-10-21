@@ -12,25 +12,6 @@ import org.slf4j.LoggerFactory
 /** A non-idempotent send may already have reached the server; do not replay it as plain text. */
 internal class ReplyDeliveryUncertain : IOException("Reply delivery could not be confirmed")
 
-internal enum class CardDelivery {
-    DELIVERED,
-    FALLBACK_REQUIRED,
-}
-
-internal interface ResultDelivery {
-    suspend fun send(text: String, status: String): CardDelivery
-
-    suspend fun fallbackStarting(chunk: Int) {}
-
-    suspend fun fallbackProgress(confirmedChunks: Int, complete: Boolean)
-
-    fun fallbackText(text: String): String = text
-}
-
-internal interface SplitCardReplies : CardReplies {
-    suspend fun prepareResult(route: ReplyRoute, requestId: String): ResultDelivery
-}
-
 /** Implementations own external I/O, safe retries and durable quote snapshots. */
 interface CardReplies {
     val refreshIntervalMs: Long?
@@ -262,7 +243,7 @@ internal class StreamingReply(
     private val beforeReply: suspend () -> Unit,
     private val intervalMs: Long = 1000,
     private val requestId: String = route.messageId,
-) {
+) : ReplyPresentation {
     private data class Update(
         val progress: AgentProgress,
         val final: String? = null,
@@ -419,23 +400,23 @@ internal class StreamingReply(
             }
         }
 
-    fun progress(value: AgentProgress) {
+    override fun progress(value: AgentProgress) {
         val state = observed.updateAndGet { it.copy(progress = value) }
         updates.trySend(Update(state.progress))
     }
 
-    fun stopping() {
+    override fun stopping() {
         val state = observed.updateAndGet { it.copy(stopping = true) }
         updates.trySend(Update(state.progress))
     }
 
-    suspend fun finish(text: String, status: String = "已完成", timeoutMs: Long = 25_000): Boolean =
+    override suspend fun finish(text: String, status: String, timeoutMs: Long): Boolean =
         finishDelivery(text, status, timeoutMs) == CardDelivery.DELIVERED
 
-    suspend fun finishDelivery(
+    override suspend fun finishDelivery(
         text: String,
-        status: String = "已完成",
-        timeoutMs: Long = 25_000,
+        status: String,
+        timeoutMs: Long,
     ): CardDelivery {
         // The runner's final event is authoritative; pending progress is superseded by this
         // terminal update.
@@ -504,7 +485,7 @@ internal class StreamingReply(
         return result
     }
 
-    suspend fun fallbackProgress(confirmedChunks: Int, complete: Boolean) {
+    override suspend fun fallbackProgress(confirmedChunks: Int, complete: Boolean) {
         if (api !is SplitCardReplies) {
             return
         }
@@ -517,9 +498,9 @@ internal class StreamingReply(
         }
     }
 
-    fun fallbackText(text: String): String = resultDelivery?.fallbackText(text) ?: text
+    override fun fallbackText(text: String): String = resultDelivery?.fallbackText(text) ?: text
 
-    suspend fun fallbackStarting(chunk: Int) {
+    override suspend fun fallbackStarting(chunk: Int) {
         resultDelivery?.fallbackStarting(chunk)
     }
 
@@ -538,7 +519,7 @@ internal class StreamingReply(
         }
     }
 
-    suspend fun close(status: String, terminated: Boolean = false) {
+    override suspend fun close(status: String, terminated: Boolean) {
         worker.cancelAndJoin()
         updates.close()
         try {

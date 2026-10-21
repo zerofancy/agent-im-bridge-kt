@@ -17,7 +17,7 @@ internal class ReplyDelivery(
         route: ReplyRoute,
         handle: AgentRunHandle,
         result: AgentResult,
-        presentation: StreamingReply?,
+        presentation: ReplyPresentation?,
     ) {
         if (
             result is AgentResult.Success &&
@@ -99,7 +99,7 @@ internal class ReplyDelivery(
         route: ReplyRoute,
         handle: AgentRunHandle,
         result: AgentResult.Success,
-        presentation: StreamingReply?,
+        presentation: ReplyPresentation?,
     ) {
         val media =
             when {

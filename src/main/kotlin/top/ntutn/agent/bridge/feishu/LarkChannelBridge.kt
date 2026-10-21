@@ -337,18 +337,17 @@ fun createAgentChannel(
             lifecycle,
             initiallyHeld,
             configControls,
-            createFeishuCardReplies(config, { channel.rawClient }, cardAnswers, fileLinks) { chatId
-                ->
-                sessions.workspace(
-                    SessionKey(
-                        config.appId,
-                        chatId,
-                        options.workspace.toString(),
-                        backend.runtimeRoot.toString(),
-                        backend.id.configValue,
-                    )
-                )
-            },
+            createFeishuReplies(
+                config,
+                { channel.rawClient },
+                cardAnswers,
+                fileLinks,
+                lifecycle?.environment?.directory,
+                appDirectory,
+                sessions,
+                backend,
+                options.workspace,
+            ),
             { chatId, references, sourceKind ->
                 for (reference in references) {
                     documentRoutes.bind(

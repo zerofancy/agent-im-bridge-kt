@@ -252,6 +252,7 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                 }
             }
         val images = NativeImages()
+        val runEvents = OpenCodeRunEvents(id, messageId, handle.onRunEvent)
         var submitted = false
         var previous: AgentProgress? = null
         var nextInterruptAt = 0L
@@ -333,6 +334,7 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                                     info.string("role") == "assistant"
                             }
                     images.openCode(own, id, messageId)
+                    runEvents.accept(own)
                     val progress = openCodeProgress(own)
                     if (progress != previous) {
                         handle.onProgress(progress)

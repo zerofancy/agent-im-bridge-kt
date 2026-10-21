@@ -17,7 +17,11 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import top.ntutn.agent.bridge.PreparedImage
 import top.ntutn.agent.bridge.storage.BridgeConfig
 
-internal data class FeishuApiResponse(val statusCode: Int, val body: String)
+internal data class FeishuApiResponse(
+    val statusCode: Int,
+    val body: String,
+    val traceId: String? = null,
+)
 
 internal fun interface FeishuTenantTokenProvider {
     suspend fun get(): String
@@ -43,13 +47,21 @@ internal class FeishuOpenApiClient(
     private val gson = Gson()
 
     suspend fun postJson(path: String, body: Map<String, Any>): FeishuApiResponse {
+        return requestJson("POST", path, body)
+    }
+
+    suspend fun requestJson(
+        method: String,
+        path: String,
+        body: Map<String, Any>?,
+    ): FeishuApiResponse {
         val token = tokenProvider.get()
         val request =
             Request.Builder()
                 .url(baseUrl.trimEnd('/') + "/" + path.trimStart('/'))
                 .header("Authorization", "Bearer $token")
                 .header("Content-Type", "application/json; charset=utf-8")
-                .post(gson.toJson(body).toRequestBody(JSON_MEDIA_TYPE))
+                .method(method, (body?.let(gson::toJson) ?: "").toRequestBody(JSON_MEDIA_TYPE))
                 .build()
         return execute(request)
     }
@@ -108,7 +120,11 @@ internal class FeishuOpenApiClient(
                                     return
                                 }
                                 val body = response.body?.string().orEmpty()
-                                continuation.resume(FeishuApiResponse(response.code, body))
+                                val trace =
+                                    response.header("X-Tt-Logid")?.takeIf {
+                                        it.length <= 128 && it.matches(Regex("[A-Za-z0-9_-]+"))
+                                    }
+                                continuation.resume(FeishuApiResponse(response.code, body, trace))
                             }
                         } catch (_: IOException) {
                             if (!continuation.isCancelled) {

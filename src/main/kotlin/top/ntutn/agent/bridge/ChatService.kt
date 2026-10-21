@@ -16,18 +16,6 @@ import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionPersistenceException
 import top.ntutn.agent.bridge.storage.SessionStore
 
-enum class ReplyOrigin {
-    IM,
-    DESKTOP,
-}
-
-data class ReplyRoute(
-    val chatId: String,
-    val messageId: String,
-    val documentComment: DocumentCommentTarget? = null,
-    val origin: ReplyOrigin = ReplyOrigin.IM,
-)
-
 fun interface ReplySender {
     fun send(route: ReplyRoute, text: String): CompletableFuture<Unit>
 }
@@ -117,6 +105,7 @@ class ChatService(
                 "queued" to queue.size,
                 "incoming" to incomingCount.get(),
                 "closed" to closed,
+                "presentation" to presentationDiagnostics(cardReplies),
             )
         }
 
@@ -661,7 +650,7 @@ class ChatService(
         val route = work.route
         val started = System.nanoTime()
         val preparedPrompts = mutableListOf<PreparedPrompt>()
-        var presentation: StreamingReply? = null
+        var presentation: ReplyPresentation? = null
         try {
             if (mutex.withLock { closed }) {
                 return
@@ -697,10 +686,11 @@ class ChatService(
                             }
                         if (presentation == null && replies != null) {
                             val reply =
-                                StreamingReply(
+                                createReplyPresentation(
                                     CoroutineScope(currentCoroutineContext()),
                                     replies,
                                     route,
+                                    work.input?.inputId ?: route.messageId,
                                     {
                                         currentCoroutineContext().ensureActive()
                                         if (mutex.withLock { closed }) {
@@ -710,10 +700,10 @@ class ChatService(
                                             startupNotice?.beforeReply(route, sender)
                                         }
                                     },
-                                    requestId = work.input?.inputId ?: route.messageId,
                                 )
                             presentation = reply
                             work.handle.onProgress = reply::progress
+                            work.handle.onRunEvent = reply::event
                             work.handle.onStopping = reply::stopping
                             if (work.handle.stopRequested) {
                                 reply.stopping()
@@ -721,6 +711,7 @@ class ChatService(
                         }
                     },
                 ) ?: return
+            presentation?.backendFinished(result)
             mutex.withLock {
                 work.stopBackendFailed =
                     result is AgentResult.Failure && result.kind != AgentResult.Kind.STOPPED
@@ -798,6 +789,7 @@ class ChatService(
                     )
                 } finally {
                     work.handle.onProgress = {}
+                    work.handle.onRunEvent = {}
                     work.handle.onStopping = {}
                     try {
                         for (prepared in preparedPrompts) {

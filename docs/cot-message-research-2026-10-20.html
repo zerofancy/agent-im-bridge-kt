@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>飞书原生任务进度消息 COT 调研</title>
+  <style>
+    body { max-width: 960px; margin: 36px auto; padding: 0 22px; color: #243247; font: 16px/1.8 system-ui, sans-serif; }
+    h1, h2 { line-height: 1.4; }
+    a { color: #245cdb; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #dce3ec; padding: 10px; text-align: left; overflow-wrap: anywhere; }
+    code { background: #eef2f7; padding: 2px 4px; overflow-wrap: anywhere; }
+    .note { background: #edf5ff; padding: 15px; border-left: 4px solid #245cdb; }
+  </style>
+</head>
+<body>
+  <h1>飞书原生任务进度消息：Message COT</h1>
+  <p>调研日期：2026-10-20。范围：官方接入文档、官方 Playground 指南和现有项目源码；没有发送测试消息、申请权限、修改业务代码或部署。</p>
+  <p class="note">结论：目标效果有明确的 Message COT OpenAPI，不需要用普通折叠卡片仿制。官方接入参考说明基础能力已全量开放；部分增强体验仍有版本或灰度限制。此前“尚未找到公开协议”是检索未命中，不是能力不存在。</p>
+
+  <h2>1. 证据与可见性</h2>
+  <ul>
+    <li>实查“小P”15:08 的进度消息：客户端显示“任务已完成”，展开后展示阶段文字与工具调用分组；标准消息查询返回 post，正文仅为 Completed。</li>
+    <li>15:17 另有独立 interactive 结果消息。该现象与 COT 过程旁路加独立结果卡的文档方案吻合；尚未取得该机器人的源码，不能声称已核实其具体实现。</li>
+    <li>官方内部接入参考明确列出了 CreateCOT、UpdateCOT、CompleteCOT，并链接正式 OpenAPI 文档及 AG-UI Playground。</li>
+    <li>正式 OpenAPI Markdown 入口未登录访问返回 This document is not public；官方参考评论说明，能力已全量，但文档可见性当时仍有限。不能混淆文档可见范围与接口开放范围。</li>
+  </ul>
+
+  <h2>2. 三个接口</h2>
+  <p>生产飞书 Base URL 为 <code>https://open.feishu.cn</code>；使用机器人所属应用的 <code>tenant_access_token</code>，Content-Type 为 application/json;charset=utf-8。目标应用的实际权限和调用结果仍需在 DEV 验证，不假定已有授权必然覆盖。</p>
+  <table>
+    <thead><tr><th>阶段</th><th>接口</th><th>关键数据</th></tr></thead>
+    <tbody>
+      <tr><td>创建</td><td>POST /open-apis/im/v1/message_cot?receive_id_type=chat_id</td><td>receive_id、origin_message_id、reply_in_thread；保存返回的 cot_id 和 message_id。</td></tr>
+      <tr><td>追加过程</td><td>PUT /open-apis/im/v1/message_cot</td><td>message_id、cot_id、events；事件含 event_type、timestamp、content。</td></tr>
+      <tr><td>完成收口</td><td>POST /open-apis/im/v1/message_cot/complete/{cot_id}?message_id={message_id}&amp;reason=done</td><td>请求体为空。正常完成用 done；失败或用户中断用 error；timeout 仅供内部兜底调用，外部调用不可使用。</td></tr>
+    </tbody>
+  </table>
+  <p><code>events[].content</code> 必须是序列化后的 JSON 字符串，不是直接嵌套的对象。运行、文本、工具都使用稳定 ID 关联；同一 COT 的事件串行发送。</p>
+
+  <h2>3. 如何生成目标体验</h2>
+  <ol>
+    <li>请求真正开始执行时 CreateCOT，再发送 RUN_STARTED；不要为排队中的每条消息立即启动运行，也不要为 /stop 创建新 COT。</li>
+    <li>阶段文案映射为 TEXT_MESSAGE_START / CONTENT / END；工具映射为 TOOL_CALL_START / END / RESULT。END 表示参数阶段结束、工具开始运行，不代表工具执行成功。</li>
+    <li>官方事件指南也支持 REASONING 系列，但只可输出公开进度摘要，不能发送模型原始隐藏推理。</li>
+    <li>正常运行发送 RUN_FINISHED，然后 CompleteCOT(done)；失败发送 RUN_ERROR，然后 CompleteCOT(error)。</li>
+    <li>按 Playground 的用户中断示例，原生中断确认后发送 RUN_FINISHED(status=interrupted)，再 CompleteCOT(error)；不能把中断请求已接受当成任务已停止。</li>
+    <li>最终答案继续通过现有独立结果卡交付；原生折叠、状态和工具分组由飞书渲染。</li>
+  </ol>
+  <p>不要把 AG-UI 的所有事件都当作已实现：Playground 指南将 STEP_STARTED、STEP_FINISHED、STATE_SNAPSHOT 等标记为不支持。首期仅采用已支持的运行、文本、工具事件。</p>
+
+  <h2>4. 通知、隐藏与版本边界</h2>
+  <table>
+    <thead><tr><th>CreateCOT 字段</th><th>官方说明</th><th>本项目建议</th></tr></thead>
+    <tbody>
+      <tr><td>enable_badge</td><td>是否推送红点</td><td>过程设置 false，独立结果消息承担通知；实际未读行为需客户端验收。</td></tr>
+      <tr><td>update_feed_rank</td><td>是否顶会话列表</td><td>过程设置 false，避免过程持续打扰会话排序。</td></tr>
+      <tr><td>cot_hidden</td><td>是否在完成后隐藏 COT</td><td>若要保留可展开过程，设置 false；隐藏模式另行选择，不默认丢失过程入口。</td></tr>
+    </tbody>
+  </table>
+  <p>上述三个参数在接入参考的 7.75 更新中记录。7.73 起停止按钮默认仅私聊可见，群聊默认不可见，群聊增强按灰度处理。不能依赖它替代本项目已有鉴权和 /stop 控制。</p>
+
+  <h2>5. 接入项目需要改什么</h2>
+  <ul>
+    <li>增加独立 FeishuCotClient 和有生命周期的 COT reporter，复用现有 HTTP、token manager 和路由；不让模型自行调用飞书。</li>
+    <li>保留 CardKit 进度模式作为可选兼容路径，COT 作为新的展示策略。COT 初始化失败可降级，但不能重复启动 Agent。</li>
+    <li>当前 AgentProgress 只有 process、answer 两个渲染字符串。若需工具分组，必须在 reducer 丢弃结构之前保留工具 ID、名称与状态；不要反解析 Markdown 文本伪造事件。</li>
+    <li>现有进度快照允许合并，COT 却需要有序生命周期事件。可合并文字增量，不能丢失 RUN_STARTED、工具边界及最终收口；采用有界队列、单 COT 串行上报。</li>
+    <li>COT 是展示旁路：网络失败不能破坏 FIFO、占槽、中断与最终答案。初始化结果不明时不可盲目创建第二条过程消息；先明确恢复或降级策略。</li>
+    <li>保留原有会话隔离与用户校验，最终卡、原生图片及文档评论仍走既有交付链路；文档评论不是此次 COT 接入目标。</li>
+  </ul>
+
+  <h2>6. 约束与验收</h2>
+  <p>接入参考列出：单条 event 长度不超过 4096，单次最多 50 条；单 bot 更新 50 QPS、单 COT 更新 20 QPS。按保守字节预算分片并节流，不能依赖短期实测超限成功。总量限制的评论存在表述歧义，不据此承诺可无限追加。</p>
+  <p>DEV 验收至少覆盖：最小创建—更新—完成；中途查看后最终消息通知；工具失败但运行继续；正常完成；/stop 确认后收口；并发聊天隔离；话题路由；请求失败、重复和乱序；进程退出；内容脱敏；原生图片交付与结果未确认。</p>
+
+  <h2>7. 来源</h2>
+  <ol>
+    <li><a href="https://bytedance.larkoffice.com/wiki/ZfyXwOQImiLURtkRPtWcf2B2nNh">官方：飞书 OpenAPI COT 消息接入参考</a>，本次读取 revision 1045，含能力开放说明、接口及版本说明。</li>
+    <li><a href="https://feishu-agui-playground.gf-boe.bytedance.net/llms.txt">官方 Playground：Message COT OpenAPI 指南</a>，本次直接读取，含事件支持表及中断生命周期。</li>
+    <li><a href="https://open.larkoffice.com/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message_cot/create">正式 OpenAPI 文档入口</a>，由官方参考提供；匿名 Markdown 访问不可见。</li>
+    <li><a href="https://bytedance.larkoffice.com/docx/VFfidF48jooI8hxs5LKcRdY3nVc">已有 Bridge 接入案例</a>，属于实现案例而非协议权威；7.18 更新记录已有 Card/COT 双模式。</li>
+  </ol>
+</body>
+</html>

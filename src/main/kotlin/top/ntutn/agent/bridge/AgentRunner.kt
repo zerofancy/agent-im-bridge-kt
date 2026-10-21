@@ -37,6 +37,7 @@ sealed class AgentResult {
 class AgentRunHandle(val requestId: String = UUID.randomUUID().toString()) {
     internal var onStopping: () -> Unit = {}
     internal var onProgress: (AgentProgress) -> Unit = {}
+    internal var onRunEvent: (AgentRunEvent) -> Unit = {}
     internal var onSubmitted: suspend (String) -> Unit = {}
     internal val stop = CompletableDeferred<Unit>()
     internal val threadId = CompletableDeferred<String>()

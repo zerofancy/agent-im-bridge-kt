@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>飞书 Message COT 接入 Spec</title>
+  <style>
+    :root { color-scheme: light; --accent: #245cdb; --line: #dce4ee; }
+    body { margin: 0; background: #f4f7fb; color: #243247; font: 16px/1.8 system-ui, sans-serif; }
+    main { max-width: 1050px; margin: auto; padding: 30px 20px; }
+    section, header { background: white; padding: 22px; margin-bottom: 18px; border: 1px solid var(--line); border-radius: 12px; }
+    h1, h2, h3 { line-height: 1.4; } h1 { font-size: 28px; } h2 { font-size: 22px; }
+    a { color: var(--accent); } code { background: #edf2f8; padding: 2px 4px; overflow-wrap: anywhere; }
+    table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid var(--line); padding: 9px; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+    .note { border-left: 4px solid var(--accent); background: #edf5ff; padding: 12px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 14px; background: #edf2f8; }
+  </style>
+</head>
+<body><main>
+  <header>
+    <h1>飞书 Message COT 接入 Spec</h1>
+    <p>版本：v1 · 日期：2026-10-20 · 状态：已接入代码与离线回归；尚未发送真实 COT 测试消息或部署，客户端验收待完成。</p>
+    <p class="note">目标：用飞书原生可折叠任务进度替代可选的过程卡片，保留现有独立结果卡、图片交付及安全回退。基础 COT 能力已开放；本应用的权限、客户端表现和实际收发仍须 DEV 验证。</p>
+    <p><a href="cot-message-research-2026-10-20.html">调研报告</a> · <a href="feishu-two-card-reply-spec.html">既有双卡片 Spec</a></p>
+  </header>
+
+  <section>
+    <h2>1. 范围与非目标</h2>
+    <ul>
+      <li>首期覆盖飞书私聊、授权群聊及既有话题回复路由，覆盖 Codex、Traex、OpenCode 三个后端的运行、公开进度和可可靠识别的工具生命周期。</li>
+      <li>新增实例配置 <code>feishuProgressMode=cardkit|cot</code>，缺省为 cardkit，非法值启动失败；重启生效。DEV 显式启用 COT，PROD 不自动切换。启动日志和本机状态诊断显示配置模式与最近降级分类。</li>
+      <li>文档评论直接沿用评论旁路；桌面、Telegram 行为不变。首期不增加 /card 命令、会话级偏好、模型切换或新的机器人身份。</li>
+      <li>不把最终答案合并进 COT，不撤回旧过程消息，不读取或发布模型隐藏推理，不使用未文档化私有接口。</li>
+      <li>不改变同聊天 FIFO、跨聊天并发上限、身份校验、会话隔离、持久化顺序及模型无自动超时约定。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>2. 用户体验与通知</h2>
+    <table>
+      <thead><tr><th>情形</th><th>行为</th></tr></thead>
+      <tbody>
+        <tr><td>排队</td><td>沿用既有排队提示；尚未取得运行槽位时不创建 COT，不显示模型已运行。</td></tr>
+        <tr><td>开始处理</td><td>取得运行槽位后异步创建 COT，状态为正在处理；创建失败不阻止 Agent 启动。</td></tr>
+        <tr><td>执行中</td><td>展示公开阶段摘要、工具类型和结果状态，由客户端提供折叠和工具分组。首期不展示命令原文、完整工具参数、stdout/stderr。</td></tr>
+        <tr><td>正常完成</td><td>原生进度进入完成状态，保留展开入口；最终答案通过既有结果卡或受控文本回退独立交付。</td></tr>
+        <tr><td>工具失败</td><td>工具标记失败，但 Agent 仍可继续；不得因单个工具错误提前结束整个 COT。</td></tr>
+        <tr><td>请求停止</td><td>显示正在停止，等待原生轮次终态；不能立即展示已停止或释放槽位。确认后收口 COT，沿用既有停止确认，不额外发送部分最终答案。</td></tr>
+        <tr><td>结果发送未确认</td><td>保留既有交付待确认保护，不重新执行 Agent、不改发重复答案；COT 运行已完成不等于结果已送达。</td></tr>
+      </tbody>
+    </table>
+    <p>创建参数固定为 <code>enable_badge=false</code>、<code>update_feed_rank=false</code>、<code>cot_hidden=false</code>。前两项降低过程打扰，后一项保留完成后的过程入口；依据官方 7.75 说明。最终结果独立新发以恢复通知机会，不承诺绕过客户端静音、免打扰或通知设置。</p>
+    <p>默认不使用原生 COT 停止按钮作为唯一入口：7.73 起群聊默认不可见，且文档提示群聊权限管控仍有限制。私聊按钮发出的 /stop 也必须进入既有身份校验和即时命令路由；群聊继续要求授权用户明确 @机器人。</p>
+  </section>
+
+  <section>
+    <h2>3. 模块与协议边界</h2>
+    <table>
+      <thead><tr><th>拟新增或调整</th><th>职责</th></tr></thead>
+      <tbody>
+        <tr><td>AgentRunEvent</td><td>与渠道无关的结构化事件，携带请求、执行尝试、后端 thread/turn、稳定 item/tool ID、单调序号、时间戳及公开摘要；不携带凭据和完整工具载荷。</td></tr>
+        <tr><td>后端事件适配</td><td>AppServerAgentRunner 在 reducer 压缩前采集 Codex/Traex 事件；OpenCodeRunner 从当前 parentID 的消息和工具 part 快照计算增量。禁止解析渲染后的 Markdown 反推工具状态。</td></tr>
+        <tr><td>FeishuCotClient</td><td>显式 JSON 的创建、追加和完成调用，复用现有公开 token manager 和自建 HTTP 封装；返回成功、明确拒绝、结果未知三类结果。</td></tr>
+        <tr><td>CotProgressReporter</td><td>每请求有界缓冲、串行上传、文本增量合并、状态机、限流、持久化与有限收尾；不拥有模型运行槽位和停止权。</td></tr>
+        <tr><td>过程展示策略</td><td>从 StreamingReply 分离过程展示与结果交付；CardKit 与 COT 实现同一过程接口，结果继续复用 LarkResultDelivery。不得令 CardKit finish 同时再发送一份结果。</td></tr>
+        <tr><td>CotRunStore</td><td>每环境独立目录，原子保存请求映射、创建尝试状态、cot_id/message_id、运行终态、确认事件位置与待完成标记；不持久化完整过程文本。</td></tr>
+      </tbody>
+    </table>
+    <p>当前 <code>AgentProgress</code> 只有 process/answer 字符串，现有快照可合并；不得将 COT 有序事件直接放入既有可合并快照通道。保留快照供现有渠道使用，另设非阻塞结构化事件入口；各适配器共享同一请求身份，但生命周期分别管理。</p>
+    <p>所有网络与文件操作在锁外或明确的存储事务内执行；使用服务所属 CoroutineScope、SupervisorJob、Channel、Mutex。不得新增全局 scope、自建线程池，或在公共 app-server 读取协程中等待外网请求。</p>
+  </section>
+
+  <section>
+    <h2>4. OpenAPI 契约</h2>
+    <p>生产 Base URL：<code>https://open.feishu.cn</code>；Header：Authorization: Bearer tenant_access_token，Content-Type: application/json;charset=utf-8。未确认所需 scope 时不猜权限名；DEV 明确返回缺权后，再向用户说明最小权限变更。</p>
+    <table>
+      <thead><tr><th>操作</th><th>请求</th><th>约束</th></tr></thead>
+      <tbody>
+        <tr><td>Create</td><td>POST /open-apis/im/v1/message_cot?receive_id_type=chat_id<br>Body：receive_id、origin_message_id、reply_in_thread 和通知参数。</td><td>route.chatId 为 receive_id，route.messageId 为 origin_message_id；仅按既有话题路由设置 reply_in_thread，不能看到 origin_message_id 就全部改成话题。成功必须同时取得 cot_id、message_id 并落盘。</td></tr>
+        <tr><td>Update</td><td>PUT /open-apis/im/v1/message_cot<br>Body：cot_id、message_id、events。</td><td>每个事件含 event_type、timestamp、content；timestamp 使用毫秒，content 是先构造对象再序列化的 JSON 字符串。同一 cot_id 的请求不并发。</td></tr>
+        <tr><td>Complete</td><td>POST /open-apis/im/v1/message_cot/complete/{cot_id}?message_id={message_id}&amp;reason=done|error<br>空请求体。</td><td>done 表示运行成功；error 表示失败或用户中断。外部调用不得传 timeout。必须在终态事件处理之后尝试 Complete，不依赖客户端 TTL 替代正常收口。</td></tr>
+      </tbody>
+    </table>
+    <p>保留服务端业务 code、HTTP status 和可用的脱敏请求追踪 ID；不得将 HTTP 200 直接视为业务成功，不记录 token 或完整外部响应正文。原生折叠样式由客户端决定，不承诺每个版本像素一致。</p>
+  </section>
+
+  <section>
+    <h2>5. 事件映射</h2>
+    <table>
+      <thead><tr><th>内部事件</th><th>COT 事件</th><th>规则</th></tr></thead>
+      <tbody>
+        <tr><td>执行尝试开始</td><td>RUN_STARTED</td><td>使用当前 threadId 和独立 runId。请求可能发生受控的 session-missing 恢复，不能把新尝试沿用为旧原生 turn；同请求只创建一条 COT，各尝试单独配对终态。</td></tr>
+        <tr><td>公开 commentary</td><td>TEXT_MESSAGE_START / CONTENT / END</td><td>同一 messageId 只追加尚未发送的增量；完成通知包含全量正文时只补差量，不重复整段追加。final_answer 不进入过程文本。</td></tr>
+        <tr><td>工具开始</td><td>TOOL_CALL_START → TOOL_CALL_END</td><td>稳定 toolCallId；传用户可理解的目的。END 结束参数阶段，表示工具开始执行，不代表工具成功。首期不发送 TOOL_CALL_ARGS。</td></tr>
+        <tr><td>工具完成</td><td>TOOL_CALL_RESULT</td><td>仅依据已完成事件判断成功或失败，返回公开摘要。缺失 started 时补齐最小开始边界；同 ID 的 completed 重复通知不重复计数。</td></tr>
+        <tr><td>正常运行终态</td><td>RUN_FINISHED(status=done)</td><td>仅依据当前执行尝试的权威终态，随后 Complete(done)。</td></tr>
+        <tr><td>已确认用户中断</td><td>RUN_FINISHED(status=interrupted)</td><td>按官方 Playground 中断示例，随后 Complete(error)；不是接到 /stop 就发送。</td></tr>
+        <tr><td>运行失败</td><td>RUN_ERROR</td><td>脱敏失败分类，随后 Complete(error)。协议连接断开但运行结果未知时不伪造运行失败，见下一节。</td></tr>
+      </tbody>
+    </table>
+    <p>只使用官方明确支持的事件。首期不发送 STEP_*、STATE_*、ACTIVITY_*、RAW、CUSTOM，也不发送任何 REASONING 或加密隐藏推理字段。“理解问题”等客户端默认阶段不要求通过未支持事件自行构造。</p>
+    <p>OpenCode 快照按 sessionID、parentID、assistant 角色筛选，并按 part ID、状态和已发文本位置去重。缺失 ID 或语义无法确认时只展示通用公开进度，不制造工具成功结果。三个后端均需协议样本测试。</p>
+  </section>
+
+  <section>
+    <h2>6. 状态机、重试与降级</h2>
+    <pre>未启用 → CardKit 原有路径
+待创建 → 创建中 → 活跃 → 待终态上报 → 待 Complete → 已关闭
+创建明确失败 → CardKit 降级
+创建结果未知 → 禁止重建；最终结果独立交付
+活跃上报异常/缓冲溢出 → 过程降级或停报；保留 ID 尝试终态收口</pre>
+    <ul>
+      <li>创建前先落盘 creating。没有文档化幂等键和查询恢复依据时，Create 发生超时、连接中断、5xx 或缺失关键 ID，一律视为可能创建成功；禁用 HTTP 自动重放，不再次 Create，也不再新建过程卡造成重复。</li>
+      <li>Create 明确拒绝、或能证明请求尚未发出时，允许一次 CardKit 降级；不得触发第二次 Agent 运行。COT 已活跃后默认不再创建第二条过程消息。</li>
+      <li>Update 是追加语义，时间戳和本地序号不构成服务端幂等凭据。响应未知时不重放该批次，停止后续中间过程上传并标记缺口；终态和 Complete 仍按独立收尾路径尽力提交。</li>
+      <li>对明确拒绝且能确认未接收的限流响应，可按 Retry-After 在预算内重试一次；无此保证时不重试。Complete 暂不假定幂等，响应未知时记为 close_unknown，不能循环重试。</li>
+      <li>RUN_* 终态与 Complete 先后顺序固定；终态追加失败不意味着可放弃 Complete。界面可能不完整，必须记下收尾失败分类而非声称已关闭。</li>
+      <li>公共 app-server 连接失效但进程仍存活时，展示“后端状态待确认”，保留模型槽位及既有 /stop 语义；不得仅为结束 COT 就结束业务任务。</li>
+      <li>进程重启不恢复模型执行、不重发最终答案、不重建 COT。对已知 ID 且尚未尝试 Complete 的残留记录，单次尽力标记 Bridge 已重启、原运行结果未知，并以 error 关闭旧展示；这不宣称旧模型必然执行失败。此前已尝试 Complete 但结果未知的记录只诊断，不自动重放。</li>
+      <li>失败转换仅覆盖明确外部 I/O、限流、协议拒绝；内部异常继续遵守 FatalErrorHandler，不用宽泛 catch 隐藏编程错误。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>7. 容量、时限与内容安全</h2>
+    <ul>
+      <li>每请求最多缓存 128 个待发事件、累计 128KiB 序列化字节；单次最多 20 条、64KiB，单条序列化事件最多 3500 UTF-8 字节，低于官方单条 4096、批次 50 的限制。</li>
+      <li>文本按 Unicode 码点及序列化后的 UTF-8 长度拆分；预留 JSON 转义开销。相同 item 的未发送增量允许合并，不能直接截断 JSON 或拆坏代理对。</li>
+      <li>默认 500ms 合并窗口，每 COT 最多 2 个 Update/秒，每机器人全局最多 10 个 Update/秒；低于官方单 bot 50 QPS、单 COT 20 QPS。限流器跨请求共享，不在聊天调度锁中等待。</li>
+      <li>单 COT 最多上报 800 个事件、总计 1MiB，预留至少 8 个事件给最后一次尝试的终态和收口说明；达到预算就停报中间细节。工具开始前预留其配对边界，不能发出开始后任意丢掉完成；缓冲无法满足时整体停报并记录过程不完整。</li>
+      <li>接收事件使用非阻塞 trySend 或等价有界策略；溢出触发停报，不能阻塞 CLI 公共读取。最后运行终态放入独立保留槽，不与可丢弃文字竞争。</li>
+      <li>单 HTTP 调用超时 3 秒；业务任务退出前过程收尾总预算 5 秒，超出则结束 reporter、保留诊断。正常业务执行期间不增加模型任务超时。</li>
+      <li>最终结果不等待 COT 收尾成功；允许在结果交付和有界过程收尾之间并行，但不提前释放模型请求身份或绕过图片清理。必要的取消清理可在 NonCancellable 中有界完成，不继续业务任务。</li>
+      <li>公开 commentary 经过统一脱敏与长度控制；工具显示实际安全名称（MCP 带 server/tool），执行命令显示脱敏摘要，超长明确截断；文件操作只显示类型。排除 system/developer prompt、授权链接、凭证、其他完整参数、原始工具返回、用户文件内容和隐藏推理。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>8. 最终结果、图片与停止的一致性</h2>
+    <p>分离两个事实：<strong>Agent 运行结束</strong>与<strong>结果交付完成</strong>。COT 的 done 只表示前者，文案不能写成“答案已送达”。最终卡继续使用稳定 requestId、交付记录和未知态保护；长答案继续沿用 text_pending 及完整文本确认后的引用快照。</p>
+    <p>图片保持“正文 → 原生图片 → 图片交付摘要”的现有流程。COT 可以在 Agent 终态后关闭，但结果发送、逐图发送、取消和暂存清理仍属于原请求生命周期；COT 不能替代图片成功回执，也不能使纯图片请求被判为空。</p>
+    <p>/stop 对当前及既有排队任务的处理完全不变；瞬时控制命令不进入 COT/模型队列。任务停止后的清理释放按请求身份校验，重复停止复用同一过程，不重复发送 COT 终态。</p>
+  </section>
+
+  <section>
+    <h2>9. 验收标准</h2>
+    <table>
+      <thead><tr><th>编号</th><th>场景与通过条件</th></tr></thead>
+      <tbody>
+        <tr><td>A1</td><td>三个后端分别完成正常轮次：一条 COT、成对运行事件、工具分组、独立最终结果；commentary 不污染最终答案。</td></tr>
+        <tr><td>A2</td><td>重放当前真实 post/Completed 样本的预期体验：客户端完成后能折叠和展开；不以标准消息查询能还原全部过程作为验收条件。</td></tr>
+        <tr><td>A3</td><td>工具失败后 Agent 修复并成功；COT 工具失败可见、整个运行最终 done，不错误中断任务。</td></tr>
+        <tr><td>A4</td><td>重复 completed、轮次串线、OpenCode 重复快照均不重复计数；仅当前请求事件进入对应 cot_id。</td></tr>
+        <tr><td>A5</td><td>同聊天 FIFO、跨聊天并发、上限、失败出队、慢 COT HTTP 均不改变模型调度；公共读取仍正常。</td></tr>
+        <tr><td>A6</td><td>/stop 在运行、上报等待、结果发送及图片发送阶段均保留原语义；只在确认停止后标 interrupted，不影响其他请求和停止后新入队任务。</td></tr>
+        <tr><td>A7</td><td>Create 明确失败只降级一次；创建未知、Update 未知、Complete 未知均不盲目重放；最终答案不被吞掉。</td></tr>
+        <tr><td>A8</td><td>最终卡结果未知、长答案分片失败、纯图片和图片部分失败保持现有交付保护与引用快照，无重复答案或虚报送达。</td></tr>
+        <tr><td>A9</td><td>超长中文/emoji、JSON 转义、128 槽溢出及总量预算可控，终态保留；敏感参数和原始输出不进入事件或日志。</td></tr>
+        <tr><td>A10</td><td>服务关闭、进程重启、后端结果未知分别按状态机收口或保留诊断；恢复不重跑模型、不重复发结果。</td></tr>
+        <tr><td>A11</td><td>DEV 私聊与授权群/话题分别验证引用路由、原生按钮权限边界；评论、桌面、Telegram 不变。</td></tr>
+        <tr><td>A12</td><td>PC 与手机：执行中查看过程后，独立最终结果仍有正常新消息行为；覆盖静音/免打扰预期，不把通知系统限制记作服务成功或失败。</td></tr>
+      </tbody>
+    </table>
+    <p>离线运行 <code>./gradlew test installDist</code>、<code>python3 scripts/check_file_lines.py</code> 与 diff 检查；真实测试仅按用户批准在 DEV 使用现有机器人身份。协议样本需脱敏，不将真实聊天正文或凭证写入 fixture。</p>
+  </section>
+
+  <section>
+    <h2>10. 实施、发布与回退</h2>
+    <ol>
+      <li>先落地结构化事件、内存状态机、Fake HTTP 与恢复记录测试；保持 cardkit 默认路径。</li>
+      <li>实现 COT HTTP 和 reporter，接入三个后端，再隔离过程策略与现有结果交付；测试全部验收项。</li>
+      <li>经用户批准后，在 DEV 显式开启 cot，先最小闭环，再真实任务、中断、话题和图片；记录消息 ID、版本和结果，不对 PROD 注入故障。</li>
+      <li>DEV 验收后另行批准 PROD 部署；采用 bridgectl 不可变发布，环境凭证、状态、附件和 COT 存储独立。</li>
+      <li>回退配置为 cardkit 并重新启动/部署，或回滚发布快照；不批量撤回历史 COT，不删除未知结果证据，不修改已有 release。</li>
+    </ol>
+    <p>上线门槛：目标应用实际权限可用、基础三接口成功、通知和引用在 DEV 验收、三后端事件覆盖、异常不丢最终结果。发现必需能力仍需灰度时先报告最小缺口，不自动扩权。</p>
+  </section>
+
+  <section>
+    <h2>11. 权威来源与待实测项</h2>
+    <ul>
+      <li><a href="https://bytedance.larkoffice.com/wiki/ZfyXwOQImiLURtkRPtWcf2B2nNh">官方 OpenAPI COT 接入参考</a>：基础开放、API、通知参数、客户端版本与频控。</li>
+      <li><a href="https://feishu-agui-playground.gf-boe.bytedance.net/llms.txt">官方 Playground 接入指南</a>：支持事件、双层序列化、工具边界、中断后 RUN_FINISHED(interrupted) 与 Complete(error)。</li>
+      <li><a href="https://open.larkoffice.com/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message_cot/create">正式 OpenAPI 入口</a>：匿名 Markdown 不可见；不能据此判断接口未开放。</li>
+      <li>待实测：目标应用所需 scope、所用客户端通知表现、群/话题按钮可见性、错误响应的可重试保证。首期不依赖未证实的幂等键、查询 COT 或重放去重能力。</li>
+      <li>来源中的部分中断说明有概括差异；本 Spec 采用官方 Playground 的明确中断示例，遇到接口或客户端行为不符时以 DEV 证据修订，不能编造运行成功。</li>
+    </ul>
+  </section>
+</main></body>
+</html>

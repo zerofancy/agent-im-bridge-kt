@@ -70,30 +70,48 @@ internal class ChatTurnExecutor(
             }
             executing()
             log.info("开始执行 chatId={} messageId={} sessionId={}", route.chatId, route.messageId, id)
-            return try {
-                runner.runControlled(
-                    handle,
-                    prepared?.text ?: prompt,
-                    id,
-                    workspace,
-                    sandboxMode,
-                ) { observed ->
-                    sessions.set(key, observed)
-                    log.info(
-                        "会话绑定 chatId={} messageId={} sessionId={}",
-                        route.chatId,
-                        route.messageId,
-                        observed,
-                    )
+            val result =
+                try {
+                    runner.runControlled(
+                        handle,
+                        prepared?.text ?: prompt,
+                        id,
+                        workspace,
+                        sandboxMode,
+                    ) { observed ->
+                        sessions.set(key, observed)
+                        log.info(
+                            "会话绑定 chatId={} messageId={} sessionId={}",
+                            route.chatId,
+                            route.messageId,
+                            observed,
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: SessionPersistenceException) {
+                    AgentResult.Failure(AgentResult.Kind.STORAGE, sessionId = id)
+                } catch (e: Exception) {
+                    FatalErrorHandler.rethrowProgrammingError(e)
+                    AgentResult.Failure(AgentResult.Kind.EXECUTION, sessionId = id)
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: SessionPersistenceException) {
-                AgentResult.Failure(AgentResult.Kind.STORAGE, sessionId = id)
-            } catch (e: Exception) {
-                FatalErrorHandler.rethrowProgrammingError(e)
-                AgentResult.Failure(AgentResult.Kind.EXECUTION, sessionId = id)
-            }
+            handle.onRunEvent(
+                AgentRunEvent(
+                    when {
+                        result is AgentResult.Success -> {
+                            AgentRunEvent.Kind.DONE
+                        }
+                        result is AgentResult.Failure &&
+                            result.kind == AgentResult.Kind.STOPPED -> {
+                            AgentRunEvent.Kind.INTERRUPTED
+                        }
+                        else -> {
+                            AgentRunEvent.Kind.ERROR
+                        }
+                    }
+                )
+            )
+            return result
         }
         val previous = withContext(Dispatchers.IO) { sessions.get(key) }
         var result = run(previous)

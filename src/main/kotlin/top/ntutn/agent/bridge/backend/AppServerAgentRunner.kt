@@ -268,6 +268,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                     } catch (e: RpcFailure) {
                         return@coroutineScope failure(AgentResult.Kind.EXECUTION)
                     } catch (_: TransportFailure) {
+                        handle.onRunEvent(AgentRunEvent(AgentRunEvent.Kind.UNKNOWN))
                         // Submission outcome is unknown. Do not release the slot while the owned
                         // process lives.
                         server.exited.await()
@@ -316,6 +317,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                 val images = NativeImages()
                 var sawAuthoritativeAgentMessage = false
                 val progress = AgentProgressReducer(id, turnId)
+                val runEvents = NativeRunEvents(id, turnId, handle.onRunEvent)
                 fun finishSuccessOrEmpty(): AgentResult {
                     val final = messages.values.filter { it.first == "final_answer" }
                     val answer =
@@ -328,6 +330,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                     return images.result(answer, id)
                 }
                 for (event in events) {
+                    runEvents.accept(event)
                     progress.accept(event)?.let(handle.onProgress)
                     val p = event.getAsJsonObject("params") ?: continue
                     when (event.string("method")) {
@@ -404,6 +407,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                     handle.requestId,
                     id,
                 )
+                handle.onRunEvent(AgentRunEvent(AgentRunEvent.Kind.UNKNOWN))
                 server.exited.await()
                 failure(AgentResult.Kind.PROTOCOL)
             } finally {

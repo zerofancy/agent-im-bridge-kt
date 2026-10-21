@@ -110,6 +110,7 @@ internal class InstanceConfigCardController(
                 current.tenant,
                 sandbox.cliValue,
                 target.configValue,
+                current.feishuProgressMode,
             )
         return if (saveConfig(next)) {
             if (
@@ -145,6 +146,7 @@ internal class InstanceConfigCardController(
                 current.tenant,
                 target.cliValue,
                 current.backend,
+                current.feishuProgressMode,
             )
         return if (saveConfig(next)) {
             "已切换保存访问模式为 ${target.cliValue}。"
