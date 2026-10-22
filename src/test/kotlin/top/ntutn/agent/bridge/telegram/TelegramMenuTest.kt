@@ -79,7 +79,7 @@ class TelegramMenuTest {
             assertEquals("", body["language_code"].asString)
             val commands = body.getAsJsonArray("commands").map { it.asJsonObject }
             assertEquals(
-                listOf("status", "pwd", "config", "cd", "stop", "help"),
+                listOf("status", "pwd", "config", "cd", "new", "resume", "stop", "help"),
                 commands.map { it["command"].asString },
             )
             for (command in commands) {
@@ -105,7 +105,8 @@ class TelegramMenuTest {
             assertEquals("commands", button.getAsJsonObject("menu_button")["type"].asString)
             assertFalse(button.has("chat_id"))
             assertTrue(api.requests.tryReceive().isFailure)
-            assertNull(BridgeCommand.parse("/new"))
+            assertNotNull(BridgeCommand.parse("/new"))
+            assertNotNull(BridgeCommand.parse("/resume session-id"))
         }
     }
 

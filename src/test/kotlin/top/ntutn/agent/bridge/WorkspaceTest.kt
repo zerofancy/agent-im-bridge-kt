@@ -72,7 +72,7 @@ class WorkspaceTest {
             assertNull(restored.get(a.copy(workspace = target.toString())))
             assertEquals(id, restored.get(b))
             assertEquals(
-                3,
+                4,
                 JsonParser.parseString(Files.readString(file)).asJsonObject["version"].asInt,
             )
             Files.delete(file)

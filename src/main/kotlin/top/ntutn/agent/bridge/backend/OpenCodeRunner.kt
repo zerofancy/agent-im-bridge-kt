@@ -12,7 +12,7 @@ import top.ntutn.agent.bridge.*
 
 /** OpenCode has a different protocol and permission model from the Codex app-server. */
 class OpenCodeRunner(private val backend: BackendSpec, private val mode: SandboxMode) :
-    ManagedAgentRunner {
+    ManagedAgentRunner, AgentSessionController {
     init {
         require(backend.id == BackendId.OPENCODE)
         require(mode == SandboxMode.FULL_ACCESS) {
@@ -28,6 +28,21 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
     private var client: OpenCodeClient? = null
     private var closed = false
     private val active = mutableMapOf<AgentRunHandle, Deferred<AgentResult>>()
+    private val sessions = AgentSessionOpenCode(mode, ::connection)
+
+    override suspend fun createSession(
+        workspace: Path,
+        sandboxMode: SandboxMode,
+    ): SessionDescriptor = sessions.createSession(workspace, sandboxMode)
+
+    override suspend fun inspectSession(sessionId: String): SessionDescriptor =
+        sessions.inspectSession(sessionId)
+
+    override suspend fun prepareResume(
+        sessionId: String,
+        workspace: Path,
+        sandboxMode: SandboxMode,
+    ): SessionDescriptor = sessions.prepareResume(sessionId, workspace, sandboxMode)
 
     private suspend fun connection(): OpenCodeClient =
         connectionMutex.withLock {
@@ -239,14 +254,10 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                         .apply { model?.let { add("model", it) } }
                 try {
                     Result.success(
-                        server.request(
-                            "POST",
-                            "/session/$id/message",
-                            body,
-                            directory,
-                            waitForTurn = true,
-                        )
+                        submitSessionMessage(server, handle, id, messageId, body, directory)
                     )
+                } catch (e: AgentSessionSubmissionFailure) {
+                    Result.failure<JsonElement>(e)
                 } catch (e: IOException) {
                     Result.failure<JsonElement>(e)
                 }
@@ -287,6 +298,9 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                         // below.
                     }
                     val error = result.exceptionOrNull()
+                    if (error is AgentSessionSubmissionFailure) {
+                        return@coroutineScope failure(error.kind)
+                    }
                     // The verified server awaits prompt termination before producing a 400
                     // response.
                     if (error is OpenCodeHttpFailure && error.status in setOf(400, 404)) {
@@ -426,41 +440,6 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
                     events.close()
                 } finally {
                     response.cancelAndJoin()
-                }
-            }
-        }
-    }
-
-    private suspend fun rejectInteractive(
-        server: OpenCodeClient,
-        directory: String,
-        session: String,
-    ) {
-        for (kind in listOf("permission", "question")) {
-            val requests =
-                server.request("GET", "/$kind", directory = directory).arrayOrNull() ?: continue
-            for (request in requests) {
-                val item = request.objectOrNull() ?: continue
-                if (item.string("sessionID") != session) {
-                    continue
-                }
-                val id =
-                    item.string("id")?.takeIf { it.matches(Regex("[A-Za-z0-9_]+")) } ?: continue
-                try {
-                    server.request(
-                        "POST",
-                        "/$kind/$id/${if (kind == "permission") { "reply" } else { "reject" }}",
-                        if (kind == "permission") {
-                            json("reply" to "reject")
-                        } else {
-                            json()
-                        },
-                        directory,
-                    )
-                } catch (e: OpenCodeHttpFailure) {
-                    if (e.status != 404) {
-                        throw e
-                    }
                 }
             }
         }

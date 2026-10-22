@@ -7,6 +7,10 @@ root=Path.cwd()
 sessions={}
 events=[]
 lock=threading.Lock()
+def fixture_prompt(text):
+    prefix = ('你是通过即时通信与用户协作的 AI 助手。遵循当前环境与项目规则，使用中文简洁回复。\n\n'
+              '以下是用户要求，请在遵循上述提示和当前环境规则的前提下处理：\n\n')
+    return text[len(prefix):] if text.startswith(prefix) else text
 (root/'pid').write_text(str(os.getpid()))
 (root/'environment.json').write_text(json.dumps({k:v for k,v in os.environ.items() if k.startswith('XDG_')}))
 class Handler(BaseHTTPRequestHandler):
@@ -50,7 +54,7 @@ class Handler(BaseHTTPRequestHandler):
    (root/'aborted').write_text('yes');s['stop']=True
    return self.reply(True)
   if path.endswith('/message') and self.command=='POST':
-   mid=body['messageID'];text=body['parts'][0]['text'];s['stop']=False;s['busy']=True
+   mid=body['messageID'];text=fixture_prompt(body['parts'][0]['text']);s['stop']=False;s['busy']=True
    user={'info':{'id':mid,'role':'user','sessionID':sid},'parts':[]}
    assistant={'info':{'id':'msg_answer'+mid,'role':'assistant','sessionID':sid,'parentID':mid,'time':{'created':1}},'parts':[{'type':'text','text':'partial'},{'type':'reasoning','text':'SECRET REASONING'},{'type':'tool','tool':'bash','state':{'status':'running','input':{'command':'pwd'},'output':'SECRET OUTPUT'}}]}
    s['messages'] += [user,assistant]

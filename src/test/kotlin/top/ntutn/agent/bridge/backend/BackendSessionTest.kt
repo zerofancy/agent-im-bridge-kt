@@ -43,7 +43,7 @@ class BackendSessionTest {
             assertEquals(legacy, Files.readString(path))
             store.set(key, id)
             val saved = JsonParser.parseString(Files.readString(path)).asJsonObject
-            assertEquals(3, saved["version"].asInt)
+            assertEquals(4, saved["version"].asInt)
             val savedKey = saved.getAsJsonArray("sessions")[0].asJsonObject.getAsJsonObject("key")
             assertEquals("codex", savedKey.string("backendId"))
             assertEquals(runtime, savedKey.string("runtimeRoot"))

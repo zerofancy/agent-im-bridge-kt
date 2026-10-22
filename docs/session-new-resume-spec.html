@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>/new 与 /resume 会话控制 Spec</title>
+<style>
+:root{color-scheme:light;--ink:#17243a;--muted:#61718a;--line:#dae3ef;--accent:#245ac5;--paper:#fff;--bg:#f4f7fb}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.8 system-ui,-apple-system,sans-serif}
+main{max-width:1120px;margin:32px auto;background:var(--paper);padding:38px;border-radius:16px}
+h1{font-size:30px;line-height:1.4}h2{font-size:22px;margin-top:34px;padding-bottom:8px;border-bottom:1px solid var(--line)}h3{font-size:18px}
+a{color:var(--accent)}code,pre{font:14px/1.65 ui-monospace,SFMono-Regular,monospace}code{overflow-wrap:anywhere}pre{white-space:pre-wrap;background:#f1f5fb;padding:16px;border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:14px}td,th{padding:10px;border:1px solid var(--line);text-align:left;vertical-align:top}
+.note{padding:16px;border-left:4px solid var(--accent);background:#edf4ff}.warn{background:#fff5df;border-color:#bb7700}.meta{color:var(--muted)}li{margin:6px 0}
+@media(max-width:700px){main{margin:0;padding:20px;border-radius:0}table{display:block;overflow:auto}}
+@media print{main{margin:0;padding:12px}body{background:white}details{display:block}}
+</style>
+</head>
+<body><main>
+<h1><code>/new</code> 与 <code>/resume</code> 会话控制</h1>
+<p class="meta">设计：2026-10-22 · 实现与验证：2026-10-23 · 未提交、推送或部署。</p>
+<div class="note"><strong>核心语义：</strong><code>/new [初始输入]</code>立即创建并切换新会话，回显旧、新 ID，并提交首轮：先放固定基础提示，有参数时在明确分隔提示后追加用户要求，无参数时只用基础提示。普通消息首次自动创建会话也采用相同顺序。<code>/resume &lt;session-id&gt;</code>仅恢复，不触发模型轮次。</div>
+
+<h2>1. 目标与范围</h2>
+<ul>
+<li>用户可以主动切断当前模型上下文，也可用原生 Session ID 返回历史上下文；不需要切目录或重启 Bridge。</li>
+<li>新增统一 Bridge 即时命令，飞书、Telegram、桌面及其他复用 ChatService 的入口语义一致，沿用现有鉴权、群聊 @机器人和原消息回复路由。</li>
+<li>Codex、Traex、OpenCode 使用统一命令与后端能力接口，分别实现并验收；不能因某后端协议不兼容而静默模拟成功。</li>
+<li>不增加会话列表 UI、会话重命名、删除/归档、fork、跨后端迁移、模型配置、自动摘要或自动携带上一会话内容。</li>
+<li><code>/new</code>不是清理聊天记录，也不撤销文件修改；工作目录、访问模式、模型及本机后端配置保持不变。</li>
+</ul>
+
+<h2>2. 当前实现与必要改动</h2>
+<table>
+<tr><th>现状</th><th>设计影响</th></tr>
+<tr><td><code>BridgeCommand</code>仅识别既有控制命令，其他斜杠交给 Agent</td><td>把两个新命令加入统一定义和解析；扩展参数校验，不能沿用“除 /cd 外禁止参数”的现有分支。</td></tr>
+<tr><td><code>SessionKey</code>包含 appId、chatId、workspace、runtimeRoot、backendId；SessionStore v3 每 key 仅保存当前 ID</td><td>沿用隔离键；增加历史归属目录，切换不能覆盖掉旧 ID 的归属信息。</td></tr>
+<tr><td><code>ChatService</code>已有目录切换屏障；即时命令不占模型槽</td><td>复用并泛化为每聊天上下文切换屏障；目录切换与会话切换互斥。</td></tr>
+<tr><td><code>AppServerAgentRunner.execute</code>内串联 thread/start 或 thread/resume 与 turn/start</td><td>抽出纯会话创建、元数据读取/恢复能力，不通过空 prompt 调用 run 来创建会话。</td></tr>
+<tr><td><code>OpenCodeRunner</code>内已有 POST /session、GET /session/:id 和权限重申</td><td>提取相同职责，保持现有显式访问模式约束。</td></tr>
+<tr><td><code>ChatTurnExecutor</code>对既有绑定 SESSION_MISSING 会自动清绑定后新建一次</td><td>显式 resume 绑定需要严格恢复标记；目标消失时不得静默变成新会话。</td></tr>
+</table>
+
+<h2>3. 命令契约</h2>
+<h3>3.1 <code>/new</code></h3>
+<ol>
+<li>格式为 <code>/new [初始输入]</code>。命令后的全部文本作为一个输入，包括空格与多行，不按空格拆成多个参数，不当作 shell 参数执行；仅移除命令与正文之间的分隔空白，正文内部保持原样。只有空白时视为无输入。</li>
+<li>在当前聊天空闲、无待执行请求、无其他上下文切换时占用该聊天控制屏障。</li>
+<li>读取当前目录及旧绑定，调用当前后端创建非临时的新会话，使用当前本机权限策略和显式 cwd。</li>
+<li>校验新 ID、所属后端、工作目录及元数据；新 ID 必须不同于旧 ID。完成持久化后才宣告切换成功。</li>
+<li>返回旧 ID、新 ID、后端、目录及恢复旧会话的命令。没有旧绑定时明确写“无”，仍立即创建新会话。</li>
+<li>绑定提交后，把“基础提示 + 分隔提示 + 可选用户要求”构建为新会话唯一首轮任务交给现有模型调度；无参数时只提交基础提示。必须排在切换期间新到的普通消息之前，不总结旧会话、不复制旧历史。</li>
+</ol>
+<pre>已创建并切换到新会话
+后端：Codex
+工作目录：/path/to/project
+上个会话：&lt;old-session-id&gt;
+当前会话：&lt;new-session-id&gt;
+恢复上个会话：/resume &lt;old-session-id&gt;
+会话上下文已重置；工作目录和文件修改保留。</pre>
+<p>首次使用时省略恢复命令，显示“上个会话：无”。确认消息追加“初始对话已排队”或“初始对话准备执行”，无参时明确“使用基础提示初始化”；不回显可能含敏感信息的整段参数。首轮结果走普通进度/结果回复链路。前一次初始化结束且聊天空闲后，再次主动 /new 才执行第二次创建。</p>
+
+<h3>3.3 基础提示与首次自动建会话</h3>
+<pre>你是通过即时通信与用户协作的 AI 助手。遵循当前环境与项目规则，使用中文简洁回复。</pre>
+<ul>
+<li>基础提示由 Bridge 内置常量统一维护，不含动态时间、旧会话内容、凭据、隐式任务或重复的项目文档。</li>
+<li><code>/new 修复登录问题</code>：首轮先放基础提示，再放固定分隔提示，最后放“修复登录问题”；顺序固定。这里的“先发再发”指同一次模型首轮提交中的文本顺序，不先等待一轮初始化回复再额外提交第二轮。</li>
+<li><code>/new</code>：上述基础提示就是唯一首轮输入；这是用户明确要求的初始化轮次，正常占模型槽位和消耗模型资源。</li>
+<li>普通消息触发此 SessionKey 首次建会话：单轮输入采用相同基础提示与分隔提示，再追加本次实际用户输入；实际任务与原有引用、附件处理完整保留，不能只回就绪或把首条任务丢掉。</li>
+<li>统一由“新会话首轮输入构建”职责处理，不由各 IM 通道分别拼接。/cd 后首次新建、既有 AUTO_RECOVER 明确缺失后自动新建，也遵循同一规则；恢复现存会话和后续轮次不重复注入。</li>
+<li>这里的“基础系统提示”指可信的 Bridge 默认引导，不修改本机安全配置、不覆盖后端原生 system/developer 指令，也不把用户传入的参数提升为系统权限。沿用当前后端文本输入接口，不要求新增可伪造的 role 参数。</li>
+<li>先持久化 ID，再提交首轮。每次新的首轮提交只构造一份基础提示；运行失败后不自动重放输入。若首轮尚未提交就取消，后续第一次实际提交仍按“未开始首轮”处理，不能仅以存在 ID 判断已经初始化。</li>
+<li>基础提示不授予额外工具权限；所有首轮输入仍遵循现有权限和工具规则。</li>
+</ul>
+
+<h3>3.4 /help 展示契约</h3>
+<p>有用户要求时，固定分隔提示为“以下是用户要求，请在遵循上述提示和当前环境规则的前提下处理：”，单独成行，前后各保留一个空行。示例：</p>
+<pre>你是通过即时通信与用户协作的 AI 助手。遵循当前环境与项目规则，使用中文简洁回复。
+
+以下是用户要求，请在遵循上述提示和当前环境规则的前提下处理：
+
+修复登录问题</pre>
+<p>无用户要求时不输出空的分隔区。分隔仅标明文本来源，不改变权限层级；用户正文中的相似标记不被重新解析成 Bridge 指令。</p>
+<pre>/new [初始输入] — 空闲时新建并切换会话，显示上个和当前 Session ID；先注入基础提示，有输入时分隔后开始处理
+/resume &lt;session-id&gt; — 空闲时恢复指定完整 Session ID，不新建、不自动切目录
+/status — 查看运行/排队状态、当前 Session ID及最近会话切换结果</pre>
+<p>保留其他命令及既有说明；将帮助末尾“以上命令即时处理”改为“控制命令即时处理；/new 的初始对话通过模型队列执行。模型任务不自动超时；其他未知命令交给 Agent”。由 BridgeCommand.definitions/help 统一生成，避免飞书、Telegram、桌面出现不同文案。</p>
+
+<h3>3.2 <code>/resume &lt;session-id&gt;</code></h3>
+<ul>
+<li>必须提供一个完整原生 ID；不支持短前缀、路径、URL、多个参数、模糊搜索或自动选择“最近”。</li>
+<li>格式校验沿用后端自身规则：当前 Codex/Traex 使用项目现有 UUID 校验，OpenCode 使用现有 <code>ses_</code> 校验。不得把一个后端 ID 自动解释为另一个后端。</li>
+<li>先检查归属和元数据，再执行后端准备恢复；核实返回 ID 与输入完全一致、原 cwd 与当前目录规范化后一致，且没有活动轮次。</li>
+<li>恢复成功且存储提交完成后切换当前绑定；不执行用户轮次，不重放历史消息、工具、旧卡片或旧附件。</li>
+<li>目标已是当前会话：返回“已在此会话，无需切换”，不创建新会话、不改写恢复策略。</li>
+<li>失败、缺失或结果不明：保留旧绑定，不自动新建替代、不 fork、不自动修改 cwd。</li>
+</ul>
+<pre>已切换会话
+后端：Codex
+工作目录：/path/to/project
+上个会话：&lt;previous-session-id&gt;
+当前会话：&lt;target-session-id&gt;
+下一条消息将继续该会话。</pre>
+<p>参数不足时回复“用法：/resume &lt;完整 session id&gt;”；不新增无参数选择器。</p>
+
+<h2>4. 隔离与允许恢复的会话</h2>
+<table>
+<tr><th>目标来源</th><th>默认行为</th></tr>
+<tr><td>当前 SessionKey 历史登记的会话</td><td>允许尝试恢复，仍实时验证存在性、cwd 和活动状态。</td></tr>
+<tr><td>同一聊天、其他工作目录</td><td>拒绝自动切目录；提示先 /cd 对应目录，再 /resume。/cd 原有“切回新建上下文”规则不变，只有显式 /resume 才恢复旧上下文。</td></tr>
+<tr><td>其他 app、聊天或其他后端/状态目录已登记的会话</td><td>拒绝跨隔离域恢复，不向当前群泄露标题、目录、正文或其他聊天信息。</td></tr>
+<tr><td>同状态目录下 CLI/桌面创建、Bridge 未登记的会话</td><td>仅允许当前已授权用户在机器人私聊中显式按 ID 导入；必须有可靠后端元数据证明 cwd 一致、没有活动轮次且来源可分类为交互式本机 CLI/桌面。无法核实来源则拒绝，不扫描并展示其他会话。</td></tr>
+<tr><td>群聊或文档评论中提交未登记 ID</td><td>拒绝导入，仅允许本聊天既有目录中的历史会话，防止把私人本机上下文接入多人可见路由。</td></tr>
+<tr><td>归档、已删除、缺失、执行中、元数据不完整的目标</td><td>拒绝并保留旧绑定；V1 不自动 unarchive、不干扰桌面端活动、不终止外部进程。</td></tr>
+</table>
+<p>同一原生会话不得同时绑定到两个聊天。历史归属校验基于当前 Bridge 状态能证明的范围；无法证明另一独立进程的所有权时，不能承诺全机全局互斥。外部导入若后端不提供可核实来源/活动状态，V1 返回“不支持安全导入”，而非猜测或读取任意会话文件绕过。</p>
+
+<h2>5. 并发与命令排序</h2>
+<ol>
+<li><strong>开始切换的条件：</strong>当前聊天无运行（包括回复发送/取消清理）、无排队、无停止待确认、无上下文切换；应用非 draining/closing。已接收但仍在准备的消息也必须纳入忙碌判定。</li>
+<li>V1 沿用 /cd 对接收准备阶段的保守拒绝行为，允许在全局 incoming 准备非空时暂拒切换；将来按 chat 细化可另做优化，不引入新的全局阻塞锁。</li>
+<li>在 ChatService 的状态 Mutex 下完成条件检查并登记带 operationId 的切换屏障；立刻释放锁，再做后端、路径和存储 I/O。</li>
+<li>接受 /new 时在该聊天队列预留一个不可执行的首轮占位，再进行后端创建；屏障期间新到的普通消息只能排在该占位后。创建失败删除占位；绑定成功将其转为首轮任务。第二个 /new、/resume、/cd 返回“当前聊天正在切换上下文”。其他聊天不受影响。</li>
+<li>切换成功后的队列使用新绑定；失败或取消则使用原绑定。执行前从存储取绑定，不能在接收消息时预捕获旧 ID。</li>
+<li>/status、/pwd、/help 仍可即时返回；/status 显示“创建会话中/恢复会话中”而不是“切换目录中”。/config 任何会改变后端状态的操作不得越过该屏障。</li>
+<li>/stop 期间：继续取消命令接收时已有队列，并为会话控制操作记录取消意图，不向无 turn 的线程发 turn/interrupt。提交前观察到停止则不切换；已提交则保留已提交绑定，明确“切换已完成”。</li>
+<li>清理由 NonCancellable 保证；按 operationId 释放自己持有的屏障，再 dispatch，不能误清新操作或释放其他聊天的模型运行槽。</li>
+</ol>
+<p>创建/恢复绑定阶段不占模型配额；<strong>/new 的初始化轮次必须进入现有 FIFO 模型队列并受 max-concurrent-runs 限制</strong>，不能在即时命令回调中直接调用 runner。控制阶段和首轮占位均登记到服务生命周期；排空/关闭与 /stop 必须处理占位，不能在取消后从 finally 重新补入队。</p>
+
+<h2>6. 事务、失败与发送未知</h2>
+<pre>校验命令 → 锁内检查并占屏障 → 读取旧快照
+→ 后端创建/读取/准备（无模型轮次） → 校验目标
+→ 锁内登记提交阶段并裁决 stop/close → 原子持久化绑定和归属
+→ /new 激活预留首轮任务（取消时不激活）
+→ 尝试发送切换确认 → finally 释放屏障 → 同聊天FIFO继续出队</pre>
+<ul>
+<li>持久化前任一步失败，旧 ID、目录和归属保持不变；存储提交使用既有临时文件加原子替换，内存与磁盘一致。</li>
+<li>提交阶段与 /stop、关闭的先后关系用状态机裁决，不在 ChatService Mutex 内持有磁盘 I/O；一旦登记提交开始，用 NonCancellable 完成必要事务。</li>
+<li>已创建新后端会话但绑定保存失败：可能产生未绑定空会话；保留旧绑定，记录脱敏操作诊断，不删除或归档旧会话，也不为清理孤儿会话冒险调用破坏性 API。</li>
+<li>后端 RPC/HTTP 结果未知：不自动重试创建、不猜测新 ID、不切换。无模型轮次的迟到响应只可丢弃或记作未绑定对象，不能回写已失效 operationId。</li>
+<li>绑定保存成功但 IM 发送失败/未知：<strong>不回滚</strong>。统一发送入口照常处理；不盲目重发、不自动再次 /new，用户通过 /status 查询实际当前 ID。</li>
+<li>初始化轮次失败或被 /stop 取消：保留已经提交的新绑定，明确区分“会话切换成功”和“初始对话失败/取消”；不回滚旧会话、不自动重跑。若首轮已提交，沿用后端真实历史继续；未提交则保留待初始化标记，下一条真实输入可作为首轮。</li>
+<li>业务可分类错误可恢复；未知内部异常沿用 FatalErrorHandler。错误回复不含原始 RPC、凭证、私密历史或其他会话元数据。</li>
+</ul>
+
+<h2>7. 后端能力接口与适配</h2>
+<p>建议新增独立 <code>AgentSessionController</code> 能力接口，避免把无模型轮次的控制操作塞入 <code>runControlled</code>。建议类型如下，具体命名可在实现时调整：</p>
+<pre>createSession(workspace, sandboxMode) → SessionDescriptor
+inspectSession(sessionId) → SessionDescriptor
+prepareResume(sessionId, workspace, sandboxMode) → SessionDescriptor
+
+SessionDescriptor: id, backendId, canonicalWorkspace,
+                  activity, archived, origin, durability
+返回受约束的错误类别；未知的元数据不是默认 idle/可信。</pre>
+<table>
+<tr><th>后端</th><th>实现约束</th></tr>
+<tr><td>Codex</td><td>现有独立 app-server 中使用 thread/start 创建，thread/read 获取元数据，thread/resume 准备；只使用安装版本实际支持字段。thread/read 不承诺可判定所有外部进程活动，不能用“空 turns”推断空闲。复用显式 cwd、approvalPolicy=never 与本机 sandbox。</td></tr>
+<tr><td>Traex</td><td>复用 app-server 连接，但不能照搬 Codex 的新增字段和元数据能力；先确认 thread/read、返回 cwd、来源、活动状态及空会话持久化。原生历史恢复可用而安全外部导入不可用时，明确区分能力，不扩大失败识别。</td></tr>
+<tr><td>OpenCode</td><td>提取现有 POST /session 和 GET /session/:id，核对 directory；恢复时沿用本机现有权限重申，不放宽当前只支持显式 FULL_ACCESS 的产品限制。不发 message/prompt 来创建空会话。</td></tr>
+</table>
+<p>会话生命周期调用复用公共读取/连接生命周期，按 RPC ID 匹配响应；不取消公共读取协程、不停止桌面服务、不回退 exec，不为每个 /new 启动新的 app-server。</p>
+
+<h3>7.1 首轮初始化与重启边界</h3>
+<div class="note warn">无参 /new 现在也会执行首轮，原“正常新建后长期空会话”的前提已变更；仍必须处理创建成功但首轮排队、取消或提交前重启的窗口。不能把绑定成功等同于首轮已持久化。</div>
+<ul>
+<li>每后端验证：带参数首轮、基础提示首轮、首次自动创建的引导与用户任务单轮提交、首轮完成后重启恢复同一ID。</li>
+<li>同进程下一条消息必须复用已创建 ID，不能无条件再创建；若后端只能使用当前加载对象，应持有受生命周期管理的 prepared handle，并核对其 ID。</li>
+<li>首轮前 /stop 或进程退出时不自动补发。原生若不能恢复该未初始化ID，则显示“初始化前中断，会话不可恢复”，等待用户 /new；不得静默替换ID、伪造原生日志或丢失失败状态。</li>
+<li>持久化首轮阶段至少区分未提交、提交结果未知、已提交；重启时不靠ID或空preview猜测阶段。提交未知时不得自动重放，无参基础提示也不能例外。</li>
+<li>本 Spec 不要求本次设计阶段启动真实后端或创建测试会话；实现阶段使用独立临时状态目录与本机授权做兼容验证。</li>
+</ul>
+
+<h2>8. 存储与上下文</h2>
+<ul>
+<li>SessionStore 增加 v4：保留当前 sessions/workspaces，新增会话归属目录，按 <code>(SessionKey, sessionId)</code> 存 createdAt/lastSelectedAt/origin；不保存对话正文、凭据或工具载荷。</li>
+<li>当前绑定增加恢复意图，如 <code>AUTO_RECOVER</code>（既有普通绑定）与 <code>EXPLICIT</code>（/new、/resume），并记录新会话首轮阶段。EXPLICIT 的 ID 缺失必须向用户报错，不能沿用 ChatTurnExecutor 的自动换会话重跑。旧绑定迁移为已初始化，不对已有历史追加基础提示。</li>
+<li>v1/v2/v3 可读，成功写入时升级。已有当前绑定纳入归属目录，默认保留旧恢复策略；损坏或未知版本拒绝覆盖。</li>
+<li>切换事务一次性更新新绑定、旧/新归属、恢复意图与最近一次切换结果（旧 ID、新 ID、命令消息 ID、时间），用于重启后 /status 查询和同一最后命令重投去重；历史消息去重仍沿用通道既有能力，不承诺任意久远操作永久幂等。</li>
+<li>/cd 清除目标旧活动绑定的行为不变，但保留历史归属目录；手动 /resume 可以显式选择历史。不回收或修改原生会话文件。</li>
+<li>成功切换使会话相关引用去重/ReplyContext 提交账本失效；A→B→A 后不假定旧会话已看到本次引用。普通聊天历史不自动塞入新会话；用户下一条显式引用/转发的消息仍按现有规则提供。</li>
+<li>聊天级文档评论路由、授权与目录选择不重置；不能把旧会话的活动请求、订阅、进度卡片和待发送结果移交给新会话。</li>
+<li>/status 展示当前后端、cwd、完整当前 ID及最近一次会话切换结果，查询本地状态，不额外恢复会话。返回到原请求路由，不发到其他聊天。</li>
+</ul>
+
+<h2>9. 错误文案</h2>
+<table>
+<tr><th>情形</th><th>建议回复</th></tr>
+<tr><td>聊天忙碌/排队/停止中</td><td>当前聊天忙碌，未切换会话。请等待空闲，或先 /stop 并等待停止完成。</td></tr>
+<tr><td>升级排空</td><td>应用升级中，暂不能切换会话。</td></tr>
+<tr><td>非法 ID</td><td>Session ID 格式无效，请提供当前后端的完整 ID；当前会话未变。</td></tr>
+<tr><td>目标缺失/不可访问/不允许归属</td><td>目标会话不存在、不可访问或不属于当前可恢复范围；当前会话未变。</td></tr>
+<tr><td>私聊中可安全公开的 cwd 不一致</td><td>目标会话工作目录与当前目录不同。请先 /cd 到原目录后再恢复；当前会话未变。</td></tr>
+<tr><td>执行中或活动状态未知</td><td>目标会话仍在执行或无法确认是否空闲，暂不能恢复；不会中断原执行。</td></tr>
+<tr><td>存储失败</td><td>会话绑定保存失败，当前绑定未变，请检查本机存储。</td></tr>
+<tr><td>显式恢复后的 ID 在下一轮消失</td><td>所选会话已不可用，本次请求未转到新会话。请用 /resume 选择其他会话或 /new 新建后重发。</td></tr>
+</table>
+
+<h2>10. 验收矩阵</h2>
+<table>
+<tr><th>编号</th><th>场景</th><th>必须满足</th></tr>
+<tr><td>T01</td><td>已有 A 执行 /new 修复问题（含空格、多行）</td><td>产生B≠A并输出A/B；B首轮严格为基础提示、固定分隔提示、完整参数；只提交一次，使用正常模型队列。</td></tr>
+<tr><td>T02</td><td>无参/纯空白 /new；首轮完成后再次 /new</td><td>基础提示作为唯一首轮；旧ID输出正确，保持现有权限和工具规则。</td></tr>
+<tr><td>T03</td><td>/resume A；再 /resume A</td><td>首次验证并原子切换；第二次幂等；不触发模型、不 fork。</td></tr>
+<tr><td>T04</td><td>/resume缺参数、多ID、非法ID；/new多词和多行</td><td>/resume返回用法；/new完整接收正文；未知斜杠仍原样交给Agent。</td></tr>
+<tr><td>T05</td><td>运行、排队、回复发送、停止未确认时切换</td><td>全部拒绝；不取消任务、不转移结果、不改变目录或绑定。</td></tr>
+<tr><td>T06</td><td>切换中收到普通消息、/cd 和第二个切换命令</td><td>普通消息FIFO等待；其他切换拒绝；跨聊天继续运行。</td></tr>
+<tr><td>T07</td><td>RPC创建/恢复失败、超时或迟到</td><td>旧绑定保留；不重试创建、不用迟到结果污染新状态。</td></tr>
+<tr><td>T08</td><td>保存失败、提交中取消、保存后回复失败</td><td>磁盘内存一致；保存后不回滚；/status能查实际当前ID。</td></tr>
+<tr><td>T09</td><td>初始化完成/未提交/提交未知时分别重启</td><td>已初始化恢复同一ID；未提交不可恢复则显式报错；未知不自动重放。</td></tr>
+<tr><td>T10</td><td>其他cwd、其他聊天、其他后端/状态根、群聊导入外部ID</td><td>隔离与拒绝规则生效；不泄露其他私有会话元数据。</td></tr>
+<tr><td>T11</td><td>允许的私聊外部CLI/桌面会话导入</td><td>验证来源、cwd、空闲性、权限；缺任一可靠证据时拒绝。</td></tr>
+<tr><td>T12</td><td>A→B→A引用历史消息；/new后普通输入</td><td>引用账本不串会话；不自动回灌旧聊天内容。</td></tr>
+<tr><td>T13</td><td>v1/v2/v3迁移、损坏文件、重启及重复消息事件</td><td>兼容旧绑定、成功写才升级、损坏不覆盖；最近切换重投不重复创建。</td></tr>
+<tr><td>T14</td><td>显式选择后目标被删除，下一条普通消息</td><td>报错且不自动替换新会话；用户输入不被后台重放。</td></tr>
+<tr><td>T15</td><td>/stop与提交竞态、部署排空与退出</td><td>先后裁决确定；控制工作被跟踪；5秒关闭兜底等原有生命周期不回归。</td></tr>
+<tr><td>T16</td><td>不经/new的第一条普通消息；后续普通消息及/resume</td><td>新建首轮仅注入一次基础提示并完整执行用户任务；已有会话不重复注入。</td></tr>
+<tr><td>T17</td><td>跨聊天模型槽满；/new期间到达下一条消息；/stop取消首轮占位</td><td>首轮受配额限制且始终排在后续消息前；取消不复活、不自动重放。</td></tr>
+<tr><td>T18</td><td>/help与各通道帮助</td><td>展示/new可选正文、/resume必填ID、/status查询ID；正确区分即时控制与模型初始化。</td></tr>
+</table>
+<p>实现后运行 <code>./gradlew test installDist</code> 与 <code>python3 scripts/check_file_lines.py</code>；fake server 覆盖纯恢复零轮次、新建恰好一次首轮、错误、迟到和版本差异。真实 Codex 测试按项目约定显式启用，Traex/OpenCode 单独列已验收版本；离线通过不代替真实初始化和重启恢复验收。</p>
+
+<h2>11. 建议实施顺序</h2>
+<ol>
+<li>先做三后端创建、首轮初始化/恢复、来源/cwd/活动元数据能力矩阵；遇到阻塞先反馈，不改变产品语义。</li>
+<li>抽取无轮次会话控制能力，给各后端补 fake 协议测试；不改普通 run 的既有行为。</li>
+<li>新增 SessionStore v4 归属、恢复意图和原子切换事务；补迁移/取消/失败测试。</li>
+<li>抽出 SessionControlService 处理校验与切换，ChatService 只做调度屏障；避免继续扩大已较长的 ChatService。</li>
+<li>接入命令、/status、/help 和统一回复，补跨聊天/FIFO/排空测试。</li>
+<li>通过真实后端验收后再按用户指令部署 dev；本文不授权部署、提交或推送。</li>
+</ol>
+
+<h2>12. 证据与待验证项</h2>
+<ul>
+<li>本次核对源码：BridgeCommand.kt、ChatService.kt、ChatTurnExecutor.kt、AgentRunner.kt、BackendSpec.kt、storage/SessionStore.kt、backend/AppServerAgentRunner.kt、backend/OpenCodeRunner.kt 和相关会话测试。</li>
+<li>本机命令版本：<code>codex-cli 0.163.0-alpha.11.1</code>、<code>traecli 0.210.1</code>；PATH 未发现 opencode，不代表部署环境不可用。实现阶段使用隔离 app-server 探测创建、读取和恢复元数据，未触发真实模型轮次。</li>
+<li><a href="https://learn.chatgpt.com/docs/app-server">OpenAI 官方 App Server 文档</a>区分 thread/start、thread/read、thread/resume 与 turn/start；文档是协议设计参考，不能替代安装版本实测。本文未假定 Traex 或 OpenCode 支持同一套字段。</li>
+<li>待实现门禁：初始化阶段重启与取消、外部来源和活动状态可核实性、三后端恢复零轮次与新建首轮恰好一次，以及字段的版本兼容性。</li>
+</ul>
+<h2>13. 实现边界记录</h2>
+<ul>
+<li>验证记录：全量 <code>./gradlew test installDist</code> 成功，根模块440项（9项跳过）、桌面模块19项，无失败；最后补充关闭和引用消息场景后，再次执行会话/控制/目录/菜单定向测试及 installDist 成功。行数检查和 diff 检查通过。真实模型首轮和IM端到端未执行。</li>
+<li>两个本机 app-server 版本都能创建、读取空线程，但直接恢复未持久化的空线程会被拒绝。实现保留受当前连接生命周期约束的创建句柄，首轮使用同一个原生 ID，不额外调用空线程 resume。</li>
+<li>会话首轮状态按历史会话身份持久保存；切换回未初始化或提交未知的会话不把它伪装为已初始化。提交状态在真正发起轮次前更新，明确拒绝或提交前取消恢复为待初始化。</li>
+<li>归属认领在存储事务内再次核对，避免不同聊天并发认领同一原生 ID；切换后的引用去重账本显式清除。</li>
+<li>独立 app-server 的 idle/notLoaded 状态不能证明其他 CLI/桌面进程未占用该会话。外部未登记会话还必须有独立的外部活动验证能力；当前适配器不提供这种证明，因此保守拒绝导入。当前聊天历史登记的会话可正常恢复。</li>
+<li>OpenCode 适配覆盖 fake HTTP 协议测试，本机未安装可用命令；真实模型首轮执行、端到端 IM 和部署验收仍需在测试环境验证。</li>
+</ul>
+</main></body>
+</html>

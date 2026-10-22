@@ -4,6 +4,10 @@ root = os.path.dirname(os.path.realpath(sys.argv[0]))
 active = {}
 interrupts = {}
 children = []
+def fixture_prompt(text):
+    prefix = ('你是通过即时通信与用户协作的 AI 助手。遵循当前环境与项目规则，使用中文简洁回复。\n\n'
+              '以下是用户要求，请在遵循上述提示和当前环境规则的前提下处理：\n\n')
+    return text[len(prefix):] if text.startswith(prefix) else text
 def send(x):
     print(json.dumps(x), flush=True)
 def result(req, value):
@@ -36,7 +40,7 @@ for line in sys.stdin:
             send({'id':req['id'],'error':{'code':-32600,'message':'some session not found'}})
         else: result(req, {'thread':{'id':tid}})
     elif method == 'turn/start':
-        tid = p['threadId']; turn=str(uuid.uuid4()); prompt=p['input'][0]['text']
+        tid = p['threadId']; turn=str(uuid.uuid4()); prompt=fixture_prompt(p['input'][0]['text'])
         active[tid]=(turn,prompt)
         event('turn/started',tid,turn,turn={'id':turn,'status':'inProgress'})
         # Exercise notifications before the start response and unrelated events.

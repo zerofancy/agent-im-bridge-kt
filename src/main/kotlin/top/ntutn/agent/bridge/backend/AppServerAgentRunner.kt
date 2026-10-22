@@ -8,7 +8,8 @@ import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import top.ntutn.agent.bridge.*
 
-open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
+open class AppServerAgentRunner(val backend: BackendSpec) :
+    ManagedAgentRunner, AgentSessionController {
     init {
         require(backend.id != BackendId.OPENCODE)
     }
@@ -24,6 +25,21 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
     private val active = mutableMapOf<AgentRunHandle, Deferred<AgentResult>>()
     private var client: AppServerClient? = null
     private var closed = false
+    private val sessions = AgentSessionAppServer(backend, ::connection)
+
+    override suspend fun createSession(
+        workspace: Path,
+        sandboxMode: SandboxMode,
+    ): SessionDescriptor = sessions.createSession(workspace, sandboxMode)
+
+    override suspend fun inspectSession(sessionId: String): SessionDescriptor =
+        sessions.inspectSession(sessionId)
+
+    override suspend fun prepareResume(
+        sessionId: String,
+        workspace: Path,
+        sandboxMode: SandboxMode,
+    ): SessionDescriptor = sessions.prepareResume(sessionId, workspace, sandboxMode)
 
     private suspend fun connection(): AppServerClient =
         connectionMutex.withLock {
@@ -163,7 +179,11 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
             }
             val thread =
                 try {
-                    server.request(
+                    sessions.open(
+                        server,
+                        sessionId,
+                        workspace,
+                        sandboxMode,
                         if (sessionId == null) {
                             "thread/start"
                         } else {
@@ -252,8 +272,9 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                 // RPC on /stop.
                 val started =
                     try {
-                        server.request(
-                            "turn/start",
+                        startSessionTurn(
+                            server,
+                            handle,
                             json(
                                 "threadId" to id,
                                 "cwd" to workspace.toString(),
@@ -265,6 +286,8 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                                     },
                             ),
                         )
+                    } catch (e: AgentSessionSubmissionFailure) {
+                        return@coroutineScope failure(e.kind)
                     } catch (e: RpcFailure) {
                         return@coroutineScope failure(AgentResult.Kind.EXECUTION)
                     } catch (_: TransportFailure) {
@@ -286,7 +309,10 @@ open class AppServerAgentRunner(val backend: BackendSpec) : ManagedAgentRunner {
                 }
                 handle.turnId.complete(turnId)
                 // Only confirmed submissions belong in the reply-context LRU.
-                withContext(NonCancellable) { handle.onSubmitted(id) }
+                withContext(NonCancellable) {
+                    sessions.submitted(id)
+                    handle.onSubmitted(id)
+                }
                 log.info(
                     "${displayName} 轮次开始 requestId={} sessionId={} turnId={}",
                     handle.requestId,

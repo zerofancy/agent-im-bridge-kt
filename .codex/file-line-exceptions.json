@@ -11,10 +11,6 @@
     "max_lines": 581,
     "reason": "GUI 存量界面格式展开；后续拆分会话历史与连接设置组件；本次仅登记格式化后的行数，不允许继续增长。"
   },
-  "src/main/kotlin/top/ntutn/agent/bridge/ChatService.kt": {
-    "max_lines": 880,
-    "reason": "调度存量代码补齐控制块并展开格式；后续围绕接收与调度职责拆分，保留单一状态所有者；本次仅登记格式化后的行数，不允许继续增长。"
-  },
   "src/main/kotlin/top/ntutn/agent/bridge/StreamingReply.kt": {
     "max_lines": 593,
     "reason": "流式交付存量代码格式展开；后续拆分卡片渲染与交付协调；本次仅登记格式化后的行数，不允许继续增长。"

@@ -14,6 +14,8 @@ data class BridgeCommand(val name: String, val argument: String) {
                 BridgeCommandDefinition("/pwd", description = "查看当前聊天工作目录"),
                 BridgeCommandDefinition("/config", description = "查看并管理当前实例配置"),
                 BridgeCommandDefinition("/cd", "<path>", "空闲时切换目录，切换到不同目录后新建上下文"),
+                BridgeCommandDefinition("/new", "[初始输入]", "空闲时新建会话并显示旧、新 ID；先注入基础提示，再处理可选输入"),
+                BridgeCommandDefinition("/resume", "<session-id>", "空闲时恢复完整会话 ID，不新建、不自动切目录"),
                 BridgeCommandDefinition(
                     "/stop",
                     description = "请求 $backendName 中断当前轮并清空已有队列；等待确认后继续，保留会话和目录，不回滚文件修改",
@@ -37,6 +39,6 @@ data class BridgeCommand(val name: String, val argument: String) {
             definitions(backendName).joinToString("\n") {
                 "${it.name}${if (it.arguments.isEmpty()) { "" } else { " " + it.arguments }} — ${it.description}"
             } +
-                "\n模型任务不自动超时。中断未确认会保持停止中，不自动杀进程；本机 --stop 退出整个 Bridge。以上命令即时处理；其他命令（如 /spec、/plan）交给 Agent。"
+                "\n模型任务不自动超时。中断未确认会保持停止中，不自动杀进程；本机 --stop 退出整个 Bridge。控制命令即时处理；/new 的初始对话通过模型队列执行。其他命令（如 /spec、/plan）交给 Agent。"
     }
 }

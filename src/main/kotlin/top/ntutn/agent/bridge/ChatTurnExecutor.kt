@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import top.ntutn.agent.bridge.storage.SessionInitialization
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionPersistenceException
 import top.ntutn.agent.bridge.storage.SessionStore
@@ -22,6 +23,11 @@ internal class ChatTurnExecutor(
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val sentMessages = SentMessageLru()
 
+    suspend fun invalidateSession(chatId: String) {
+        val base = sessionKey(chatId)
+        sentMessages.invalidate(base.copy(workspace = sessions.workspace(base).toString()))
+    }
+
     // The caller owns preparedPrompts until delivery and cleanup finish, including retries.
     suspend fun execute(
         route: ReplyRoute,
@@ -31,6 +37,7 @@ internal class ChatTurnExecutor(
         preparedPrompts: MutableList<PreparedPrompt>,
         preparing: suspend () -> Unit,
         executing: suspend () -> Unit,
+        basicOnlyInitializer: Boolean = false,
     ): AgentResult? {
         val sessionChatId = input?.sessionChatId ?: route.chatId
         val base = sessionKey(sessionChatId)
@@ -44,6 +51,14 @@ internal class ChatTurnExecutor(
             }
         val key = base.copy(workspace = workspace.toString())
         suspend fun run(id: String?): AgentResult {
+            val entry = sessions.entry(key)
+            val initialize =
+                runner is AgentSessionController &&
+                    (id == null || entry?.initialization == SessionInitialization.PENDING)
+            if (entry?.initialization == SessionInitialization.SUBMITTING) {
+                send(route, "上一轮初始化提交结果未知，未自动重放。请用 /resume 选择其他会话或 /new 新建后重发。")
+                return AgentResult.Failure(AgentResult.Kind.PROTOCOL, sessionId = id)
+            }
             preparing()
             cleanupAttachments()
             val inputReferences =
@@ -52,7 +67,12 @@ internal class ChatTurnExecutor(
                 documentRoutes?.bind(sessionChatId, inputReferences, DocumentRouteSource.USER_INPUT)
             }
             val prepared =
-                if (route.origin == ReplyOrigin.IM && input != null && replyContext != null) {
+                if (
+                    route.origin == ReplyOrigin.IM &&
+                        input != null &&
+                        replyContext != null &&
+                        !(initialize && basicOnlyInitializer)
+                ) {
                     replyContext
                         .prepare(route, prompt, input, sentMessages.snapshot(key, id), senderNames)
                         .also { preparedPrompts += it }
@@ -66,7 +86,25 @@ internal class ChatTurnExecutor(
                 }
             }
             handle.onSubmitted = { observed ->
+                if (initialize) {
+                    sessions.markInitialization(key, observed, SessionInitialization.COMPLETE)
+                }
                 prepared?.let { sentMessages.submitted(key, observed, it.messageIds) }
+            }
+            var observedSession = id
+            handle.onSubmitting = {
+                if (initialize) {
+                    observedSession?.let {
+                        sessions.markInitialization(key, it, SessionInitialization.SUBMITTING)
+                    }
+                }
+            }
+            handle.onNotSubmitted = {
+                if (initialize) {
+                    observedSession?.let {
+                        sessions.markInitialization(key, it, SessionInitialization.PENDING)
+                    }
+                }
             }
             executing()
             log.info("开始执行 chatId={} messageId={} sessionId={}", route.chatId, route.messageId, id)
@@ -74,12 +112,17 @@ internal class ChatTurnExecutor(
                 try {
                     runner.runControlled(
                         handle,
-                        prepared?.text ?: prompt,
+                        if (initialize) {
+                            InitialSessionPrompt.build(prepared?.text ?: prompt)
+                        } else {
+                            prepared?.text ?: prompt
+                        },
                         id,
                         workspace,
                         sandboxMode,
                     ) { observed ->
                         sessions.set(key, observed)
+                        observedSession = observed
                         log.info(
                             "会话绑定 chatId={} messageId={} sessionId={}",
                             route.chatId,
@@ -114,10 +157,14 @@ internal class ChatTurnExecutor(
             return result
         }
         val previous = withContext(Dispatchers.IO) { sessions.get(key) }
+        val strict = sessions.entry(key)?.strictResume == true
+        val uncertain = sessions.entry(key)?.initialization == SessionInitialization.SUBMITTING
         var result = run(previous)
         if (
             !handle.stopRequested &&
                 previous != null &&
+                !strict &&
+                !uncertain &&
                 result is AgentResult.Failure &&
                 result.kind == AgentResult.Kind.SESSION_MISSING
         ) {
@@ -127,6 +174,13 @@ internal class ChatTurnExecutor(
                 run(
                     null
                 ) // At most one retry, only for the runner's pre-turn missing-session diagnostic.
+        }
+        if (
+            strict &&
+                result is AgentResult.Failure &&
+                result.kind == AgentResult.Kind.SESSION_MISSING
+        ) {
+            send(route, "所选会话已不可用，当前绑定保留，未自动新建。请用 /resume 选择其他会话或 /new 新建后重发。")
         }
         return result
     }

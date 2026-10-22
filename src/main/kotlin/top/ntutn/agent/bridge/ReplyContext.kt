@@ -64,6 +64,10 @@ class SentMessageLru {
 
     private val bindings = mutableMapOf<SessionKey, Binding>()
 
+    suspend fun invalidate(key: SessionKey) {
+        mutex.withLock { bindings.remove(key) }
+    }
+
     suspend fun snapshot(key: SessionKey, sessionId: String?): Set<String> =
         mutex.withLock {
             bindings[key]?.takeIf { it.sessionId == sessionId }?.ids?.toSet().orEmpty()

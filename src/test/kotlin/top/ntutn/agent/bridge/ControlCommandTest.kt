@@ -204,7 +204,7 @@ class ControlCommandTest {
             svc.accept(route("a", "empty"), "/cd").await()
             svc.accept(route("a", "bad"), "/status extra").await()
             assertTrue(response("status").contains("0/10"))
-            assertTrue(response("status").contains("切换目录中"))
+            assertTrue(response("status").contains("切换上下文中"))
             assertTrue(response("pwd").contains(target.toString()))
             assertTrue(response("empty").contains("/help"))
             assertTrue(response("bad").contains("用法"))
