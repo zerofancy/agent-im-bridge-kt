@@ -13,7 +13,6 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
     init {
         require(backend.id != BackendId.OPENCODE)
     }
-
     override val displayName: String
         get() = backend.displayName
 
@@ -26,7 +25,6 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
     private var client: AppServerClient? = null
     private var closed = false
     private val sessions = AgentSessionAppServer(backend, ::connection)
-
     override suspend fun createSession(
         workspace: Path,
         sandboxMode: SandboxMode,
@@ -63,7 +61,6 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                 throw e
             }
         }
-
     internal suspend fun processId(): Long? = connectionMutex.withLock { client?.process?.pid() }
 
     override suspend fun healthy(): Boolean = connectionMutex.withLock { client?.healthy() == true }
@@ -478,6 +475,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
     }
 
     override fun close() = runBlocking {
+        val deadline = ShutdownDeadline()
         val tasks =
             mutex.withLock {
                 if (closed) {
@@ -489,8 +487,14 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
             }
         val current = connectionMutex.withLock { client.also { client = null } }
         current?.close()
-        withTimeoutOrNull(5_000) { tasks.joinAll() }
+        val joinTasksMillis = deadline.remainingMillis()
+        if (joinTasksMillis > 0) {
+            withTimeoutOrNull(joinTasksMillis) { tasks.joinAll() }
+        }
         scope.cancel()
-        scope.coroutineContext.job.join()
+        val joinScopeMillis = deadline.remainingMillis()
+        if (joinScopeMillis > 0) {
+            withTimeoutOrNull(joinScopeMillis) { scope.coroutineContext.job.join() }
+        }
     }
 }

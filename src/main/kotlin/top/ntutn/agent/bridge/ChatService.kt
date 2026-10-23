@@ -401,6 +401,7 @@ class ChatService(
     override fun close() {
         // AutoCloseable is the synchronous application boundary; never call from our own scope.
         runBlocking {
+            val deadline = ShutdownDeadline()
             val (queued, runningNow) =
                 mutex.withLock {
                     if (closed) {
@@ -419,10 +420,18 @@ class ChatService(
             }
             runningNow.forEach { it.handle.requestStop() }
             try {
-                withContext(Dispatchers.IO) { runner.close() }
+                val closeRunnerMillis = deadline.remainingMillis()
+                if (closeRunnerMillis > 0) {
+                    withTimeoutOrNull(closeRunnerMillis) {
+                        withContext(Dispatchers.IO) { runner.close() }
+                    }
+                }
             } finally {
                 job.cancel()
-                job.join()
+                val joinJobMillis = deadline.remainingMillis()
+                if (joinJobMillis > 0) {
+                    withTimeoutOrNull(joinJobMillis) { job.join() }
+                }
                 (queued + runningNow).forEach { it.finish() }
             }
         }

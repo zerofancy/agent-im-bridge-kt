@@ -219,6 +219,7 @@ private constructor(val process: Process, private val backend: BackendSpec) {
 
     suspend fun close() =
         withContext(NonCancellable + Dispatchers.IO) {
+            val deadline = ShutdownDeadline()
             val handles =
                 process
                     .toHandle()
@@ -232,9 +233,11 @@ private constructor(val process: Process, private val backend: BackendSpec) {
             // End the process first so its pipe closes and wakes the reader, then release our
             // stream handles.
             handles.filter { it.isAlive }.forEach { it.destroy() }
-            if (!process.waitFor(1, TimeUnit.SECONDS)) {
+            val gracefulWaitMillis = deadline.remainingMillis().coerceAtMost(1_000)
+            if (gracefulWaitMillis > 0 && !process.waitFor(gracefulWaitMillis, TimeUnit.MILLISECONDS)) {
                 handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
-                if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                val forcedWaitMillis = deadline.remainingMillis()
+                if (forcedWaitMillis > 0 && !process.waitFor(forcedWaitMillis, TimeUnit.MILLISECONDS)) {
                     log.warn("${displayName} app-server 关闭超时 pid={}；测试或关闭流程继续执行", process.pid())
                 }
             }
@@ -242,6 +245,10 @@ private constructor(val process: Process, private val backend: BackendSpec) {
             closeQuietly(process.errorStream)
             finishExit()
             scope.cancel()
+            val joinMillis = deadline.remainingMillis()
+            if (joinMillis > 0) {
+                withTimeoutOrNull(joinMillis) { scope.coroutineContext.job.join() }
+            }
         }
 
     private fun closeQuietly(closeable: Closeable?) {
