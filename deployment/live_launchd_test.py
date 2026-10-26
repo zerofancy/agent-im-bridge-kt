@@ -41,7 +41,11 @@ public class MainKt {
   server.createContext("/",x->{try{
    if(!("Bearer "+token).equals(x.getRequestHeaders().getFirst("Authorization"))){x.sendResponseHeaders(403,-1);return;}
    String action=x.getRequestURI().getPath();
-   if(action.equals("/crash")){new Thread(()->{throw new IllegalStateException("secret-test");}).start();return;}
+   if(action.equals("/crash")){
+    // Fatal halt skips shutdown hooks; the probe must clean up its simulated child itself.
+    backend.destroyForcibly();backend.waitFor();
+    new Thread(()->{throw new IllegalStateException("secret-test");}).start();return;
+   }
    if(action.equals("/drain"))draining.set(true);
    if(action.equals("/resume")||action.equals("/activate"))draining.set(false);
    if(action.startsWith("/reason/"))life.setStopReason(action.substring(8));
@@ -102,7 +106,7 @@ def main():
         wait(lambda:not b.alive(old_child))
         previous=b.read(m.directory/'lifecycle/previous.json')
         assert 'IllegalStateException' in previous['reason'] and previous['exitCode']==70
-        print('PASS fatal restart and child cleanup pid='+str(second['pid']),flush=True)
+        print('PASS fatal restart pid='+str(second['pid']),flush=True)
         # Replacing build files must not change the already-running release.
         (dist/'version.txt').write_text('new')
         new=m.publish(dist);assert m.rpc()['release']==old
@@ -131,14 +135,16 @@ def main():
         assert m.rpc()['release']==new and not m.rpc()['draining']
         print('PASS independent deployment and activation',flush=True)
         # The loaded launchd arguments are still held: durable activation must also survive a later crash.
-        old_boot=m.rpc()['bootId']
+        before_restart = m.rpc()
+        launcher_pid = int(b.run(['ps', '-o', 'ppid=', '-p', before_restart['pid']]).stdout)
         try:m.rpc('crash')
         except Exception:pass
-        wait(lambda:(s if (s:=m.rpc())['bootId']!=old_boot else None),60)
-        assert not m.rpc()['draining']
-        print('PASS activated version restarts accepting work',flush=True)
+        restarted = wait(lambda:(s if (s:=m.rpc())['bootId']!=before_restart['bootId'] else None),60)
+        assert int(b.run(['ps', '-o', 'ppid=', '-p', restarted['pid']]).stdout) == launcher_pid
+        assert not restarted['draining']
+        print('PASS activated JVM restarts accepting work within same launcher pid='+str(launcher_pid),flush=True)
         (dist/'reject').write_text('candidate never ready');bad=m.publish(dist)
-        job=m.submit(bad);wait(lambda:b.read(m.job_path(job))['state']=='rolled-back',110)
+        job=m.submit(bad);wait(lambda:b.read(m.job_path(job))['state']=='rolled-back',170)
         assert m.rpc()['release']==new
         print('PASS failed candidate rollback',flush=True)
         running=m.rpc();child=int((m.directory/'child.pid').read_text());m.stop()

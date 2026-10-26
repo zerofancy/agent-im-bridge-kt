@@ -758,12 +758,10 @@ class Manager:
     def launch(self, release, held):
         p = self.verify(release); settings = self.validate()
         for d in ('tmp', 'attachments', 'logs', 'control', 'lifecycle'): (self.directory / d).mkdir(parents=True, exist_ok=True, mode=0o700)
-        activated = read(self.deploydir / 'activated', {})
-        held = held and activated.get('release') != release
         env = {k: v for k, v in os.environ.items() if k not in ('CODEX_HOME', 'TRAE_HOME', 'TRAECLI_HOME', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH')}
         default_path = '/usr/local/bin:/usr/bin:/bin' if sys.platform == 'linux' else '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
         env.update(BRIDGE_ROOT=str(self.root), BRIDGE_ENV=self.env, BRIDGE_RELEASE=release,
-                   BRIDGE_HOLD='1' if held else '0', TMPDIR=str(self.directory / 'tmp'),
+                   TMPDIR=str(self.directory / 'tmp'),
                    PATH=settings.get('path', default_path))
         classpath = os.pathsep.join(str(f) for f in sorted((p / 'lib').glob('*.jar')))
         argv = [settings['java'], '-Djava.io.tmpdir=' + str(self.directory / 'tmp'), '-cp', classpath, 'top.ntutn.agent.bridge.MainKt']
@@ -786,6 +784,8 @@ class Manager:
             attempts = int(breaker.get('attempts', 0))
 
         while True:
+            activated = read(self.deploydir / 'activated', {})
+            env['BRIDGE_HOLD'] = '1' if held and activated.get('release') != release else '0'
             child = subprocess.Popen(argv, env=env, cwd=settings['workspace'], stdin=subprocess.DEVNULL)
             current['child'] = child
             started = time.monotonic()
