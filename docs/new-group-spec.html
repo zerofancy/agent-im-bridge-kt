@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>/new group 群名与独立会话 Spec</title>
+<style>
+:root{color-scheme:light;--ink:#17243a;--muted:#61718a;--line:#dae3ef;--accent:#245ac5}
+*{box-sizing:border-box}body{margin:0;background:#f4f7fb;color:var(--ink);font:16px/1.8 system-ui,-apple-system,sans-serif}
+main{max-width:1060px;margin:30px auto;padding:36px;background:white;border-radius:16px}h1{line-height:1.4}h2{font-size:22px;margin-top:30px;border-bottom:1px solid var(--line);padding-bottom:8px}
+code,pre{font:14px/1.65 ui-monospace,SFMono-Regular,monospace}code{overflow-wrap:anywhere}pre{white-space:pre-wrap;background:#f1f5fb;padding:16px;border-radius:10px}
+table{width:100%;border-collapse:collapse}th,td{border:1px solid var(--line);padding:10px;text-align:left;vertical-align:top}a{color:var(--accent)}li{margin:6px 0}
+.note{background:#edf4ff;border-left:4px solid var(--accent);padding:16px}.muted{color:var(--muted)}
+@media(max-width:700px){main{margin:0;padding:20px;border-radius:0}table{display:block;overflow:auto}}
+</style>
+</head>
+<body><main>
+<h1><code>/new group [群名]</code></h1>
+<p class="muted">2026-10-27 · 第二版：参数由“初始问题”调整为“群名”。本次修改未部署，不代表线上行为已切换。</p>
+<div class="note"><strong>核心契约：</strong>机器人创建仅含本人和当前机器人的私有普通群，继承来源聊天工作目录，绑定独立 Agent 会话。参数仅用于群名，不提交模型；用户可先在新群 /cd 再发问题。原聊天会话不变。</div>
+<h2>1. 命令</h2>
+<table>
+<tr><th>输入</th><th>行为</th></tr>
+<tr><td><code>/new group 登录问题排查</code></td><td>群名为“登录问题排查”；创建并绑定会话，不执行登录排查任务。</td></tr>
+<tr><td><code>/new group</code></td><td>群名使用“Agent 会话 · MM-dd HH:mm”；不运行模型。</td></tr>
+<tr><td><code>/new 修复登录问题</code></td><td>保留原行为：当前聊天新建会话并执行初始输入。</td></tr>
+<tr><td><code>/new -- group 修复登录问题</code></td><td>普通 /new，初始输入以 group 开头，不建群。</td></tr>
+</table>
+<ul>
+<li>仅完整小写 group 子命令触发建群，grouping 不匹配。正文内部空格保留，不进行 shell 解释。</li>
+<li>群名最多 60 个 Unicode codepoints；拒绝控制字符、换行及 Unicode 行/段分隔符，不静默截断。省略或仅空白时使用默认名。</li>
+<li>仅飞书授权用户可用；群内仍须明确 @机器人。文档评论、表情、桌面、Telegram 不支持，不降级为普通 /new。</li>
+<li>只接受文本参数，不迁移附件、回复链、旧模型上下文或工具结果，不额外邀请其他用户。</li>
+</ul>
+<h2>2. 使用流程</h2>
+<pre>来源聊天：/new group 登录问题排查
+来源聊天：正在创建新群会话…
+新群：新群会话已就绪。工作目录：&lt;继承目录&gt;
+      尚未提交模型任务，可先 /cd，再 @机器人发送问题。
+来源聊天：群跳转链接、继承目录、新 Session ID
+新群用户：@机器人 /cd /absolute/target
+新群用户：@机器人 请检查登录问题</pre>
+<ul>
+<li>群名不是用户问题，不发送“初始问题”转述，不触发仅基础提示的空轮次。</li>
+<li>来源聊天仍保持原会话及目录。后续进度、答案和图片按实际新群消息路由，不同步复制到来源。</li>
+<li>新群后续首次实际模型输入沿用基础提示与用户要求分隔机制；/cd、/pwd 等控制命令不触发模型。</li>
+<li>创建期间提前收到的新群消息等待初始化结束；这些是用户独立发送的消息，初始化后正常 FIFO，不是把群名转成任务。</li>
+</ul>
+<h2>3. 隔离、鉴权与目录</h2>
+<ul>
+<li>来源聊天需空闲、无队列、无接收准备和切换屏障；排空或关闭时不接受新建群。建群准备不占模型并发槽。</li>
+<li>规范化来源实际选择目录并冻结快照，不使用 Bridge/JVM cwd 推断业务目录。</li>
+<li>新群先持久化目录，再创建并绑定本实例后端的新原生会话；SessionKey 使用当前 appId、新 chatId、workspace、runtimeRoot、backendId。</li>
+<li>继承当前后端和 sandbox 配置，不复制其他环境凭据。DEV/PROD、不同机器人及后端状态隔离。</li>
+<li>两个聊天共享同一文件目录，不提供自动 worktree 或文件写互斥。双方后续 /cd 互不影响。</li>
+<li>用户为本实例 allowedUserId，机器人使用本实例身份；群主为该用户。其他群成员即便入群也不能调用机器人。</li>
+<li>建群前检查后端支持会话创建，成员核查通过前不向新群披露目录或启动业务。机器人就绪消息事件不会作为用户消息执行。</li>
+</ul>
+<h2>4. 协调与接口</h2>
+<ul>
+<li>使用 <a href="https://open.feishu.cn/document/server-docs/group/chat/create">官方创建群接口</a>，机器人 tenant token、open_id、private 普通群，指定 allowedUserId 为群主和用户成员。</li>
+<li>分页核查用户成员；通过 <a href="https://open.feishu.cn/document/server-docs/group/chat-member/is_in_chat">members/is_in_chat</a> 核查当前机器人在群。</li>
+<li>新增出站使用自建 HTTP JSON 封装及 SDK 公开 token manager；关闭写请求隐式重试和重定向，不调用 lark-cli、不借用户 token。</li>
+<li>建群、就绪消息分别使用稳定 uuid。本地操作 ID 包含实例/应用/后端/来源聊天/命令消息身份，外部写前登记。</li>
+<li>所有业务锁只管理状态和调度，不在业务 Mutex 内执行网络或文件 I/O；存储自身通过 Mutex 和 NonCancellable 原子提交。</li>
+<li>主要组件为 GroupConversationService、GroupConversationGateway、GroupCreationStore、ChatService、SessionStore。</li>
+</ul>
+<h2>5. 状态与异常</h2>
+<pre>RESERVED → CREATING → GROUP_CREATED → MEMBERS_VERIFIED
+→ SESSION_BOUND → READY
+分支：FAILED / UNKNOWN / CANCELLED / RECOVERED</pre>
+<ul>
+<li>READY 代表目录与独立会话绑定、就绪消息交付及初始化交接完成，不表示任何模型任务已经执行。</li>
+<li>相同命令事件只关联同一操作，不重复创建群。用户新发另一条命令是新操作。</li>
+<li>结果不明时保留操作编号和已知群链接，不盲目重发建群或就绪消息，不自动解散残留群。</li>
+<li>停止在建群写请求已提交后只记录意图，在 30 秒技术超时内收取并保存返回的 chatId，再停止后续步骤；读取与后端准备可取消。</li>
+<li>来源或初始化中的目标群 /stop 可取消创建后续步骤，旧挂起命令不会越过停止水位。交接后来源 /stop 不影响新群独立任务。</li>
+<li>来源确认发送失败不回滚 READY；旧流程 finally 不清理目标群后续 /cd、/new 等新操作的屏障或句柄。</li>
+</ul>
+<h2>6. Review 修复：缩小恢复保护范围</h2>
+<ul>
+<li>不再使用“存在任何 UNKNOWN/CREATING 无目标 ID 记录”作为全群门禁。遗留无目标 ID 操作不拦截其他聊天。</li>
+<li>启动时从持久化 SessionStore 恢复当前 app/runtime/backend 的已登记聊天；已有 workspace 或 session 的老群不作为未知候选群。</li>
+<li>保护仅覆盖明确失败的目标群，以及创建窗口中实际收到消息、尚未登记且无法排除关联的候选群。候选 chatId 单独持久化，不扩大为全体群。</li>
+<li>候选等待请求在结果不明时取消，不把其队列释放到默认目录运行。其他无关群仍正常运行、切目录和停止。</li>
+<li>受保护群 /pwd 说明预期目录；必须 /cd 绝对路径恢复，不按默认目录解析相对路径。/stop 始终可用。</li>
+<li>无法确认但也从未观察到的目标群，不凭群名或任意未知 chatId 猜测归属；操作停在 UNKNOWN，需用户核实实际群和目录。</li>
+</ul>
+<h2>7. Review 修复：恢复半成功明确反馈</h2>
+<ul>
+<li>/cd 先完成 SessionStore 的原子目录提交；GroupCreationStore 的恢复记录、确认集合和候选隔离集合在另一次单事务中一起提交，不逐条半更新。</li>
+<li>若恢复事务失败，回复明确包含“当前目录已保存：目标路径”“恢复状态保存失败”“群仍暂停执行”“目录未回滚”，不得仅记录日志。</li>
+<li>恢复失败时不清内存保护；修复存储后重试 /cd 绝对路径。只有恢复落盘成功，才同步解除内存保护。</li>
+<li>两个存储之间不声称分布式事务；保留安全的半成功状态，并让用户可观察、可重试，不回滚已成功目录。</li>
+</ul>
+<h2>8. 兼容与重启</h2>
+<p>建群前实时查询 application/v6/scopes，仅接受 tenant 身份且已授权的权限。缺少创建群、读取成员或机器人发消息能力时，不创建群、不登记创建操作，直接发送最小缺失权限的申请链接。用户或管理员确认申请、审批并发布生效后，需显式重试命令；不以用户 OAuth 替代应用授权，也不自动批量申请其他权限。查询失败时停止建群。若权限在创建后变化，明确提示群已创建但初始化未完成，并保留群链接。</p>
+<ul>
+<li>旧版本 QUEUED 记录保留兼容：结合 SessionInitialization 判断未提交或结果不明，首次连接后最多尝试一次恢复提示，不自动重跑。</li>
+<li>新版本 READY 不产生首问任务，也不触发旧首问恢复提示；会话 PENDING 状态等待用户第一条实际问题。</li>
+<li>内存队列不持久化或自动恢复。状态文件不可读时明确失败，不覆盖损坏文件，不跨环境借状态。</li>
+</ul>
+<h2>9. 验证与非目标</h2>
+<ul>
+<li>覆盖群名原样传递、60 Unicode 边界、控制字符拒绝、默认名、普通 /new 和 -- 转义。</li>
+<li>覆盖建群不调用模型、PENDING 绑定、先 /cd 再首问、来源不变、目录继承、幂等、停止和初始化 FIFO。</li>
+<li>覆盖 UNKNOWN 残留下老群及无关群不误拦、创建窗口老群可执行、候选保护按 chatId 持久化。</li>
+<li>注入 group 恢复写失败，验证目录已提交、明确反馈、仍暂停、无部分确认状态及修复后可恢复。</li>
+<li>验证行数、diff、单测与 installDist；真实 DEV 群主/权限/入群/目录/问答效果仍需在线验收。</li>
+<li>不自动提权、改机器人权限、部署、提交、推送、建 worktree、迁移历史或邀请任意成员。</li>
+</ul>
+</main></body>
+</html>

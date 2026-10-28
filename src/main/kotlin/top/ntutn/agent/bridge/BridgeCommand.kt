@@ -14,7 +14,11 @@ data class BridgeCommand(val name: String, val argument: String) {
                 BridgeCommandDefinition("/pwd", description = "查看当前聊天工作目录"),
                 BridgeCommandDefinition("/config", description = "查看并管理当前实例配置"),
                 BridgeCommandDefinition("/cd", "<path>", "空闲时切换目录，切换到不同目录后新建上下文"),
-                BridgeCommandDefinition("/new", "[初始输入]", "空闲时新建会话并显示旧、新 ID；先注入基础提示，再处理可选输入"),
+                BridgeCommandDefinition(
+                    "/new",
+                    "[初始输入]",
+                    "空闲时新建会话；/new group [群名] 在飞书建群并继承目录，不自动执行任务；/new -- <输入> 按普通新会话处理",
+                ),
                 BridgeCommandDefinition("/resume", "<session-id>", "空闲时恢复完整会话 ID，不新建、不自动切目录"),
                 BridgeCommandDefinition(
                     "/stop",

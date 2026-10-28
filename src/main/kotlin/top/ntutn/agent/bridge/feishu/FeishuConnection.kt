@@ -45,6 +45,7 @@ internal constructor(
     private val comment: (CommentEvent) -> Unit,
 ) {
     var connectionChanged: (Boolean) -> Unit = {}
+    internal var afterConnected: () -> Unit = {}
     private val socketLock = Mutex()
     private val http =
         okhttp3.OkHttpClient.Builder()
@@ -89,6 +90,7 @@ internal constructor(
     suspend fun connect() {
         channel.connect().await() // Resolve bot identity before accepting events.
         socketLock.withLock { socket.connect() }
+        afterConnected()
     }
 
     /**

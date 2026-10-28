@@ -6,6 +6,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import top.ntutn.agent.bridge.storage.GroupCreationPersistenceException
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionPersistenceException
 import top.ntutn.agent.bridge.storage.SessionStore
@@ -181,7 +182,11 @@ internal class SessionControlService(
                 ?: "")
     }
 
-    suspend fun changeDirectory(route: ReplyRoute, argument: String) {
+    suspend fun changeDirectory(
+        route: ReplyRoute,
+        argument: String,
+        onChanged: suspend () -> Unit = {},
+    ): Boolean {
         val base = sessionKey(route.chatId)
         val current = sessions.workspace(base)
         val target =
@@ -189,13 +194,13 @@ internal class SessionControlService(
                 withContext(Dispatchers.IO) { resolveWorkspace(argument, current) }
             } catch (_: IllegalArgumentException) {
                 send(route, "路径无效或目录不可读取，请检查 /cd 参数；原目录和会话未变。")
-                return
+                return false
             }
         try {
             sessions.changeWorkspace(base, target)
         } catch (_: SessionPersistenceException) {
             send(route, "目录保存失败，原目录和会话未变，请检查本机存储。")
-            return
+            return false
         }
         val result =
             if (target == current) {
@@ -203,7 +208,14 @@ internal class SessionControlService(
             } else {
                 "下次请求将开始新会话。"
             }
+        try {
+            onChanged()
+        } catch (_: GroupCreationPersistenceException) {
+            send(route, "当前目录已保存：$target\n但新群恢复状态保存失败，当前群仍暂停执行；目录未回滚。请修复本地存储后，用 /cd <绝对路径> 重试恢复。")
+            return false
+        }
         send(route, "当前目录：$target\n访问模式：${sandboxMode.cliValue}\n$result")
+        return true
     }
 
     private fun validateId(key: SessionKey, id: String) {

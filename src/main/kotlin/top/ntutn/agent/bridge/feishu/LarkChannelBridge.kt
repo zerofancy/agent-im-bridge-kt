@@ -22,6 +22,7 @@ import top.ntutn.agent.bridge.storage.AttachmentStore
 import top.ntutn.agent.bridge.storage.BridgeConfig
 import top.ntutn.agent.bridge.storage.ConfigStore
 import top.ntutn.agent.bridge.storage.DocumentRouteStore
+import top.ntutn.agent.bridge.storage.GroupCreationStore
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionStore
 
@@ -74,35 +75,6 @@ fun extractPrompt(message: NormalizedMessage, allowedUserId: String): String? {
         text = text.replace(Regex(Regex.escape(key) + "(?![A-Za-z0-9_])"), "")
     }
     return text.trim().takeIf { it.isNotBlank() || !event.event.message.parentId.isNullOrBlank() }
-}
-
-fun extractMessageInput(message: NormalizedMessage): MessageInput {
-    val event = (message.raw as P2MessageReceiveV1).event
-    val references = extractFeishuDocumentReferences(event.message.content.orEmpty())
-    return MessageInput(
-        message.chatType,
-        event.message.parentId,
-        MessageSender(
-            event.sender.senderId?.openId,
-            "open_id",
-            event.sender.senderType ?: "unknown",
-        ),
-        event.message.createTime,
-        contentType = message.rawContentType,
-        commandText =
-            if (message.rawContentType == "post") {
-                postCommandText(
-                    event.message.content.orEmpty(),
-                    message.mentions.filter { it.isBot }.mapNotNull { it.key },
-                )
-            } else {
-                null
-            },
-        malformedPost =
-            message.rawContentType == "post" &&
-                runCatching { parsePost(event.message.content.orEmpty()) }.isFailure,
-        documentReferences = references,
-    )
 }
 
 private suspend fun extractCommentMessage(
@@ -363,6 +335,30 @@ fun createAgentChannel(
             localReplies = localReplies,
             outgoingImages =
                 createFeishuOutgoingImages(config, environment?.attachments, appDirectory),
+            groupConversations =
+                GroupConversations(
+                    FeishuGroupConversationGateway(
+                        FeishuOpenApiClient(
+                            feishuOpenBaseUrl(config),
+                            SdkTenantTokenProvider(sdkOpenApiConfig(config)),
+                            feishuMediaHttpClient(),
+                        ),
+                        config.allowedUserId,
+                        { channel.botIdentity?.openId },
+                        config.tenant,
+                        appId = config.appId,
+                    ),
+                    GroupCreationStore(
+                        (environment?.directory
+                                ?: Path.of(
+                                    System.getProperty("user.home"),
+                                    ".agent-im-bridge-kt",
+                                    appDirectory,
+                                ))
+                            .resolve("group-creations.json")
+                    ),
+                    config.allowedUserId,
+                ),
         ) { route, text ->
             val sent = CompletableFuture<Unit>()
             try {
@@ -492,5 +488,6 @@ fun createAgentChannel(
     channel.on<ChannelErrorEvent>("error") { event ->
         FatalErrorHandler.boundary { log.error("通道错误 {}", safeError(event.error)) }
     }
+    connection.afterConnected = { service.launchManaged { service.notifyGroupRecovery() } }
     return connection to service
 }

@@ -191,6 +191,11 @@ class SessionStore(private val path: Path) {
         }
     }
 
+    @Volatile
+    internal var persistedChatKeys: Set<ChatKey> =
+        (directories.keys + entries.keys.map { it.chatKey() }).toSet()
+        private set
+
     suspend fun get(key: SessionKey): String? = mutex.withLock { entries[key]?.sessionId }
 
     suspend fun entry(key: SessionKey): SessionEntry? = mutex.withLock { entries[key] }
@@ -380,6 +385,7 @@ class SessionStore(private val path: Path) {
             directories = nextDirectories
             catalog = nextCatalog
             switches = nextSwitches
+            persistedChatKeys = (nextDirectories.keys + next.keys.map { it.chatKey() }).toSet()
         }
     }
 

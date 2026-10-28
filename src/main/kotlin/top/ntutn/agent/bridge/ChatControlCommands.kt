@@ -42,7 +42,18 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
             }
         }
         "/pwd" -> {
-            { send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}") }
+            val needsDirectory = route.chatId in failedGroups
+            suspend {
+                if (needsDirectory) {
+                    val expected = groupConversations?.store?.workspaceForChat(route.chatId)
+                    send(
+                        route,
+                        "新群初始化未完成；预期继承目录：${expected ?: "结果未确认"}。请用 /cd <绝对路径> 确认，不使用默认目录执行。",
+                    )
+                } else {
+                    send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}")
+                }
+            }
         }
         "/config" -> {
             val controls = configControls.takeIf { route.origin == ReplyOrigin.IM }
@@ -61,6 +72,7 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
             ) {
                 return suspend {}
             }
+            cancelDeferredGroupControls(route.chatId)
             sessionSwitches[route.chatId]?.requestStop()
             if (target?.stage != Stage.STOPPING) {
                 stoppedIncoming[route.chatId] = incomingSequence.get()
@@ -150,13 +162,27 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
         }
         "/new",
         "/resume" -> {
-            prepareSessionControl(work, command)
+            val initial = NewSessionInput.parse(command.argument)
+            if (command.name == "/new" && initial.group) {
+                prepareNewGroup(work, initial.text)
+            } else {
+                prepareSessionControl(
+                    work,
+                    if (command.name == "/new") {
+                        command.copy(argument = initial.text)
+                    } else {
+                        command
+                    },
+                )
+            }
         }
         "/cd" -> {
             if (draining) {
                 reply("应用升级中，暂时不能切换目录。")
             } else if (command.argument.isEmpty()) {
                 reply("请使用 /cd <path>，查看 /help 获取帮助。")
+            } else if (route.chatId in failedGroups && !explicitGroupDirectory(command.argument)) {
+                reply("新群目录尚未确认，请使用 /cd <绝对路径>，不能按默认目录解析相对路径。")
             } else if (incomingCount.get() > 0) {
                 reply("正在准备接收到的消息，请稍后再切换目录。")
             } else if (
@@ -169,7 +195,13 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
                 switching.add(route.chatId)
                 suspend {
                     try {
-                        sessionControls.changeDirectory(route, command.argument)
+                        sessionControls.changeDirectory(route, command.argument) {
+                            val recovering = mutex.withLock { route.chatId in failedGroups }
+                            if (recovering) {
+                                groupConversations?.store?.recover(route.chatId)
+                                mutex.withLock { failedGroups.remove(route.chatId) }
+                            }
+                        }
                     } finally {
                         withContext(NonCancellable) {
                             mutex.withLock {

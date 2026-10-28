@@ -31,6 +31,7 @@ data class MessageInput(
     val enableRequestActivity: Boolean = true,
     val documentQuote: String? = null,
     val documentUrl: String? = null,
+    val hasAttachments: Boolean = false,
 )
 
 data class QuotedMessage(

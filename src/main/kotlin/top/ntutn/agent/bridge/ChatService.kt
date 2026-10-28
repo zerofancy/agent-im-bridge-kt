@@ -14,13 +14,14 @@ import top.ntutn.agent.bridge.ChatIncoming as Incoming
 import top.ntutn.agent.bridge.ChatWork as Work
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionStore
+import top.ntutn.agent.bridge.storage.chatKey
 
 class ChatService(
     internal val runner: AgentRunner,
     internal val sessions: SessionStore,
     internal val sessionKey: (String) -> SessionKey,
     maxConcurrentRuns: Int = 10,
-    private val sandboxMode: SandboxMode = SandboxMode.READ_ONLY,
+    internal val sandboxMode: SandboxMode = SandboxMode.READ_ONLY,
     private val replyContext: ReplyContext? = null,
     private val typingReactions: TypingReactions? = null,
     internal val lifecycle: RuntimeLifecycle? = null,
@@ -30,6 +31,7 @@ class ChatService(
     internal val documentRoutes: DocumentRouteTracker? = null,
     internal val localReplies: LocalReplies? = null,
     private val outgoingImages: OutgoingImages? = null,
+    internal val groupConversations: GroupConversations? = null,
     private val sender: ReplySender,
 ) : AutoCloseable {
     internal val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
@@ -89,126 +91,34 @@ class ChatService(
 
     internal val incomingSequence = AtomicLong()
     internal val incomingCount = AtomicInteger()
-    private val incoming = Channel<Incoming>(Channel.UNLIMITED)
+    internal val incoming = Channel<Incoming>(Channel.UNLIMITED)
     internal val stoppedIncoming = mutableMapOf<String, Long>()
+    internal var creatingGroups = 0
+    internal val knownChats =
+        sessions.persistedChatKeys
+            .filter { it == sessionKey(it.chatId).chatKey() }
+            .map { it.chatId }
+            .toMutableSet()
+    internal val groupGates = mutableMapOf<String, CompletableDeferred<Unit>>()
+    internal val initializingGroups = mutableSetOf<String>()
+    internal val stoppedGroupInitializers = mutableSetOf<String>()
+    internal val deferredGroupControls = mutableMapOf<String, MutableSet<Work>>()
+    internal val queuedGroupRecovery = groupConversations?.store?.queuedEntries().orEmpty()
+    internal var groupRecoveryNotified = false
+    internal val failedGroups =
+        groupConversations?.store?.unfinishedChats()?.toMutableSet() ?: mutableSetOf()
 
-    /** Serialize route lookups with ordinary inputs; controls bypass network preparation. */
-    internal fun receive(message: IncomingMessage): CompletableFuture<Unit> {
-        val command =
-            BridgeCommand.parse(
-                if (message.input.contentType == "post") {
-                    message.input.commandText.orEmpty()
-                } else {
-                    message.prompt
-                }
-            )
-        return if (command != null) {
-            accept(message.route, message.prompt, message.input)
-        } else {
-            receive(null, message.route) { message }
-        }
-    }
+    internal fun receive(message: IncomingMessage): CompletableFuture<Unit> =
+        receiveMessage(message)
 
     internal fun receive(
         id: String?,
         rejectedRoute: ReplyRoute? = null,
         resolve: suspend () -> IncomingMessage?,
-    ): CompletableFuture<Unit> {
-        val result = CompletableFuture<Unit>()
-        val admission =
-            scope.launch(start = CoroutineStart.UNDISPATCHED) {
-                val rejected =
-                    mutex.withLock {
-                        outstanding.removeAll { it.isDone }
-                        if (closed || draining) {
-                            true
-                        } else {
-                            outstanding.add(result)
-                            incomingCount.incrementAndGet()
-                            val item =
-                                Incoming(incomingSequence.incrementAndGet(), id, resolve, result)
-                            if (incoming.trySend(item).isFailure) {
-                                incomingCount.decrementAndGet()
-                                result.complete(Unit)
-                            }
-                            false
-                        }
-                    }
-                if (rejected) {
-                    try {
-                        if (rejectedRoute != null && !mutex.withLock { closed }) {
-                            send(rejectedRoute, "应用升级中，请稍后重试。")
-                        }
-                    } finally {
-                        result.complete(Unit)
-                    }
-                }
-            }
-        admission.invokeOnCompletion { error ->
-            if (error != null) {
-                result.completeExceptionally(error)
-            }
-        }
-        return result
-    }
+    ): CompletableFuture<Unit> = receiveResolved(id, rejectedRoute, resolve)
 
     init {
-        scope.launch(start = CoroutineStart.UNDISPATCHED) {
-            val seen = linkedSetOf<String>()
-            try {
-                for (item in incoming) {
-                    try {
-                        if (item.id != null && !seen.add(item.id)) {
-                            item.completed.complete(Unit)
-                            continue
-                        }
-                        if (seen.size > 2000) {
-                            seen.remove(seen.first())
-                        }
-                        val message = withTimeout(30_000) { item.resolve() }
-                        if (
-                            message == null ||
-                                mutex.withLock {
-                                    closed ||
-                                        item.sequence <=
-                                            (stoppedIncoming[message.route.chatId] ?: 0L)
-                                }
-                        ) {
-                            item.completed.complete(Unit)
-                            continue
-                        }
-                        admit(message.route, message.prompt, message.input, item.sequence)
-                            .whenComplete { _, error ->
-                                if (error != null) {
-                                    item.completed.completeExceptionally(error)
-                                } else {
-                                    item.completed.complete(Unit)
-                                }
-                            }
-                    } catch (e: CancellationException) {
-                        item.completed.complete(Unit)
-                        if (e !is TimeoutCancellationException) {
-                            throw e
-                        }
-                        currentCoroutineContext().ensureActive()
-                        log.warn("消息接收准备超时，未提交模型")
-                    } catch (e: Exception) {
-                        FatalErrorHandler.rethrowProgrammingError(e)
-                        item.completed.complete(Unit)
-                        log.warn("消息接收准备失败，未提交模型")
-                    } finally {
-                        incomingCount.decrementAndGet()
-                    }
-                }
-            } finally {
-                incoming.close()
-                while (true) {
-                    val item = incoming.tryReceive().getOrNull() ?: break
-                    incomingCount.decrementAndGet()
-                    item.completed.complete(Unit)
-                }
-            }
-        }
+        startIncoming()
     }
 
     fun accept(
@@ -251,7 +161,7 @@ class ChatService(
     internal suspend fun workspace(chatId: String) =
         sessions.workspace(sessionKey(chatId)).toString()
 
-    private fun admit(
+    internal fun admit(
         route: ReplyRoute,
         prompt: String,
         input: MessageInput?,
@@ -281,6 +191,59 @@ class ChatService(
                         }
                         outstanding.removeAll { it.isDone }
                         outstanding.add(work.completed)
+                        if (
+                            creatingGroups == 0 ||
+                                sessionKey(route.chatId).chatKey() in sessions.persistedChatKeys
+                        ) {
+                            knownChats.add(route.chatId)
+                        }
+                        val groupInitializing =
+                            route.chatId in initializingGroups ||
+                                (creatingGroups > 0 && route.chatId !in knownChats)
+                        if (groupInitializing && command != null) {
+                            if (command.name == "/stop" && command.argument.isBlank()) {
+                                stoppedGroupInitializers.add(route.chatId)
+                                stoppedIncoming[route.chatId] = incomingSequence.get()
+                                cancelDeferredGroupControls(route.chatId)
+                                sessionSwitches[route.chatId]?.requestStop()
+                                val stopped = queue.filter { it.route.chatId == route.chatId }
+                                queue.removeAll(stopped.toSet())
+                                stopped.forEach {
+                                    it.notice?.cancel()
+                                    it.finish()
+                                }
+                                return@withLock suspend {}
+                            }
+                            val gates = groupGates.values.toList()
+                            val controlOrder = incomingOrder ?: incomingSequence.incrementAndGet()
+                            deferredGroupControls
+                                .getOrPut(route.chatId) { mutableSetOf() }
+                                .add(work)
+                            return@withLock suspend {
+                                try {
+                                    gates.forEach { it.await() }
+                                    val proceed =
+                                        mutex.withLock { !closed && !work.handle.stopRequested }
+                                    if (proceed) {
+                                        admit(route, prompt, input, controlOrder).await()
+                                    }
+                                } finally {
+                                    withContext(NonCancellable) {
+                                        mutex.withLock {
+                                            deferredGroupControls[route.chatId]?.remove(work)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (
+                            route.chatId in failedGroups &&
+                                command?.name !in setOf("/cd", "/pwd", "/status", "/help", "/stop")
+                        ) {
+                            return@withLock suspend {
+                                send(route, "新群初始化未完成，未执行首问；请先 /cd <继承目录> 确认目录，再重新发送问题。")
+                            }
+                        }
                         if (draining && incomingOrder == null && command == null) {
                             return@withLock suspend { send(route, "应用升级中，请稍后重试。") }
                         }
@@ -304,7 +267,9 @@ class ChatService(
                                 route.chatId !in switching &&
                                 queue.isEmpty()
                         queue.add(work)
-                        if (!work.ready) {
+                        if (groupInitializing) {
+                            work.ready = true
+                        } else if (!work.ready) {
                             log.info("请求排队 chatId={} messageId={}", route.chatId, route.messageId)
                             work.notice =
                                 scope.launch {
@@ -370,7 +335,8 @@ class ChatService(
                     seenChats.add(work.route.chatId) &&
                         work.ready &&
                         work.route.chatId !in running &&
-                        work.route.chatId !in switching
+                        work.route.chatId !in switching &&
+                        (creatingGroups == 0 || work.route.chatId in knownChats)
                 } ?: break
             queue.remove(next)
             running[next.route.chatId] = next
