@@ -4,7 +4,6 @@ import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
 import java.nio.file.Path
 import java.util.Base64
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.*
 import kotlinx.coroutines.*
@@ -36,8 +35,9 @@ class CotChannelTest {
                 override suspend fun prepareResult(route: ReplyRoute, requestId: String) =
                     object : ResultDelivery {
                         override suspend fun send(text: String, status: String): CardDelivery {
+                            assertContains(text, "**answer**")
                             assertContains(text, "已发送 2 张图片")
-                            events += "summary-card"
+                            events += "answer-card"
                             return CardDelivery.DELIVERED
                         }
 
@@ -67,7 +67,7 @@ class CotChannelTest {
                     workspace: Path,
                     sandboxMode: SandboxMode,
                     onSession: suspend (String) -> Unit,
-                ) = AgentResult.Success("answer", images = listOf(image("1", 0), image("2", 1)))
+                ) = AgentResult.Success("**answer**", images = listOf(image("1", 0), image("2", 1)))
 
                 override fun close() {}
             }
@@ -85,13 +85,11 @@ class CotChannelTest {
                     },
                 sender =
                     ReplySender { _, text ->
-                        assertEquals("answer", text)
-                        events += "text"
-                        CompletableFuture.completedFuture(Unit)
+                        fail("Markdown answer must use the result card: $text")
                     },
             )
         service.use { withTimeout(10_000) { it.accept(ReplyRoute("oc", "om"), "run").await() } }
-        assertEquals(listOf("text", "image", "image", "summary-card"), events.toList())
+        assertEquals(listOf("image", "image", "answer-card"), events.toList())
         assertEquals(listOf("done"), api.reasons)
         assertEquals(1, api.creates)
     }

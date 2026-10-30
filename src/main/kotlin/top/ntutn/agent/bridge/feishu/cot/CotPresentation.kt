@@ -43,6 +43,9 @@ internal class CotPresentation(
     requestId: String,
     private val beforeReply: suspend () -> Unit,
 ) : ReplyPresentation {
+    override val imageAnswerInResultCard: Boolean
+        get() = result.imageAnswerInResultCard
+
     private val fallback = MutableStateFlow<StreamingReply?>(null)
     private val latest = MutableStateFlow(AgentProgress())
     private val backendResult = MutableStateFlow<AgentResult?>(null)

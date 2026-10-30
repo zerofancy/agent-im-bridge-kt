@@ -244,6 +244,9 @@ internal class StreamingReply(
     private val intervalMs: Long = 1000,
     private val requestId: String = route.messageId,
 ) : ReplyPresentation {
+    override val imageAnswerInResultCard: Boolean
+        get() = api is SplitCardReplies
+
     private data class Update(
         val progress: AgentProgress,
         val final: String? = null,

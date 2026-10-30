@@ -115,7 +115,7 @@ class FeishuImageDeliveryTest {
         MockResponse().setBody("""{"code":0,"data":{"image_key":"img_fixture"}}""")
 
     @Test
-    fun `text precedes ordered Feishu pictures and only one summary follows partial delivery`() =
+    fun `ordered Feishu pictures precede a result card containing Markdown and partial delivery`() =
         runBlocking {
             MockWebServer().use { server ->
                 val cards = Cards()
@@ -123,7 +123,7 @@ class FeishuImageDeliveryTest {
                 val source = image("first")
                 val result =
                     AgentResult.Success(
-                        "authoritative answer",
+                        "**authoritative answer** [source](https://example.com)",
                         images = listOf(source, source, image("second", 1)),
                     )
                 server.enqueue(upload())
@@ -135,12 +135,12 @@ class FeishuImageDeliveryTest {
                 service(result, media(server), cards, texts).use { svc ->
                     withTimeout(8000) { svc.accept(ReplyRoute("group", "original"), "run").await() }
                 }
-                assertEquals(listOf("authoritative answer"), texts.map { it.second })
+                assertTrue(texts.isEmpty())
                 assertEquals(1, cards.summaries.size)
                 assertEquals("图片未全部发送", cards.summaries.single().first)
                 assertContains(cards.summaries.single().second, "已发送 1 张图片")
                 assertContains(cards.summaries.single().second, "1 张图片发送失败")
-                assertFalse(cards.summaries.single().second.contains("authoritative answer"))
+                assertContains(cards.summaries.single().second, result.text)
                 assertFalse(cards.states.contains("已完成"))
                 assertEquals(4, server.requestCount)
                 repeat(2) {

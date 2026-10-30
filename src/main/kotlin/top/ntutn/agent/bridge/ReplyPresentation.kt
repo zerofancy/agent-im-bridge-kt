@@ -22,6 +22,10 @@ internal interface SplitCardReplies : CardReplies {
 }
 
 internal interface ReplyPresentation {
+    /** The final result card carries both the media answer and its delivery summary. */
+    val imageAnswerInResultCard: Boolean
+        get() = false
+
     fun progress(value: AgentProgress)
 
     fun stopping()
@@ -62,8 +66,7 @@ internal interface RunReplyProvider {
 internal fun presentationDiagnostics(replies: CardReplies?) =
     com.google.gson.JsonObject().apply {
         val fields =
-            (replies as? RunReplyProvider)?.diagnostics()
-                ?: mapOf("feishuProgressMode" to "cot")
+            (replies as? RunReplyProvider)?.diagnostics() ?: mapOf("feishuProgressMode" to "cot")
         fields.forEach { (key, value) -> addProperty(key, value) }
     }
 

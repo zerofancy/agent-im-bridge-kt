@@ -65,16 +65,29 @@ internal class ReplyDelivery(
                     }
                 }
             }
+        deliverAnswer(
+            route,
+            handle,
+            answer,
+            if (result is AgentResult.Success) {
+                "已完成"
+            } else {
+                "执行失败"
+            },
+            presentation,
+        )
+    }
+
+    private suspend fun deliverAnswer(
+        route: ReplyRoute,
+        handle: AgentRunHandle,
+        answer: String,
+        status: String,
+        presentation: ReplyPresentation?,
+    ) {
         val delivery =
             withTimeout(30_000) {
-                presentation?.finishDelivery(
-                    answer,
-                    if (result is AgentResult.Success) {
-                        "已完成"
-                    } else {
-                        "执行失败"
-                    },
-                ) ?: CardDelivery.FALLBACK_REQUIRED
+                presentation?.finishDelivery(answer, status) ?: CardDelivery.FALLBACK_REQUIRED
             }
         var confirmedChunks = 0
         for (chunk in
@@ -126,11 +139,12 @@ internal class ReplyDelivery(
                 null
             }
         try {
-            // Keep the progress card open until media delivery settles. Send the authoritative
-            // answer once through the normal text entry point, followed by individual images.
+            // Separate result cards retain the answer until media delivery settles. Other
+            // channels keep their existing text-before-images flow.
+            val answerInCard = presentation?.imageAnswerInResultCard == true
             if (result.text.isNotBlank() && route.origin == ReplyOrigin.DESKTOP) {
                 localReplies?.imageAnswer(route, result.text)
-            } else if (result.text.isNotBlank()) {
+            } else if (result.text.isNotBlank() && !answerInCard) {
                 for (chunk in splitAnswer(presentation?.fallbackText(result.text) ?: result.text)) {
                     if (handle.stopRequested) {
                         return
@@ -146,7 +160,10 @@ internal class ReplyDelivery(
                 if (handle.stopRequested) {
                     return
                 }
-                if (route.origin == ReplyOrigin.IM && (index > 0 || result.text.isNotBlank())) {
+                if (
+                    route.origin == ReplyOrigin.IM &&
+                        (index > 0 || (result.text.isNotBlank() && !answerInCard))
+                ) {
                     delay(1100)
                 }
                 if (handle.stopRequested) {
@@ -213,9 +230,13 @@ internal class ReplyDelivery(
                 issues.size,
             )
             val summary = notes.joinToString("\n").ifBlank { "未获得可发送的图片。" }
-            if (presentation?.finishDelivery(summary, status) != CardDelivery.DELIVERED) {
-                send(route, summary)
-            }
+            val answer =
+                if (answerInCard && result.text.isNotBlank()) {
+                    "${result.text}\n\n$summary"
+                } else {
+                    summary
+                }
+            deliverAnswer(route, handle, answer, status, presentation)
         } finally {
             prepared?.release()
         }
