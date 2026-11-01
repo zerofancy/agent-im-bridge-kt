@@ -3,7 +3,7 @@ package top.ntutn.agent.bridge
 /** Render only live transport metadata; quoted message contents cannot select the current chat. */
 internal fun currentConversationContext(route: ReplyRoute, input: MessageInput): String {
     if (
-        input.platformName != "飞书" ||
+        input.platformName !in setOf("飞书", "Telegram") ||
             route.origin != ReplyOrigin.IM ||
             route.documentComment != null ||
             input.replyDocumentComment != null

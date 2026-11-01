@@ -23,10 +23,6 @@
     "max_lines": 507,
     "reason": "飞书装配存量代码格式展开；后续拆分出站适配与事件装配；本次仅登记格式化后的行数，不允许继续增长。"
   },
-  "src/main/kotlin/top/ntutn/agent/bridge/telegram/TelegramClient.kt": {
-    "max_lines": 588,
-    "reason": "Telegram 客户端存量代码格式展开；后续拆分轮询与消息发送；本次仅登记格式化后的行数，不允许继续增长。"
-  },
   "src/test/kotlin/top/ntutn/agent/bridge/ReplyContextTest.kt": {
     "max_lines": 735,
     "reason": "上下文存量测试格式展开；后续按引用解析与附件生命周期拆分测试类；本次仅登记格式化后的行数，不允许继续增长。"

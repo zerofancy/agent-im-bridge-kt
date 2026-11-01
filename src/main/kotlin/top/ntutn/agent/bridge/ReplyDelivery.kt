@@ -139,7 +139,7 @@ internal class ReplyDelivery(
                 null
             }
         try {
-            // Separate result cards retain the answer until media delivery settles. Other
+            // Presentations may retain the answer until media delivery settles. Other
             // channels keep their existing text-before-images flow.
             val answerInCard = presentation?.imageAnswerInResultCard == true
             if (result.text.isNotBlank() && route.origin == ReplyOrigin.DESKTOP) {

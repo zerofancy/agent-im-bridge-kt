@@ -77,7 +77,7 @@ fun extractTelegramInput(update: TelegramUpdate): MessageInput {
                     "text",
                     com.google.gson
                         .JsonObject()
-                        .apply { addProperty("text", quoted.text ?: "【非文本消息】") }
+                        .apply { addProperty("text", quoted.contextText) }
                         .toString(),
                     sender = MessageSender(quoted.from?.id?.toString(), "telegram_user_id", "user"),
                     createTime = (quoted.date * 1000).toString(),
@@ -176,7 +176,7 @@ fun createTelegramChannel(
             reactions,
             lifecycle,
             initiallyHeld,
-            cardReplies = cards,
+            cardReplies = TelegramRunReplies(cards),
             localReplies = localReplies,
             outgoingImages = outgoingImages,
         ) { route, text ->

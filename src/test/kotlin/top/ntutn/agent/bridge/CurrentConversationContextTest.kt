@@ -292,7 +292,7 @@ class CurrentConversationContextTest {
         }
 
     @Test
-    fun `document comments desktop and Telegram retain their existing prompt contract`() =
+    fun `document comments and desktop retain their existing prompt contract`() =
         runBlocking {
             val source = Source(emptyMap())
             val target = DocumentCommentTarget("docx", "file", "comment")
@@ -301,7 +301,6 @@ class CurrentConversationContextTest {
                     route.copy(documentComment = target) to MessageInput("group"),
                     route to MessageInput("group", replyDocumentComment = target),
                     route.copy(origin = ReplyOrigin.DESKTOP) to MessageInput("group"),
-                    route to MessageInput("group", platformName = "Telegram"),
                 )
             for ((current, input) in variants) {
                 val prepared = context(source).prepare(current, "hello", input, emptySet())
