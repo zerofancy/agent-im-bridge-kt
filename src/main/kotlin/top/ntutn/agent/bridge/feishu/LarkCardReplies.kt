@@ -322,6 +322,14 @@ internal class LarkCardReplies(
         text: String,
         process: String,
         status: String,
+    ): Boolean = finishWithMeta(card, text, process, status, null)
+
+    override suspend fun finishWithMeta(
+        card: CardReference,
+        text: String,
+        process: String,
+        status: String,
+        meta: RunMeta?,
     ): Boolean {
         val snapshot =
             if (status == "已终止") {
@@ -342,13 +350,20 @@ internal class LarkCardReplies(
                 linked(card, content.process),
                 status,
                 false,
+                meta = meta,
             )
         val fits = ReplyCard.fits(full)
         val value =
             if (fits) {
                 full
             } else {
-                ReplyCard.render("内容较长，完整回复见后续文本消息。", bounded(process, 1000), status, false)
+                ReplyCard.render(
+                    "内容较长，完整回复见后续文本消息。",
+                    bounded(process, 1000),
+                    status,
+                    false,
+                    meta = meta,
+                )
             }
         val api = client().cardkit().v1().card()
         val body = Card.newBuilder().type("card_json").data(value).build()

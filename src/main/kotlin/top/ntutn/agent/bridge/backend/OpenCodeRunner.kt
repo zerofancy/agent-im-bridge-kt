@@ -165,6 +165,9 @@ class OpenCodeRunner(private val backend: BackendSpec, private val mode: Sandbox
             } catch (_: IOException) {
                 null
             }
+        // OpenCode takes the model from its own config; the runner is the only place that knows
+        // which one it actually passed to the CLI.
+        handle.runMeta = RunMeta(model = model?.string("modelID"), source = RunMetaSource.CONFIG)
         val permission =
             JsonArray().apply {
                 add(json("permission" to "*", "pattern" to "*", "action" to "allow"))

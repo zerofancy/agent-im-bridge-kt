@@ -10,6 +10,9 @@ internal enum class CardDelivery {
 internal interface ResultDelivery {
     suspend fun send(text: String, status: String): CardDelivery
 
+    suspend fun sendWithMeta(text: String, status: String, meta: RunMeta?): CardDelivery =
+        send(text, status)
+
     suspend fun fallbackStarting(chunk: Int) {}
 
     suspend fun fallbackProgress(confirmedChunks: Int, complete: Boolean)
@@ -40,8 +43,22 @@ internal interface ReplyPresentation {
         timeoutMs: Long = 25_000,
     ): CardDelivery
 
+    suspend fun finishDeliveryWithMeta(
+        text: String,
+        status: String = "已完成",
+        timeoutMs: Long = 25_000,
+        meta: RunMeta? = null,
+    ): CardDelivery = finishDelivery(text, status, timeoutMs)
+
     suspend fun finish(text: String, status: String = "已完成", timeoutMs: Long = 25_000): Boolean =
         finishDelivery(text, status, timeoutMs) == CardDelivery.DELIVERED
+
+    suspend fun finishWithMeta(
+        text: String,
+        status: String = "已完成",
+        timeoutMs: Long = 25_000,
+        meta: RunMeta?,
+    ): Boolean = finishDeliveryWithMeta(text, status, timeoutMs, meta) == CardDelivery.DELIVERED
 
     suspend fun fallbackStarting(chunk: Int)
 

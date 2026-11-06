@@ -19,6 +19,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val mutex = Mutex()
     private val connectionMutex = Mutex()
+    private val runMeta = AppServerRunMeta(backend.displayName, log)
     private val scope =
         CoroutineScope(SupervisorJob() + Dispatchers.Default + FatalErrorHandler.context)
     private val active = mutableMapOf<AgentRunHandle, Deferred<AgentResult>>()
@@ -238,6 +239,9 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                 FatalErrorHandler.rethrowProgrammingError(e)
                 return@coroutineScope failure(AgentResult.Kind.STORAGE)
             }
+            // Metadata is only used for the result card; never widen the crash window between
+            // thread creation and the durable session binding for it.
+            handle.runMeta = runMeta.resolve(server, thread)
             if (handle.stopRequested) {
                 return@coroutineScope failure(AgentResult.Kind.STOPPED)
             }
@@ -357,6 +361,10 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                     progress.accept(event)?.let(handle.onProgress)
                     val p = event.getAsJsonObject("params") ?: continue
                     when (event.string("method")) {
+                        "thread/settings/updated" -> {
+                            // Settings can change between turns; keep the card in sync.
+                            handle.runMeta = runMeta.applySettings(handle.runMeta, p)
+                        }
                         "item/completed" -> {
                             if (p.string("turnId") == turnId) {
                                 val item = p.getAsJsonObject("item") ?: continue
@@ -453,25 +461,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
     }
 
     private suspend fun interruptTurn(server: AppServerClient, threadId: String, turnId: String) {
-        val started = System.nanoTime()
-        var retryDelay = 300L
-        while (true) {
-            try {
-                server.request("turn/interrupt", json("threadId" to threadId, "turnId" to turnId))
-                return // Accepted is not terminal; execute continues listening for the backend
-                // terminal event.
-            } catch (error: RpcFailure) {
-                val elapsedMs = (System.nanoTime() - started) / 1_000_000
-                if (!backend.isInactiveTurn(error) || elapsedMs + retryDelay >= 30_000) {
-                    throw error
-                }
-                delay(retryDelay)
-                if ((System.nanoTime() - started) / 1_000_000 >= 30_000) {
-                    throw error
-                }
-                retryDelay = (retryDelay * 2).coerceAtMost(2_000)
-            }
-        }
+        interruptAppServerTurn(backend, server, threadId, turnId)
     }
 
     override fun close() = runBlocking {

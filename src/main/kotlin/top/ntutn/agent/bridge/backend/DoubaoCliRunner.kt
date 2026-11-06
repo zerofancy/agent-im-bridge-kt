@@ -28,6 +28,8 @@ import top.ntutn.agent.bridge.BackendId
 import top.ntutn.agent.bridge.BackendSpec
 import top.ntutn.agent.bridge.FatalErrorHandler
 import top.ntutn.agent.bridge.ManagedAgentRunner
+import top.ntutn.agent.bridge.RunMeta
+import top.ntutn.agent.bridge.RunMetaSource
 import top.ntutn.agent.bridge.SandboxMode
 import top.ntutn.agent.bridge.string
 
@@ -76,6 +78,8 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
         onSession: suspend (String) -> Unit,
     ): AgentResult {
         require(sandboxMode == mode) { "Doubao 访问模式只能由本机配置决定" }
+        // Doubao chooses model and effort server-side and Bridge passes neither flag, so the
+        // card only shows the backend instead of claiming an unverified effort value.
         val processRef = AtomicReference<Process?>()
         val task =
             mutex.withLock {

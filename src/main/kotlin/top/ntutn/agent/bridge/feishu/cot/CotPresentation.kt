@@ -89,10 +89,17 @@ internal class CotPresentation(
         text: String,
         status: String,
         timeoutMs: Long,
+    ): CardDelivery = finishDeliveryWithMeta(text, status, timeoutMs, null)
+
+    override suspend fun finishDeliveryWithMeta(
+        text: String,
+        status: String,
+        timeoutMs: Long,
+        meta: RunMeta?,
     ): CardDelivery {
         deliveryConfirmed.value = false
         deliveryStatus.value = status
-        val delivery = result.finishDelivery(text, status, timeoutMs)
+        val delivery = result.finishDeliveryWithMeta(text, status, timeoutMs, meta)
         deliveryConfirmed.value = delivery == CardDelivery.DELIVERED
         return delivery
     }

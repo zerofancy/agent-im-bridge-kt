@@ -86,9 +86,11 @@ internal class ReplyDelivery(
         status: String,
         presentation: ReplyPresentation?,
     ) {
+        val meta = (handle.runMeta ?: RunMeta()).withBackend(backendName)
         val delivery =
             withTimeout(30_000) {
-                presentation?.finishDelivery(answer, status) ?: CardDelivery.FALLBACK_REQUIRED
+                presentation?.finishDeliveryWithMeta(answer, status, meta = meta)
+                    ?: CardDelivery.FALLBACK_REQUIRED
             }
         var confirmedChunks = 0
         for (chunk in

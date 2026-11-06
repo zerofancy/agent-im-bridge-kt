@@ -294,6 +294,53 @@ class StreamingReplyTest {
     }
 
     @Test
+    fun `result card appends backend then model then effort`() {
+        val meta =
+            RunMeta(
+                backend = "Codex",
+                model = "gpt-6.1-sol",
+                effort = "medium",
+                source = RunMetaSource.THREAD,
+            )
+        val card =
+            JsonParser.parseString(ReplyCard.render("答案", "过程", "已完成", false, meta = meta))
+                .asJsonObject
+        val elements = card.getAsJsonObject("body").getAsJsonArray("elements")
+        val metaElement =
+            elements.map { it.asJsonObject }.firstOrNull { it.string("element_id") == "run_meta" }
+        assertNotNull(metaElement)
+        val line = metaElement.string("content").orEmpty()
+        assertTrue(line.indexOf("后端 Codex") < line.indexOf("模型 gpt-6.1-sol"))
+        assertTrue(line.indexOf("模型 gpt-6.1-sol") < line.indexOf("强度 medium"))
+        assertEquals(1, elements.count { it.asJsonObject.string("tag") == "hr" })
+    }
+
+    @Test
+    fun `meta line marks default and fixed effort and omits unknown segments`() {
+        assertEquals(
+            "后端 Traex　｜　模型 Seed-Evolving　｜　强度 high（固定）",
+            RunMeta(
+                    backend = "Traex",
+                    model = "Seed-Evolving",
+                    effort = "high",
+                    effortFixed = true,
+                )
+                .displayLine(),
+        )
+        assertEquals(
+            "后端 Doubao　｜　强度 high（默认）",
+            RunMeta(backend = "Doubao", effort = "high", effortDefault = true).displayLine(),
+        )
+        assertEquals(
+            "后端 OpenCode　｜　模型 anthropic/claude",
+            RunMeta(backend = "OpenCode", model = "anthropic/claude").displayLine(),
+        )
+        val plain = ReplyCard.render("答案", "", "已完成", false)
+        assertFalse(plain.contains("run_meta"))
+        assertFalse(plain.contains("\"tag\":\"hr\""))
+    }
+
+    @Test
     fun `quote snapshots survive restart and are scoped to chat and message`(): Unit = runBlocking {
         val ref = CardReference("card", "../../message", "chat")
         CardAnswerStore(temp).save(ref, "full answer🙂")

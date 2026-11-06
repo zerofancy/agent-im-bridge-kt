@@ -93,7 +93,14 @@ internal class LarkResultDelivery(
     private var outcome: CardDelivery? = null
     private var intent: JsonObject? = null
 
-    override suspend fun send(text: String, status: String): CardDelivery {
+    override suspend fun send(text: String, status: String): CardDelivery =
+        sendWithMeta(text, status, null)
+
+    override suspend fun sendWithMeta(
+        text: String,
+        status: String,
+        meta: RunMeta?,
+    ): CardDelivery {
         mutex.withLock {
             outcome?.let {
                 return it
@@ -136,13 +143,20 @@ internal class LarkResultDelivery(
                 status
             }
         val linked = workspace?.let { fileLinks?.rewrite(text, it) } ?: text
-        val full = ReplyCard.render(linked, "", title, false, showProcess = false)
+        val full = ReplyCard.render(linked, "", title, false, showProcess = false, meta = meta)
         val fits = ReplyCard.fits(full)
         val content =
             if (fits) {
                 full
             } else {
-                ReplyCard.render("内容较长，完整回复见后续文本消息。", "", title, false, showProcess = false)
+                ReplyCard.render(
+                    "内容较长，完整回复见后续文本消息。",
+                    "",
+                    title,
+                    false,
+                    showProcess = false,
+                    meta = meta,
+                )
             }
         val cardId =
             try {

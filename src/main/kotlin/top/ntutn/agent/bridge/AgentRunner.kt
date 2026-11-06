@@ -44,6 +44,7 @@ class AgentRunHandle(val requestId: String = UUID.randomUUID().toString()) {
     internal var onSubmitting: suspend () -> Unit = {}
     internal var onNotSubmitted: suspend () -> Unit = {}
     internal var sessionCommitting = false
+    @Volatile internal var runMeta: RunMeta? = null
     internal var controlJob: Job? = null
     internal val stop = CompletableDeferred<Unit>()
     internal val threadId = CompletableDeferred<String>()

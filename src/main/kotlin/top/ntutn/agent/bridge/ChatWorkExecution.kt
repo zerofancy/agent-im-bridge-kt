@@ -89,7 +89,7 @@ internal suspend fun ChatService.execute(work: Work) {
         if (work.handle.stopRequested) {
             // /stop sends its own confirmation as soon as backendEnded completes, independently
             // of cards.
-            presentation?.finish(
+            presentation?.finishWithMeta(
                 if (work.stopBackendFailed) {
                     "后端异常，本次执行已结束。"
                 } else {
@@ -101,12 +101,20 @@ internal suspend fun ChatService.execute(work: Work) {
                     "已终止"
                 },
                 1500,
+                (work.handle.runMeta ?: RunMeta()).withBackend(runner.displayName),
             )
             return
         }
         if (result is AgentResult.Failure && result.kind == AgentResult.Kind.STOPPED) {
             val text = "当前轮已中断，会话保留。"
-            if (presentation?.finish(text, "已终止", 1500) != true) {
+            if (
+                presentation?.finishWithMeta(
+                    text,
+                    "已终止",
+                    1500,
+                    (work.handle.runMeta ?: RunMeta()).withBackend(runner.displayName),
+                ) != true
+            ) {
                 send(route, text)
             }
             return

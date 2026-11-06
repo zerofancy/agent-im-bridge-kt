@@ -12,31 +12,6 @@ import org.slf4j.LoggerFactory
 /** A non-idempotent send may already have reached the server; do not replay it as plain text. */
 internal class ReplyDeliveryUncertain : IOException("Reply delivery could not be confirmed")
 
-/** Implementations own external I/O, safe retries and durable quote snapshots. */
-interface CardReplies {
-    val refreshIntervalMs: Long?
-        get() = null
-
-    suspend fun refresh(card: CardReference) {}
-
-    suspend fun release(card: CardReference) {}
-
-    suspend fun create(route: ReplyRoute): CardReference
-
-    suspend fun progress(card: CardReference, progress: AgentProgress)
-
-    suspend fun finish(card: CardReference, text: String, process: String, status: String): Boolean
-}
-
-data class CardReference(
-    val cardId: String,
-    val messageId: String,
-    val chatId: String,
-    var sequence: Int = 0,
-    var streamingSince: Long = System.nanoTime(),
-    val workspace: java.nio.file.Path? = null,
-)
-
 internal object ReplyCard {
     const val MAX_BYTES = 28_000
 
@@ -47,6 +22,7 @@ internal object ReplyCard {
         status: String,
         streaming: Boolean,
         showProcess: Boolean = true,
+        meta: RunMeta? = null,
     ): String =
         json(
                 "schema" to "2.0",
@@ -160,6 +136,7 @@ internal object ReplyCard {
                                         )
                                     )
                                 }
+                                appendRunMeta(meta)
                             },
                     ),
             )
@@ -251,6 +228,7 @@ internal class StreamingReply(
         val progress: AgentProgress,
         val final: String? = null,
         val status: String = "已完成",
+        val meta: RunMeta? = null,
     )
 
     private val updates = Channel<Update>(Channel.CONFLATED)
@@ -344,7 +322,7 @@ internal class StreamingReply(
                                         } else {
                                             "已终止"
                                         }
-                                    api.finish(
+                                    api.finishWithMeta(
                                         ref,
                                         if (stoppedStatus == "已终止") {
                                             observed.value.progress.answer
@@ -353,23 +331,26 @@ internal class StreamingReply(
                                         },
                                         update.progress.process,
                                         stoppedStatus,
+                                        update.meta,
                                     )
                                 } else if (api is SplitCardReplies && update.status != "已终止") {
                                     withTimeoutOrNull(1500) {
-                                        api.finish(
+                                        api.finishWithMeta(
                                             ref,
                                             "最终答案将通过新消息发送。",
                                             update.progress.process,
                                             "正在发送结果",
+                                            null,
                                         )
                                     }
                                     false
                                 } else {
-                                    api.finish(
+                                    api.finishWithMeta(
                                         ref,
                                         update.final,
                                         update.progress.process,
                                         update.status,
+                                        update.meta,
                                     )
                                 }
                             finished = true
@@ -413,13 +394,17 @@ internal class StreamingReply(
         updates.trySend(Update(state.progress))
     }
 
-    override suspend fun finish(text: String, status: String, timeoutMs: Long): Boolean =
-        finishDelivery(text, status, timeoutMs) == CardDelivery.DELIVERED
-
     override suspend fun finishDelivery(
         text: String,
         status: String,
         timeoutMs: Long,
+    ): CardDelivery = finishDeliveryWithMeta(text, status, timeoutMs, null)
+
+    override suspend fun finishDeliveryWithMeta(
+        text: String,
+        status: String,
+        timeoutMs: Long,
+        meta: RunMeta?,
     ): CardDelivery {
         // The runner's final event is authoritative; pending progress is superseded by this
         // terminal update.
@@ -430,7 +415,7 @@ internal class StreamingReply(
             } else {
                 text
             }
-        val update = Update(progress, output, status)
+        val update = Update(progress, output, status, meta)
         terminal.value = update
         updates.trySend(update)
         updates.close()
@@ -473,7 +458,7 @@ internal class StreamingReply(
         finalProcessStatus = "交付待确认"
         val result =
             try {
-                resultDelivery?.send(text, status) ?: CardDelivery.FALLBACK_REQUIRED
+                resultDelivery?.sendWithMeta(text, status, meta) ?: CardDelivery.FALLBACK_REQUIRED
             } catch (e: ReplyDeliveryUncertain) {
                 deliveryFailure = e
                 settleProcess("结果发送状态未知，请勿重复执行。", "交付待确认")
@@ -511,7 +496,15 @@ internal class StreamingReply(
         finalProcessStatus = status
         card?.let { ref ->
             try {
-                withTimeout(1500) { api.finish(ref, text, observed.value.progress.process, status) }
+                withTimeout(1500) {
+                    api.finishWithMeta(
+                        ref,
+                        text,
+                        observed.value.progress.process,
+                        status,
+                        null,
+                    )
+                }
                 finished = true
             } catch (e: TimeoutCancellationException) {
                 currentCoroutineContext().ensureActive()
@@ -552,11 +545,12 @@ internal class StreamingReply(
                     val cleaned =
                         withTimeoutOrNull(1500.milliseconds) {
                             try {
-                                api.finish(
+                                api.finishWithMeta(
                                     ref,
                                     output,
                                     snapshot?.progress?.process ?: progress.process,
                                     finalStatus,
+                                    snapshot?.meta,
                                 )
                             } catch (e: CancellationException) {
                                 throw e
