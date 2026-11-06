@@ -4,7 +4,10 @@ import com.google.gson.JsonObject
 import java.nio.file.Path
 import top.ntutn.agent.bridge.*
 
-internal class NativeImages(private val outputTools: Set<String> = setOf("read")) {
+internal class NativeImages(
+    private val outputTools: Set<String> = setOf("read"),
+    private val sandboxMode: SandboxMode = SandboxMode.READ_ONLY,
+) {
     private val images = linkedMapOf<String, AgentImage>()
     private val issues = linkedSetOf<ImageIssue>()
 
@@ -18,7 +21,16 @@ internal class NativeImages(private val outputTools: Set<String> = setOf("read")
             issues += ImageIssue.UNREADABLE
             return
         }
-        collect(AgentImage(id, "traex", request, path, allowedRoots = roots))
+        collect(
+            AgentImage(
+                id,
+                "traex",
+                request,
+                path,
+                allowedRoots = roots,
+                allowOutsideRoots = sandboxMode == SandboxMode.FULL_ACCESS,
+            )
+        )
     }
 
     fun codex(item: JsonObject, request: String, roots: List<Path>) {
@@ -56,7 +68,17 @@ internal class NativeImages(private val outputTools: Set<String> = setOf("read")
             issues += ImageIssue.UNREADABLE
             return
         }
-        collect(AgentImage(id, "codex", request, path, encoded, allowedRoots = roots))
+        collect(
+            AgentImage(
+                id,
+                "codex",
+                request,
+                path,
+                encoded,
+                allowedRoots = roots,
+                allowOutsideRoots = sandboxMode == SandboxMode.FULL_ACCESS,
+            )
+        )
     }
 
     private fun localPath(value: String?, workspace: Path?): Path? {

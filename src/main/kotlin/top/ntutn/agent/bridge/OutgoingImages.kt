@@ -18,6 +18,7 @@ data class AgentImage(
     val base64: String? = null,
     val mime: String? = null,
     val allowedRoots: List<Path> = emptyList(),
+    val allowOutsideRoots: Boolean = false,
 )
 
 enum class ImageIssue {
@@ -166,7 +167,7 @@ class OutgoingImages(private val root: Path, private val sender: ImageSender) {
     private fun source(image: AgentImage): ByteArray {
         image.path?.let { path ->
             try {
-                return local(path, image.allowedRoots)
+                return local(path, image.allowedRoots, image.allowOutsideRoots)
             } catch (e: IOException) {
                 if (image.base64.isNullOrBlank()) {
                     throw e
@@ -207,12 +208,12 @@ class OutgoingImages(private val root: Path, private val sender: ImageSender) {
         }
     }
 
-    private fun local(path: Path, roots: List<Path>): ByteArray {
+    private fun local(path: Path, roots: List<Path>, allowOutsideRoots: Boolean): ByteArray {
         if (!path.isAbsolute) {
             invalid()
         }
         val real = path.toRealPath()
-        if (roots.none { real.startsWith(it.toRealPath()) }) {
+        if (!allowOutsideRoots && roots.none { real.startsWith(it.toRealPath()) }) {
             invalid()
         }
         // Open every directory relative to an already-open descriptor. Replacing a path component

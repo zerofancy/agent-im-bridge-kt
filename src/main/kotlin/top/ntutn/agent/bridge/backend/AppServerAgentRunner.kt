@@ -337,7 +337,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                     }
                 }
                 val messages = linkedMapOf<String, Pair<String?, String>>()
-                val images = NativeImages()
+                val images = NativeImages(sandboxMode = sandboxMode)
                 var sawAuthoritativeAgentMessage = false
                 val progress = AgentProgressReducer(id, turnId)
                 val runEvents = NativeRunEvents(id, turnId, handle.onRunEvent)
