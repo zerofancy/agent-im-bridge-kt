@@ -23,9 +23,9 @@ object DevRegistration {
                     it.isNotBlank()
                 } ?: "feishu"
             val backend =
-                parseBackendSelection(console?.readLine("选择后端 (codex/traex/opencode，默认 codex): "))
-            if (backend.id == BackendId.OPENCODE) {
-                println("OpenCode 仅支持 danger-full-access，已为该环境设置完整访问权限。")
+                parseBackendSelection(console?.readLine("选择后端 (codex/traex/opencode/doubao，默认 codex): "))
+            if (backend.id == BackendId.OPENCODE || backend.id == BackendId.DOUBAO) {
+                println("${backend.id.displayName} 仅支持 danger-full-access，已为该环境设置完整访问权限。")
             }
             val config =
                 when (platform) {
@@ -70,6 +70,9 @@ internal fun parseBackendSelection(input: String?): BackendSelection {
         }
         BackendId.OPENCODE -> {
             BackendSelection(BackendId.OPENCODE, SandboxMode.FULL_ACCESS)
+        }
+        BackendId.DOUBAO -> {
+            BackendSelection(BackendId.DOUBAO, SandboxMode.FULL_ACCESS)
         }
     }
 }

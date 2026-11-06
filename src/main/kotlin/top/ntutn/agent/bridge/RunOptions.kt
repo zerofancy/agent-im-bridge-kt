@@ -10,6 +10,7 @@ data class RunOptions(
     val maxConcurrentRuns: Int = 10,
     val traexBinary: String = "traex",
     val opencodeBinary: String = "opencode",
+    val doubaoBinary: String = "doubao",
 ) {
     companion object {
         fun parse(args: Array<String>): RunOptions {
@@ -20,6 +21,7 @@ data class RunOptions(
             var noBrowser = false
             var maxConcurrentRuns = 10
             var i = 0
+            var doubaoBinary = "doubao"
             fun value(): String {
                 require(i + 1 < args.size) { "启动参数缺少值，请查看 --help。" }
                 return args[++i]
@@ -35,6 +37,10 @@ data class RunOptions(
                     "--opencode-bin" -> {
                         opencodeBinary =
                             value().also { require(it.isNotBlank()) { "OpenCode 命令不能为空。" } }
+                    }
+                    "--doubao-bin" -> {
+                        doubaoBinary =
+                            value().also { require(it.isNotBlank()) { "Doubao 命令不能为空。" } }
                     }
                     "--traex-bin" -> {
                         traexBinary = value().also { require(it.isNotBlank()) { "Traex 命令不能为空。" } }
@@ -69,6 +75,9 @@ data class RunOptions(
             if (opencodeBinary.contains('/')) {
                 opencodeBinary = Path.of(opencodeBinary).toAbsolutePath().normalize().toString()
             }
+            if (doubaoBinary.contains('/')) {
+                doubaoBinary = Path.of(doubaoBinary).toAbsolutePath().normalize().toString()
+            }
             return RunOptions(
                 workspace.toRealPath(),
                 binary,
@@ -76,6 +85,7 @@ data class RunOptions(
                 maxConcurrentRuns,
                 traexBinary,
                 opencodeBinary,
+                doubaoBinary,
             )
         }
     }

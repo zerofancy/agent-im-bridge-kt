@@ -88,4 +88,6 @@ fun validSessionId(value: String): Boolean =
         false
     }
 
+fun validDoubaoSessionId(value: String) = value.matches(Regex("\\d{8,}"))
+
 internal fun openCodeId(id: String, prefix: String) = id.matches(Regex("${prefix}_[A-Za-z0-9]+"))

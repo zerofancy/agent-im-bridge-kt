@@ -5,6 +5,7 @@ import java.util.UUID
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
 import top.ntutn.agent.bridge.backend.AppServerAgentRunner
+import top.ntutn.agent.bridge.backend.DoubaoCliRunner
 import top.ntutn.agent.bridge.backend.OpenCodeRunner
 
 sealed class AgentResult {
@@ -21,6 +22,7 @@ sealed class AgentResult {
         val kind: Kind,
         val exitCode: Int? = null,
         override val sessionId: String? = null,
+        val diagnostic: String? = null,
     ) : AgentResult()
 
     enum class Kind {
@@ -106,6 +108,9 @@ fun createAgentRunner(backend: BackendSpec, sandboxMode: SandboxMode): ManagedAg
     when (backend.id) {
         BackendId.OPENCODE -> {
             OpenCodeRunner(backend, sandboxMode)
+        }
+        BackendId.DOUBAO -> {
+            DoubaoCliRunner(backend, sandboxMode)
         }
         else -> {
             AppServerAgentRunner(backend)

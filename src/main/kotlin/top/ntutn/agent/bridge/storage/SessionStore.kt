@@ -404,6 +404,9 @@ class SessionStore(private val path: Path) {
                 BackendId.TRAEX -> {
                     validSessionId(entry.sessionId)
                 }
+                BackendId.DOUBAO -> {
+                    validDoubaoSessionId(entry.sessionId)
+                }
             }
         require(validId && entry.updatedAt > 0)
     }

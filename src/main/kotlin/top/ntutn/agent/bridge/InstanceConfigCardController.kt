@@ -98,6 +98,9 @@ internal class InstanceConfigCardController(
                 BackendId.OPENCODE -> {
                     SandboxMode.FULL_ACCESS
                 }
+                BackendId.DOUBAO -> {
+                    SandboxMode.FULL_ACCESS
+                }
                 else -> {
                     SandboxMode.parse(current.sandboxMode)
                 }
@@ -135,8 +138,11 @@ internal class InstanceConfigCardController(
             }
         val current = loadConfig()
         val backend = BackendId.parse(current.backend)
-        if (backend == BackendId.OPENCODE && target != SandboxMode.FULL_ACCESS) {
-            return "OpenCode 仅支持 danger-full-access；请先切换后端后再修改。"
+        if (
+            backend in setOf(BackendId.OPENCODE, BackendId.DOUBAO) &&
+                target != SandboxMode.FULL_ACCESS
+        ) {
+            return "${backend.displayName} 仅支持 danger-full-access；请先切换后端后再修改。"
         }
         val next =
             BridgeConfig(
@@ -211,6 +217,12 @@ internal class InstanceConfigCardController(
                                     savedBackend == BackendId.OPENCODE,
                                     "backend",
                                     "opencode",
+                                ),
+                                button(
+                                    "Doubao",
+                                    savedBackend == BackendId.DOUBAO,
+                                    "backend",
+                                    "doubao",
                                 ),
                             ),
                             buttonRow(
@@ -300,6 +312,7 @@ internal class InstanceConfigCardController(
                 "${ACTION_NAME}_backend_codex",
                 "${ACTION_NAME}_backend_traex",
                 "${ACTION_NAME}_backend_opencode",
+                "${ACTION_NAME}_backend_doubao",
                 "${ACTION_NAME}_sandbox_read-only",
                 "${ACTION_NAME}_sandbox_workspace-write",
                 "${ACTION_NAME}_sandbox_danger-full-access",

@@ -72,6 +72,32 @@ class ConfigTest {
     }
 
     @Test
+    fun `Doubao and OpenCode require full access`() {
+        assertFailsWith<IllegalArgumentException> {
+            BridgeConfig(
+                    "cli_test",
+                    "secret",
+                    "ou_owner",
+                    "feishu",
+                    sandboxMode = "read-only",
+                    backend = "doubao",
+                )
+                .validate()
+        }
+        assertFailsWith<IllegalArgumentException> {
+            BridgeConfig(
+                    "cli_test",
+                    "secret",
+                    "ou_owner",
+                    "feishu",
+                    sandboxMode = "workspace-write",
+                    backend = "opencode",
+                )
+                .validate()
+        }
+    }
+
+    @Test
     fun `registration uses authenticated identity and requires fallback when missing`() {
         val result = RegisterAppResult("cli_test", "secret", UserInfo("ou_owner", "lark"))
         val config = registrationConfig(result) { error("Must not override authorized identity") }

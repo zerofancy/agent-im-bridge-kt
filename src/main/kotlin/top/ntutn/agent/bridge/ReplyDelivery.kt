@@ -33,16 +33,17 @@ internal class ReplyDelivery(
                 }
                 is AgentResult.Failure -> {
                     log.warn(
-                        "${backendName} 失败 chatId={} messageId={} sessionId={} kind={} exitCode={}",
+                        "${backendName} 失败 chatId={} messageId={} sessionId={} kind={} exitCode={} diagnostic={}",
                         route.chatId,
                         route.messageId,
                         result.sessionId,
                         result.kind,
                         result.exitCode,
+                        result.diagnostic,
                     )
                     when (result.kind) {
                         AgentResult.Kind.START -> {
-                            "无法连接 ${backendName} app-server，请检查 CLI 版本、配置或重启 Bridge。"
+                            "无法启动 ${backendName}，请检查 CLI 版本、配置或重启 Bridge。"
                         }
                         AgentResult.Kind.STOPPED -> {
                             "${backendName} 当前轮已中断，会话保留。"

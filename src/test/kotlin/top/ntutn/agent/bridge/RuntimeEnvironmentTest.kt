@@ -40,6 +40,10 @@ class RuntimeEnvironmentTest {
         val opencode = env.backend(BackendId.OPENCODE, env.options())
         assertEquals(env.directory.resolve("backend/opencode"), opencode.runtimeRoot)
         assertEquals(env.temporary.toString(), opencode.environment["TMPDIR"])
+        val doubao = env.backend(BackendId.DOUBAO, env.options())
+        assertEquals(env.directory.resolve("backend/doubao"), doubao.runtimeRoot)
+        assertEquals("1", doubao.environment["DOUBAO_CLI_NO_UPDATE_CHECK"])
+        assertEquals(env.temporary.toString(), doubao.environment["TMPDIR"])
         val peer = temp.resolve("environments/prod")
         JsonFiles.write(peer.resolve("runtime.json"), json("workspace" to work.toString()))
         JsonFiles.write(peer.resolve("config.json"), json("appId" to "prod-app"))
@@ -59,6 +63,25 @@ class RuntimeEnvironmentTest {
         JsonFiles.write(
             temp.resolve("environments/prod/runtime.json"),
             json("workspace" to peerWork.toString(), "opencodeHome" to shared.toString()),
+        )
+        assertFailsWith<IllegalArgumentException> {
+            env.validate(BridgeConfig("cli_dev", "secret", "ou_owner", "feishu"))
+        }
+    }
+
+    @Test
+    fun `Doubao custom state cannot overlap the other environment`() {
+        val env = RuntimeEnvironment(temp, "dev", "version")
+        val work = Files.createDirectory(temp.resolve("work"))
+        val peerWork = Files.createDirectory(temp.resolve("peer-work"))
+        val shared = temp.resolve("shared-doubao")
+        JsonFiles.write(
+            env.directory.resolve("runtime.json"),
+            json("workspace" to work.toString(), "doubaoHome" to shared.toString()),
+        )
+        JsonFiles.write(
+            temp.resolve("environments/prod/runtime.json"),
+            json("workspace" to peerWork.toString(), "doubaoHome" to shared.toString()),
         )
         assertFailsWith<IllegalArgumentException> {
             env.validate(BridgeConfig("cli_dev", "secret", "ou_owner", "feishu"))

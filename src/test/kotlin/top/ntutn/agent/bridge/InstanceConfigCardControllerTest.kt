@@ -66,8 +66,8 @@ class InstanceConfigCardControllerTest {
                     value.getAsJsonArray("elements").single().asJsonObject
                 }
             }
-        assertEquals(7, buttons.size)
-        assertEquals(7, buttons.map { it["name"].asString }.toSet().size)
+        assertEquals(8, buttons.size)
+        assertEquals(8, buttons.map { it["name"].asString }.toSet().size)
         for (button in buttons) {
             assertEquals("button", button["tag"].asString)
             assertTrue(
@@ -80,8 +80,8 @@ class InstanceConfigCardControllerTest {
             assertTrue(callback.has("value"))
         }
         assertEquals(
-            listOf("codex", "traex", "opencode"),
-            buttons.take(3).map {
+            listOf("codex", "traex", "opencode", "doubao"),
+            buttons.take(4).map {
                 it.getAsJsonArray("behaviors")
                     .single()
                     .asJsonObject
@@ -168,6 +168,22 @@ class InstanceConfigCardControllerTest {
         assertTrue(
             controller.handle(
                 ConfigActionInput(
+                    "m2b",
+                    "c1",
+                    "ou_owner",
+                    InstanceConfigCardController.ACTION_NAME,
+                    null,
+                    mapOf("kind" to "backend", "backend" to "doubao"),
+                )
+            )
+        )
+        val afterDoubao = requireNotNull(ConfigStore(path).load())
+        assertEquals("doubao", afterDoubao.backend)
+        assertEquals("danger-full-access", afterDoubao.sandboxMode)
+
+        assertTrue(
+            controller.handle(
+                ConfigActionInput(
                     "m3",
                     "c1",
                     "ou_owner",
@@ -192,7 +208,7 @@ class InstanceConfigCardControllerTest {
         val finalConfig = requireNotNull(ConfigStore(path).load())
         assertEquals("traex", finalConfig.backend)
         assertEquals("workspace-write", finalConfig.sandboxMode)
-        assertEquals(listOf("m1", "m2", "m3", "m4"), updates.map { it.first.messageId })
+        assertEquals(listOf("m1", "m2", "m2b", "m3", "m4"), updates.map { it.first.messageId })
         assertContains(updates.last().second.toString(), "工作区可写")
     }
 

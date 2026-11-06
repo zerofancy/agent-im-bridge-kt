@@ -187,7 +187,7 @@ class TraexProtocolTest : CodexProtocolTest() {
                     },
             )
             .use { svc -> svc.accept(ReplyRoute("a", "start-failure"), "hello").await() }
-        assertTrue(messages.any { it.contains("无法连接 Traex app-server") })
+        assertTrue(messages.any { it.contains("无法启动 Traex") })
         assertTrue(messages.any { it.contains("当前后端：Traex") })
         assertTrue(messages.any { it.contains("请求 Traex 中断") })
         assertTrue(messages.any { it.contains("Traex 执行失败") })

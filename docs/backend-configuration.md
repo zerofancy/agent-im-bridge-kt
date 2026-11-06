@@ -2,11 +2,11 @@
 
 [返回项目首页](../README.md)
 
-Codex、Traex、OpenCode 的选择、独立认证与启动参数。
+Codex、Traex、OpenCode、Doubao 的选择、独立认证与启动参数。
 
 ## 后端配置与启动参数
 
-编辑 `~/.agent-im-bridge-kt/environments/<环境>/config.json` 的 `backend` 字段，重启生效。支持小写 `codex`、`traex`、`opencode`；缺少字段的旧配置沿用 Codex，首次绑定显式保存 `"backend": "codex"`。例如在原有飞书凭证字段之外设置：
+编辑 `~/.agent-im-bridge-kt/environments/<环境>/config.json` 的 `backend` 字段，重启生效。支持小写 `codex`、`traex`、`opencode`、`doubao`；缺少字段的旧配置沿用 Codex，首次绑定显式保存 `"backend": "codex"`。例如在原有飞书凭证字段之外设置：
 
 ```json
 "backend": "traex",
@@ -23,13 +23,29 @@ Codex、Traex、OpenCode 的选择、独立认证与启动参数。
   "codexBinary": "/opt/homebrew/bin/codex",
   "traexBinary": "/opt/homebrew/bin/traex",
   "opencodeBinary": "/absolute/path/to/opencode",
+  "doubaoBinary": "/absolute/path/to/doubao",
   "maxConcurrentRuns": 10
 }
 ```
 
-模型目录默认是该环境的 `backend/codex`、`backend/trae`、`backend/trae/cli` 与 `backend/opencode`，可以通过 `codexHome`、`traeHome`、`traeCliHome`、`opencodeHome` 显式配置。守护启动时清除调用者的模型目录环境变量，由 Bridge 为后端设置本环境路径。首次旧环境迁移会显式登记旧路径以保留模型登录与历史。
+模型目录默认是该环境的 `backend/codex`、`backend/trae`、`backend/trae/cli`、`backend/opencode` 与 `backend/doubao`，可以通过 `codexHome`、`traeHome`、`traeCliHome`、`opencodeHome`、`doubaoHome` 显式配置。守护启动时清除调用者的模型目录环境变量，由 Bridge 为后端设置本环境路径。首次旧环境迁移会显式登记旧路径以保留模型登录与历史。
 
 后端只由机器人配置的 `backend` 字段决定；指定可执行文件不会切换后端。每个实例启动独立后端服务，失败不回退、不连接桌面端服务。任务没有自动超时，使用聊天 `/stop` 主动停止。访问模式只由该环境的 `sandboxMode` 决定，重启生效。
+
+### Doubao
+
+Doubao CLI 当前按本机交互式 CLI 后端接入，不接飞书 COT，也不读取结构化工具事件。配置片段：
+
+```json
+"backend": "doubao",
+"sandboxMode": "danger-full-access"
+```
+
+Doubao 仅支持 `danger-full-access`；`read-only` 与 `workspace-write` 会拒绝启动，不会自动放宽。`runtime.json` 可设置 `doubaoBinary`，未显式配置时使用 PATH 中的 `doubao`。默认模型状态目录为当前环境的 `backend/doubao`；Bridge 会设置独立环境变量并关闭 CLI 自更新检查，不复用其他环境状态。
+
+Bridge 通过 CLI 子进程直接驱动 Doubao，会持续监听 stdout 和 stderr，并在飞书单卡中逐步刷新公开输出。当前飞书下 Doubao 强制使用 CardKit 单卡模式：同一张卡片显示执行中的增量内容并在结束后收束，不走双卡结果消息，也不支持 `feishuProgressMode=cot`。其他后端维持各自原有展示方式。
+
+Doubao CLI 启动、请求和响应异常会记录固定诊断分类，不输出外部错误正文。CLI 输出的会话 ID 会持久化到当前聊天会话；如本机升级 CLI 或更改认证，需要重启 Bridge 后重新发起请求。离线回归覆盖启动参数、会话发现和增量输出；真实可用性仍取决于本机 Doubao CLI 版本、登录状态和网络。
 
 ### OpenCode
 

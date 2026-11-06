@@ -288,31 +288,32 @@ internal class LarkCardReplies(
         if (System.nanoTime() - card.streamingSince >= 8L * 60 * 1_000_000_000) {
             settings(card, true)
         }
-        suspend fun content(element: String, value: String) {
-            val api = client().cardkit().v1().cardElement()
-            val request =
-                ContentCardElementReq.newBuilder()
-                    .cardId(card.cardId)
-                    .elementId(element)
-                    .contentCardElementReqBody(
-                        ContentCardElementReqBody.newBuilder()
-                            .content(ReplyCard.safeMarkdown(value.ifBlank { "正在处理…" }))
-                            .sequence(++card.sequence)
-                            .uuid(UUID.randomUUID().toString())
-                            .build()
-                    )
-                    .build()
-            retry("content/$element") { request("content/$element") { api.content(request) } }
-        }
-        val display = ReplyCard.preview(AgentProgress(linked(card, progress.process)))
+        val preview = ReplyCard.preview(AgentProgress(linked(card, progress.process), linked(card, progress.answer)))
+        val body =
+            Card.newBuilder()
+                .type("card_json")
+                .data(ReplyCard.render(preview.answer, preview.process, "正在处理", true))
+                .build()
+        val api = client().cardkit().v1().card()
+        val request =
+            UpdateCardReq.newBuilder()
+                .cardId(card.cardId)
+                .updateCardReqBody(
+                    UpdateCardReqBody.newBuilder()
+                        .sequence(++card.sequence)
+                        .uuid(UUID.randomUUID().toString())
+                        .card(body)
+                        .build()
+                )
+                .build()
         try {
-            content("process", display.process)
+            retry("update") { request("update") { api.update(request) } }
         } catch (e: CardRequestFailure) {
             if (e.code != 200850 && e.code != 300309) {
                 throw e
             }
             settings(card, true)
-            content("process", display.process)
+            retry("update") { request("update") { api.update(request) } }
         }
     }
 

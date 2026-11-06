@@ -66,7 +66,8 @@ internal interface RunReplyProvider {
 internal fun presentationDiagnostics(replies: CardReplies?) =
     com.google.gson.JsonObject().apply {
         val fields =
-            (replies as? RunReplyProvider)?.diagnostics() ?: mapOf("feishuProgressMode" to "cot")
+            (replies as? RunReplyProvider)?.diagnostics()
+                ?: mapOf("feishuProgressMode" to "cardkit")
         fields.forEach { (key, value) -> addProperty(key, value) }
     }
 

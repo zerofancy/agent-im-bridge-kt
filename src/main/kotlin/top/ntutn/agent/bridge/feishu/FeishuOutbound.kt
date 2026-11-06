@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
 import okio.BufferedSink
+import top.ntutn.agent.bridge.BackendId
 import top.ntutn.agent.bridge.BackendSpec
 import top.ntutn.agent.bridge.CardReplies
 import top.ntutn.agent.bridge.OutgoingImages
@@ -34,6 +35,7 @@ internal fun createFeishuReplies(
         fileLinks,
         (environmentDirectory ?: Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt"))
             .resolve("cot-runs/$appDirectory"),
+        effectiveFeishuProgressMode(config, backend),
     ) { chatId ->
         sessions.workspace(
             SessionKey(
@@ -46,16 +48,24 @@ internal fun createFeishuReplies(
         )
     }
 
+private fun effectiveFeishuProgressMode(config: BridgeConfig, backend: BackendSpec): String =
+    if (backend.id == BackendId.DOUBAO) {
+        "cardkit-single"
+    } else {
+        config.feishuProgressMode
+    }
+
 internal fun createFeishuCardReplies(
     config: BridgeConfig,
     client: () -> Client,
     answers: CardAnswerStore,
     fileLinks: LocalFileServer?,
     cotDirectory: Path,
+    progressMode: String,
     workspace: suspend (String) -> Path?,
 ): CardReplies {
     org.slf4j.LoggerFactory.getLogger("top.ntutn.agent.bridge")
-        .info("飞书过程展示 mode={}", config.feishuProgressMode)
+        .info("飞书过程展示 mode={}", progressMode)
     val limiter = CardRateLimiter()
     val resultApi =
         FeishuResultCardApi(
@@ -67,7 +77,10 @@ internal fun createFeishuCardReplies(
         )
     val cards: SplitCardReplies =
         LarkCardReplies(client, answers, fileLinks, resultApi, limiter, workspace)
-    if (config.feishuProgressMode != "cot") {
+    if (progressMode == "cardkit-single") {
+        return SingleCardReplies(cards)
+    }
+    if (progressMode != "cot") {
         return cards
     }
     val http =
@@ -91,6 +104,8 @@ internal fun createFeishuCardReplies(
         ),
     )
 }
+
+private class SingleCardReplies(private val delegate: CardReplies) : CardReplies by delegate
 
 internal fun createFeishuOutgoingImages(
     config: BridgeConfig,

@@ -119,14 +119,9 @@ class LarkCardRepliesTest {
             assertEquals("authoritative answer", store.read("result-message", "chat"))
             assertFalse(store.read("reply", "chat")!!.contains("authoritative answer"))
             assertContains(store.read("reply", "chat")!!, "结果卡片")
-            assertFalse(wire.requests.any { it.first.endsWith("/answer/content") })
             assertFalse(wire.resultContents.single().contains("checking"))
-            val processUpdates =
-                wire.requests.filter { it.first == "/open-apis/cardkit/v1/cards/card" }
-            assertFalse(
-                processUpdates.any { it.second.toString().contains("authoritative answer") }
-            )
-            assertFalse(processUpdates.any { it.second.toString().contains("partial output") })
+            val processUpdates = wire.requests.filter { it.first == "/open-apis/cardkit/v1/cards/card" }
+            assertFalse(processUpdates.any { it.second.toString().contains("authoritative answer") })
         }
 
     @Test
@@ -145,17 +140,23 @@ class LarkCardRepliesTest {
                 val text = "[源码](src/a.kt:47)"
                 api.progress(ref, AgentProgress("检查完成", text))
                 assertTrue(api.finish(ref, text, "检查完成", "已完成"))
-                assertFalse(wire.requests.any { it.first.endsWith("/answer/content") })
-                val update =
-                    wire.requests
-                        .last { it.first == "/open-apis/cardkit/v1/cards/card" }
-                        .second
-                        .toString()
+                val update = wire.requests.first { it.first == "/open-apis/cardkit/v1/cards/card" }.second.toString()
                 assertContains(update, links.baseUrl)
                 assertContains(update, "first")
                 assertFalse(update.contains("second"))
                 assertContains(store.read("reply", "chat")!!, text)
             }
+    }
+
+    @Test
+    fun `progress updates answer element as incremental output arrives`(): Unit = runBlocking {
+        val wire = Wire()
+        val api = LarkCardReplies({ wire.client }, CardAnswerStore(temp), resultApi = wire.resultApi)
+        val ref = api.create(ReplyRoute("chat", "original"))
+        api.progress(ref, AgentProgress("执行中", "line 1\nline 2"))
+        val updates = wire.requests.filter { it.first == "/open-apis/cardkit/v1/cards/card" }
+        assertTrue(updates.any { it.second.toString().contains("line 1") })
+        assertTrue(updates.any { it.second.toString().contains("执行中") })
     }
 
     @Test
@@ -221,21 +222,18 @@ class LarkCardRepliesTest {
         }
 
     @Test
-    fun `SDK uses dedicated content API and sequences settings and terminal update`(): Unit =
+    fun `SDK uses card update API for streaming progress and terminal update`(): Unit =
         runBlocking {
             val wire = Wire()
             val store = CardAnswerStore(temp)
             val api = LarkCardReplies({ wire.client }, store, resultApi = wire.resultApi)
             val ref = api.create(ReplyRoute("chat", "original"))
-            wire.failContentOnce = true
             api.progress(ref, AgentProgress("checking", "partial"))
             assertTrue(api.finish(ref, "final", "done", "已完成"))
             val operations = wire.requests.filter { it.second.has("sequence") }
-            assertEquals(listOf(1, 1, 2, 3), operations.map { it.second["sequence"].asInt })
-            assertEquals(operations[0].second["uuid"], operations[1].second["uuid"])
-            assertTrue(operations[0].first.endsWith("/elements/process/content"))
-            assertFalse(operations.any { it.first.endsWith("/elements/answer/content") })
-            assertTrue(operations[2].first.endsWith("/settings"))
+            assertEquals(listOf(1, 2, 3), operations.map { it.second["sequence"].asInt })
+            assertTrue(operations[0].first.endsWith("/card"))
+            assertTrue(operations[1].first.endsWith("/settings"))
             val terminal =
                 JsonParser.parseString(
                         operations.last().second.getAsJsonObject("card")["data"].asString

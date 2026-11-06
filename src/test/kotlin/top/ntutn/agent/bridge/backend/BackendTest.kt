@@ -21,14 +21,35 @@ class BackendTest {
         Files.writeString(file, legacy)
         assertEquals("codex", ConfigStore(file).load()!!.backend)
         assertEquals(legacy, Files.readString(file))
-        for (backend in listOf("traex", "codex", "opencode")) {
+        for (backend in listOf("traex", "codex", "opencode", "doubao")) {
             ConfigStore(file)
-                .save(BridgeConfig("cli_test", "secret", "ou_owner", "feishu", backend = backend))
+                .save(
+                    BridgeConfig(
+                        "cli_test",
+                        "secret",
+                        "ou_owner",
+                        "feishu",
+                        sandboxMode =
+                            if (backend in setOf("opencode", "doubao")) {
+                                "danger-full-access"
+                            } else {
+                                "read-only"
+                            },
+                        backend = backend,
+                    )
+                )
             val loaded = ConfigStore(file).load()!!
             assertEquals(backend, loaded.backend)
             val options =
                 RunOptions.parse(
-                    arrayOf("--codex-bin", "unused-codex", "--traex-bin", "unused-traex")
+                    arrayOf(
+                        "--codex-bin",
+                        "unused-codex",
+                        "--traex-bin",
+                        "unused-traex",
+                        "--doubao-bin",
+                        "unused-doubao",
+                    )
                 )
             assertEquals(
                 backend,
@@ -59,15 +80,28 @@ class BackendTest {
         val home = temp.toRealPath()
         val options =
             RunOptions.parse(
-                arrayOf("--workspace", home.toString(), "--traex-bin", "./traex custom")
+                arrayOf(
+                    "--workspace",
+                    home.toString(),
+                    "--traex-bin",
+                    "./traex custom",
+                    "--doubao-bin",
+                    "./doubao custom",
+                )
             )
         assertEquals(
             Path.of("./traex custom").toAbsolutePath().normalize().toString(),
             options.traexBinary,
         )
+        assertEquals(
+            Path.of("./doubao custom").toAbsolutePath().normalize().toString(),
+            options.doubaoBinary,
+        )
         assertEquals("codex", options.binary)
         assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--traex-bin", " ")) }
         assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--traex-bin")) }
+        assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--doubao-bin", " ")) }
+        assertFailsWith<IllegalArgumentException> { RunOptions.parse(arrayOf("--doubao-bin")) }
         assertFailsWith<IllegalArgumentException> {
             RunOptions.parse(arrayOf("--backend", "traex"))
         }
@@ -81,6 +115,7 @@ class BackendTest {
                 "TRAE_HOME" to shared.toString(),
                 "TRAECLI_HOME" to runtime.toString(),
                 "CODEX_HOME" to home.resolve("codex").toString(),
+                "BRIDGE_DOUBAO_HOME" to home.resolve("doubao").toString(),
             )
         assertEquals(runtime, BackendSpec.resolve(BackendId.TRAEX, options, env, home).runtimeRoot)
         assertEquals(
@@ -103,6 +138,10 @@ class BackendTest {
         assertEquals(
             home.resolve("codex"),
             BackendSpec.resolve(BackendId.CODEX, options, env, home).runtimeRoot,
+        )
+        assertEquals(
+            home.resolve("doubao"),
+            BackendSpec.resolve(BackendId.DOUBAO, options, env, home).runtimeRoot,
         )
     }
 

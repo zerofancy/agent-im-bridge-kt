@@ -28,6 +28,17 @@ class DevRegistrationTest {
     }
 
     @Test
+    fun `doubao selection upgrades sandbox to full access`() {
+        val selection = parseBackendSelection("doubao")
+        assertEquals(BackendId.DOUBAO, selection.id)
+        assertEquals(SandboxMode.FULL_ACCESS, selection.sandboxMode)
+        val configured =
+            BridgeConfig("cli_test", "secret", "ou_owner", "feishu").withBackend(selection)
+        assertEquals("doubao", configured.backend)
+        assertEquals("danger-full-access", configured.sandboxMode)
+    }
+
+    @Test
     fun `invalid backend selection fails fast`() {
         assertFailsWith<IllegalArgumentException> { parseBackendSelection("unknown") }
         assertEquals(BackendId.TRAEX, parseBackendSelection("Traex").id)

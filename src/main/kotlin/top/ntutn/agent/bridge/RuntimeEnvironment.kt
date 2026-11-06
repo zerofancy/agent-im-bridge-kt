@@ -38,6 +38,7 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
             s["maxConcurrentRuns"]?.asInt ?: 10,
             s.string("traexBinary") ?: "traex",
             s.string("opencodeBinary") ?: "opencode",
+            s.string("doubaoBinary") ?: "doubao",
         )
     }
 
@@ -60,6 +61,9 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
                     path("traeHome", "backend/trae"),
                 )
             }
+            BackendId.DOUBAO -> {
+                BackendSpec(id, options.doubaoBinary, path("doubaoHome", "backend/doubao"))
+            }
         }.copy(temporaryRoot = temporary)
     }
 
@@ -76,6 +80,7 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
             listOf(
                     Path.of(s["workspace"].asString),
                     Path.of(s.string("codexHome") ?: base.resolve("backend/codex").toString()),
+                    Path.of(s.string("doubaoHome") ?: base.resolve("backend/doubao").toString()),
                     Path.of(s.string("traeHome") ?: base.resolve("backend/trae").toString()),
                     Path.of(
                         s.string("opencodeHome") ?: base.resolve("backend/opencode").toString()

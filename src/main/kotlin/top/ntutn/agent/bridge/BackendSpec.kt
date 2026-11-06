@@ -6,12 +6,13 @@ import top.ntutn.agent.bridge.backend.RpcFailure
 enum class BackendId(val configValue: String, val displayName: String) {
     CODEX("codex", "Codex"),
     TRAEX("traex", "Traex"),
-    OPENCODE("opencode", "OpenCode");
+    OPENCODE("opencode", "OpenCode"),
+    DOUBAO("doubao", "Doubao");
 
     companion object {
         fun parse(value: String): BackendId =
             entries.firstOrNull { it.configValue == value }
-                ?: throw IllegalArgumentException("backend 必须为 codex、traex 或 opencode。")
+                ?: throw IllegalArgumentException("backend 必须为 codex、traex、opencode 或 doubao。")
     }
 }
 
@@ -45,6 +46,9 @@ data class BackendSpec(
                         "TRAE_HOME" to sharedRoot.toString(),
                         "TRAECLI_HOME" to runtimeRoot.toString(),
                     )
+                }
+                BackendId.DOUBAO -> {
+                    mapOf("DOUBAO_CLI_NO_UPDATE_CHECK" to "1")
                 }
             }) +
                 (temporaryRoot?.let {
@@ -99,6 +103,16 @@ data class BackendSpec(
                         options.traexBinary,
                         root("TRAECLI_HOME", shared.resolve("cli")),
                         shared,
+                    )
+                }
+                BackendId.DOUBAO -> {
+                    BackendSpec(
+                        id,
+                        options.doubaoBinary,
+                        root(
+                            "BRIDGE_DOUBAO_HOME",
+                            userHome.resolve(".agent-im-bridge-kt/backend/doubao"),
+                        ),
                     )
                 }
             }

@@ -35,7 +35,12 @@ class BridgeConfig(
 
     fun validate() {
         SandboxMode.parse(sandboxMode)
-        BackendId.parse(backend)
+        val backendId = BackendId.parse(backend)
+        if (backendId in setOf(BackendId.OPENCODE, BackendId.DOUBAO)) {
+            require(sandboxMode == SandboxMode.FULL_ACCESS.cliValue) {
+                "${backendId.displayName} 仅支持 danger-full-access。"
+            }
+        }
         require(feishuProgressMode in setOf("cardkit", "cot")) {
             "feishuProgressMode 必须为 cardkit 或 cot。"
         }
