@@ -79,6 +79,23 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    fun `tool status lines stay in process while answer keeps only final text`() = runBlocking {
+        runner().use { runner ->
+            val progress = mutableListOf<AgentProgress>()
+            val handle = AgentRunHandle().apply { onProgress = { progress += it } }
+            val result =
+                withTimeout(5000) {
+                    runner.runControlled(handle, "tool-flow", null, temp, mode) {}
+                }
+            val success = assertIs<AgentResult.Success>(result)
+            assertEquals("最终答案", success.text)
+            assertTrue(progress.any { it.process.contains("已运行 echo hi") })
+            assertTrue(progress.none { it.answer.contains("·") })
+            assertTrue(progress.last().answer.contains("最终答案"))
+        }
+    }
+
+    @Test
     fun `accepts session event from stderr`() = runBlocking {
         runner().use { runner ->
             var saved: String? = null

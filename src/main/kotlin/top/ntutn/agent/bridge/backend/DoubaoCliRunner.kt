@@ -158,7 +158,7 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
                 terminate(process)
                 return failure(AgentResult.Kind.START)
             }
-            val answer = StringBuilder()
+            val stream = DoubaoStreamAssembler()
             val stderr = StringBuilder()
             var sessionMismatch = false
             var storageFailure: Throwable? = null
@@ -189,20 +189,20 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
                                     return@readStdout
                                 }
                                 if (line.isNotEmpty() || terminated) {
-                                    answer.append(line)
-                                    if (!terminated) {
-                                        answer.append('\n')
-                                    }
-                                    handle.onProgress(
-                                        progress(
-                                            if (observed != null) {
-                                                "正在通过 Doubao CLI 持续输出…\n\n会话：$observed"
-                                            } else {
-                                                "正在通过 Doubao CLI 建立会话…"
-                                            },
-                                            answer.toString(),
-                                        )
-                                    )
+                                    stream.append(line, terminated)
+                                    val header =
+                                        if (observed != null) {
+                                            "正在通过 Doubao CLI 持续输出…\n\n会话：$observed"
+                                        } else {
+                                            "正在通过 Doubao CLI 建立会话…"
+                                        }
+                                    val process =
+                                        if (stream.process.isEmpty()) {
+                                            header
+                                        } else {
+                                            "$header\n\n${stream.process.trimEnd()}"
+                                        }
+                                    handle.onProgress(progress(process, stream.answer))
                                 }
                             }
                         }
@@ -276,11 +276,15 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
                         observed == null -> {
                             failure(AgentResult.Kind.PROTOCOL, code)
                         }
-                        answer.toString().trimEnd('\n').isBlank() -> {
+                        stream.answer.isBlank() && stream.process.isBlank() -> {
                             failure(AgentResult.Kind.EMPTY, code)
                         }
                         else -> {
-                            AgentResult.Success(answer.toString().trimEnd('\n'), observed)
+                            // The CLI occasionally ends after tool status without a final line;
+                            // fall back to the status trail instead of reporting an empty run.
+                            val text =
+                                stream.answer.trimEnd('\n').ifBlank { stream.process.trimEnd() }
+                            AgentResult.Success(text, observed)
                         }
                     }
                 } finally {

@@ -43,7 +43,7 @@ Doubao CLI 当前按本机交互式 CLI 后端接入，不接飞书 COT，也不
 
 Doubao 仅支持 `danger-full-access`；`read-only` 与 `workspace-write` 会拒绝启动，不会自动放宽。`runtime.json` 可设置 `doubaoBinary`，未显式配置时使用 PATH 中的 `doubao`。默认模型状态目录为当前环境的 `backend/doubao`；Bridge 会设置独立环境变量并关闭 CLI 自更新检查，不复用其他环境状态。
 
-Bridge 通过 CLI 子进程直接驱动 Doubao，会持续监听 stdout 和 stderr，并在飞书单卡中逐步刷新公开输出。当前飞书下 Doubao 强制使用 CardKit 单卡模式：同一张卡片显示执行中的增量内容并在结束后收束，不走双卡结果消息，也不支持 `feishuProgressMode=cot`。其他后端维持各自原有展示方式。
+Bridge 通过 CLI 子进程直接驱动 Doubao，会持续监听 stdout 和 stderr，并在飞书单卡中逐步刷新公开输出：CLI 的工具状态行放入“执行过程”折叠面板，模型正文单独显示。当前飞书下 Doubao 强制使用 CardKit 单卡模式：同一张卡片显示执行中的增量内容并在结束后收束，不走双卡结果消息，也不支持 `feishuProgressMode=cot`。其他后端维持各自原有展示方式。
 
 Doubao CLI 启动、请求和响应异常会记录固定诊断分类，不输出外部错误正文。CLI 输出的会话 ID 会持久化到当前聊天会话；如本机升级 CLI 或更改认证，需要重启 Bridge 后重新发起请求。离线回归覆盖启动参数、会话发现和增量输出；真实可用性仍取决于本机 Doubao CLI 版本、登录状态和网络。
 

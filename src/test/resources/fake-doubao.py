@@ -92,6 +92,12 @@ elif prompt == "hello":
     print("final hello", flush=True)
 elif prompt == "stderr-session":
     print("session from stderr", flush=True)
+elif prompt == "tool-flow":
+    print("· 正在执行代码", flush=True)
+    time.sleep(0.05)
+    print("· 已运行 echo hi", flush=True)
+    time.sleep(0.05)
+    print("最终答案", flush=True)
 elif resume is not None:
     print(f"resumed {prompt}", flush=True)
 else:
