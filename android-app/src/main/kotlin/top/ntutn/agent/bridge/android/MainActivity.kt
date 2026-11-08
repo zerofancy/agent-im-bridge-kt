@@ -18,13 +18,24 @@ class MainActivity : ComponentActivity() {
         setContent {
             val state by model.state.collectAsState()
             MaterialTheme {
-                AuthScreen(state, model::signIn, model::refreshSession, model::signOut)
+                if (state.session == null) {
+                    AuthScreen(state, model::signIn, model::refreshSession, model::signOut)
+                } else {
+                    val chat by model.chat.state.collectAsState()
+                    ChatScreen(state, chat, model.chat, model::refreshSession, model::signOut)
+                }
             }
         }
     }
 
     override fun onStart() {
         super.onStart()
+        model.chat.setForeground(true)
         model.refreshSession()
+    }
+
+    override fun onStop() {
+        model.chat.setForeground(false)
+        super.onStop()
     }
 }

@@ -56,14 +56,7 @@ internal fun parseServerAddress(input: String): HttpUrl? {
 }
 
 internal class AuthClient(baseClient: OkHttpClient = OkHttpClient()) {
-    private val http =
-        baseClient
-            .newBuilder()
-            .followRedirects(false)
-            .followSslRedirects(false)
-            .retryOnConnectionFailure(false)
-            .callTimeout(15, TimeUnit.SECONDS)
-            .build()
+    private val http = baseClient.bridgeClientBuilder().callTimeout(15, TimeUnit.SECONDS).build()
 
     suspend fun login(origin: HttpUrl, password: String, totp: String): LoginResult {
         val body =
@@ -71,19 +64,9 @@ internal class AuthClient(baseClient: OkHttpClient = OkHttpClient()) {
                 addProperty("password", password)
                 addProperty("totp", totp)
             }
-        val encoded = body.toString().toRequestBody(jsonType)
-        val oneShotBody =
-            object : RequestBody() {
-                override fun contentType() = encoded.contentType()
-
-                override fun contentLength() = encoded.contentLength()
-
-                override fun isOneShot() = true
-
-                override fun writeTo(sink: BufferedSink) = encoded.writeTo(sink)
-            }
-        val request = request(origin, "login").post(oneShotBody).build()
-        return execute(request) { response ->
+        val request =
+            request(origin, "login").post(body.toString().toByteArray().oneShotJsonBody()).build()
+        return http.executeBridgeCall(request) { response ->
             response.requireStatus(200)
             val json = response.readObject()
             val token = json.string("token")
@@ -95,14 +78,14 @@ internal class AuthClient(baseClient: OkHttpClient = OkHttpClient()) {
     }
 
     suspend fun session(origin: HttpUrl, token: String): SessionInfo =
-        execute(request(origin, "session", token).build()) { response ->
+        http.executeBridgeCall(request(origin, "session", token).build()) { response ->
             response.requireStatus(200)
             response.readObject().sessionInfo()
         }
 
     suspend fun logout(origin: HttpUrl, token: String) {
         val request = request(origin, "logout", token).post(ByteArray(0).toRequestBody()).build()
-        execute(request) { response ->
+        http.executeBridgeCall(request) { response ->
             if (response.code != 401) {
                 response.requireStatus(204)
             }
@@ -120,30 +103,48 @@ internal class AuthClient(baseClient: OkHttpClient = OkHttpClient()) {
                 }
             }
     }
+}
 
-    private suspend fun <T> execute(request: Request, decode: (Response) -> T): T =
-        suspendCancellableCoroutine { continuation ->
-            val call = http.newCall(request)
-            continuation.invokeOnCancellation { call.cancel() }
-            call.enqueue(
-                object : Callback {
-                    override fun onFailure(call: Call, e: IOException) {
+internal fun OkHttpClient.bridgeClientBuilder(): OkHttpClient.Builder =
+    newBuilder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
+
+internal fun ByteArray.oneShotJsonBody(): RequestBody {
+    val encoded = toRequestBody(jsonType)
+    return object : RequestBody() {
+        override fun contentType() = encoded.contentType()
+
+        override fun contentLength() = encoded.contentLength()
+
+        override fun isOneShot() = true
+
+        override fun writeTo(sink: BufferedSink) = encoded.writeTo(sink)
+    }
+}
+
+internal suspend fun <T> OkHttpClient.executeBridgeCall(
+    request: Request,
+    decode: (Response) -> T,
+): T = suspendCancellableCoroutine { continuation ->
+    val call = newCall(request)
+    continuation.invokeOnCancellation { call.cancel() }
+    call.enqueue(
+        object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                continuation.resumeWithException(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                val result =
+                    try {
+                        response.use(decode)
+                    } catch (e: IOException) {
                         continuation.resumeWithException(e)
+                        return
                     }
-
-                    override fun onResponse(call: Call, response: Response) {
-                        val result =
-                            try {
-                                response.use(decode)
-                            } catch (e: IOException) {
-                                continuation.resumeWithException(e)
-                                return
-                            }
-                        continuation.resume(result)
-                    }
-                }
-            )
+                continuation.resume(result)
+            }
         }
+    )
 }
 
 private fun Response.requireStatus(expected: Int) {

@@ -16,10 +16,12 @@ android {
         applicationId = "top.ntutn.agent.bridge.android"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
+
+    buildTypes { release { optimization { enable = true } } }
 
     buildFeatures { compose = true }
     compileOptions {
@@ -34,6 +36,7 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel)
     implementation(libs.androidx.compose.material)
+    implementation(libs.androidx.compose.preview)
     implementation(libs.gson)
     implementation(libs.okhttp)
 
@@ -42,5 +45,6 @@ dependencies {
     testImplementation(libs.okhttp.tls)
     androidTestImplementation(libs.androidx.compose.test.junit4)
     androidTestImplementation(libs.androidx.test.runner)
+    debugImplementation(libs.androidx.compose.tooling)
     debugImplementation(libs.androidx.compose.test.manifest)
 }

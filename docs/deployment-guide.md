@@ -24,12 +24,23 @@
 
 使用 JDK 21 和 Android SDK 37。普通 JVM 构建无需安装 Android SDK。
 
+在 Android Studio 打开仓库根目录并使用项目的 Gradle Wrapper。IDE 同步会自动导入 `android-app`。SDK 路径可用 `ANDROID_HOME` 或 `android-app/local.properties` 中的 `sdk.dir` 指定。Android 是独立 Gradle 构建，有自己的 `local.properties`。Compose 预览使用 Android 的 Debug 变体。
+
 ```bash
 ./gradlew -PwithAndroid=true :android-app:testDebugUnitTest :android-app:assembleDebug
 adb install -r android-app/build/outputs/apk/debug/android-app-debug.apk
 ```
 
-首版默认连接 `https://zp-agent.ntutn.top`，可在登录页修改地址。登录后可查看环境、会话到期时间和退出登录。关闭 App 进程后需要重新登录。
+默认连接 `https://zp-agent.ntutn.top`。用 dev 验证时，在登录页选择 `https://zp-agent-dev.ntutn.top`。登录后可以新建会话、读历史、发消息并查看流式回复。关闭 App 进程后需要重新登录，已保存的草稿按服务器和会话恢复。
+
+Release 构建开启 R8 和资源优化。构建、Lint 和测试可共用一个增大 Metaspace 的 Gradle 进程：
+
+```bash
+./gradlew -Dorg.gradle.jvmargs="-Xmx1536m -XX:MaxMetaspaceSize=1024m" \
+  -PwithAndroid=true :android-app:testDebugUnitTest :android-app:lintRelease :android-app:assembleRelease
+```
+
+使用 Android SDK Build Tools 对 `android-app/build/outputs/apk/release/android-app-release-unsigned.apk` 先执行 `zipalign -P 16 -f 4`，再用项目的长期发布密钥执行 `apksigner sign`。安装前运行 `apksigner verify --verbose --print-certs` 并保留 `android-app/build/outputs/mapping/release/mapping.txt`。签名密钥和口令存放于仓库外。
 
 ## 部署与运行（macOS）
 

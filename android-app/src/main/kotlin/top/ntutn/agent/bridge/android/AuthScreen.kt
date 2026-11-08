@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
@@ -152,5 +153,18 @@ private fun SessionDetails(
         Button(onClick = onSignOut, enabled = !busy, modifier = Modifier.testTag("bridge_logout")) {
             Text("退出登录")
         }
+    }
+}
+
+@Preview(name = "登录", widthDp = 360, heightDp = 720, showBackground = true)
+@Composable
+private fun SignInPreview() {
+    MaterialTheme {
+        AuthScreen(
+            AuthUiState(DEFAULT_ADDRESS),
+            onSignIn = { _, _, _ -> false },
+            onRefresh = {},
+            onSignOut = {},
+        )
     }
 }

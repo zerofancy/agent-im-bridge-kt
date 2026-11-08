@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Bridge · Android 聊天首版</title>
+  <style>
+    :root { color-scheme: light; --ink: #182723; --muted: #50625a; --accent: #176655; --line: #d9e4df; --wash: #edf5f1; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f7f9f7; color: var(--ink); font: 16px/1.75 system-ui, "Noto Sans CJK SC", sans-serif; }
+    main { width: min(100% - 2rem, 64rem); margin: 2rem auto 4rem; }
+    header, section { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: clamp(1rem, 4vw, 2rem); }
+    header { background: var(--wash); }
+    section { margin-top: 1.1rem; scroll-margin-top: 1rem; }
+    h1, h2, h3 { line-height: 1.35; margin: 0 0 .7rem; }
+    h1 { font-size: clamp(1.85rem, 5vw, 2.7rem); }
+    h2 { font-size: 1.4rem; }
+    h3 { font-size: 1.05rem; margin-top: 1.25rem; }
+    p, ul, ol, pre, dl { margin: .65rem 0 0; }
+    ul, ol { padding-inline-start: 1.45rem; }
+    li + li { margin-top: .38rem; }
+    a { color: var(--accent); text-underline-offset: .2em; }
+    .meta, .source { color: var(--muted); font-size: .875rem; }
+    .meta { margin: 0 0 .5rem; font-weight: 600; }
+    nav { display: flex; flex-wrap: wrap; gap: .45rem 1rem; margin-top: 1rem; }
+    code { font: .9em/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
+    :not(pre) > code { padding: .08em .24em; border-radius: 4px; background: var(--wash); }
+    pre { padding: .8rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: #f4f7f5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2.2fr); }
+    dt, dd { padding: .6rem 0; margin: 0; border-top: 1px solid var(--line); }
+    dt { padding-right: .9rem; font-weight: 600; }
+    .callout { border-inline-start: 3px solid var(--accent); padding: .55rem .9rem; background: var(--wash); }
+    @media (max-width: 38rem) {
+      main { width: calc(100% - 1rem); margin-top: .5rem; }
+      dl { grid-template-columns: minmax(0, 1fr); }
+      dt { padding-bottom: .2rem; }
+      dd { border-top: 0; padding-top: 0; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="meta">Agent Bridge · 评审稿 · 2026-11-09</p>
+    <h1>Android 聊天首版</h1>
+    <p>登录后进入会话列表。用户可以接着读桌面会话、创建新会话、在手机上编辑长消息，并在当前会话里看流式回复。首版沿用已部署的 <code>/desktop/*</code> 协议，交付经过签名、R8 和真机验收的 Release APK。</p>
+    <nav aria-label="目录">
+      <a href="#scope">操作流程</a>
+      <a href="#api">接口和状态</a>
+      <a href="#reliability">流式与弱网</a>
+      <a href="#release">Release</a>
+      <a href="#acceptance">实施与验收</a>
+    </nav>
+  </header>
+
+  <section id="scope">
+    <h2>1. 操作流程</h2>
+    <dl>
+      <dt>会话列表</dt>
+      <dd>登录后显示当前服务器的环境、会话标题和运行状态。支持刷新、新建、打开会话。保留查看登录状态和退出的入口。</dd>
+      <dt>会话详情</dt>
+      <dd>按顺序显示历史提问、答案、可折叠的执行摘要和命令回执。收到流式预览时更新原来的回复卡片。用户在底部时跟随回复，向上翻阅时保留位置，并提供回到底部入口。</dd>
+      <dt>长消息编辑</dt>
+      <dd>底部多行输入框可展开为全屏编辑器。回车换行，发送用独立按钮。按服务器地址和会话保存草稿，断网、旋转或重新打开 App 后可继续编辑已保存的内容。</dd>
+      <dt>首版显示范围</dt>
+      <dd>消息采用可选择、可复制的纯文本，保留换行和缩进。原生图片附件用占位显示。Markdown 富渲染、工作区文件和附件下载留给后续版本。斜杠命令继续使用原消息入口，结果显示在命令回执里。</dd>
+    </dl>
+  </section>
+
+  <section id="api">
+    <h2>2. 接口和客户端状态</h2>
+    <dl>
+      <dt><code>GET /desktop/snapshot</code></dt>
+      <dd>加载或刷新列表。带 <code>conversationId</code> 时返回该会话的完整历史，可用于详情流暂不可用时刷新，以及核对提交是否已受理。</dd>
+      <dt><code>GET /desktop/events</code></dt>
+      <dd>详情前台订阅带 <code>conversationId</code> 的 SSE。首帧加载历史，后续按 <code>requestId</code> 替换预览、状态与最终答案。服务端发送完整的 <code>snapshot</code>，同一段文字只展示一次。</dd>
+      <dt><code>POST /desktop/conversations</code></dt>
+      <dd>发送客户端生成的 UUID <code>id</code>。返回成功或在列表确认该 ID 后打开新会话。</dd>
+      <dt><code>POST /desktop/messages</code></dt>
+      <dd>发送 <code>conversationId</code>、客户端生成的 UUID <code>requestId</code> 和 <code>prompt</code>。响应的 ID 匹配时确认受理，排队、运行和完成以服务器快照为准。</dd>
+    </dl>
+    <p>在 Android 模块内增加聊天 API、快照模型、状态管理和页面。复用现有 HTTPS、内存 Bearer、取消请求和一次性 POST 请求体，聊天和认证分别设置超时与响应大小。使用显式 JSON 字段解析为 Kotlin 类型，避免让 UI 直接依赖 JSON，也避免 Release 反射字段重命名问题。</p>
+    <p>把认证代次、选中会话和请求 ID 用于绑定回调。切会话后的旧事件只会被丢弃。当前登录代次的任一聊天接口返回 <code>401</code> 时取消请求并回到登录页，清掉内存历史，保留当前服务器的本地草稿。服务重启后的任务状态直接显示服务器给出的「未执行」或「结果未知」。</p>
+    <p class="source"><a href="../src/main/kotlin/top/ntutn/agent/bridge/desktop/DesktopApi.kt">DesktopApi</a> · <a href="../src/main/kotlin/top/ntutn/agent/bridge/desktop/DesktopHistory.kt">历史与幂等规则</a> · <a href="../android-app/src/main/kotlin/top/ntutn/agent/bridge/android/AuthClient.kt">Android 认证传输</a></p>
+  </section>
+
+  <section id="reliability">
+    <h2>3. 流式回复和弱网</h2>
+    <ul>
+      <li><strong>前台单条流。</strong>切会话、退后台和退出登录时取消旧连接。回前台后重新订阅。服务端约 30 秒正常结束流，续接时保留历史和滚动位置。异常断线显示重连状态，退避后重试读取。连接持续时间与模型运行时间独立。</li>
+      <li><strong>完整快照。</strong>按 UTF-8 的 SSE 事件边界解码，完整解析后再更新界面。相同 <code>revision</code> 仍可能携带不同执行状态。使用按请求 ID 键控的懒列表，解析移出主线程。初定快照和单帧 SSE 数据上限 8 MiB，验收时用长历史校验内存和流量。超限时保留最近一次成功内容，提示使用桌面端查看该会话，并停止对超大帧自动重试。现有接口一次返回全部历史。</li>
+      <li><strong>提交前留存。</strong>先把生成的 ID 和原请求体保存到应用私有存储，再发请求。文本校验遵守服务端的 32,000 UTF-16 代码单元和序列化后 128 KiB 两层限制。每个会话同一时间只处理一个未确认提交，服务端一旦确认受理，用户就可以继续发下一条。</li>
+      <li><strong>提交结果未知。</strong>响应丢失、断网或代理返回 5xx 时保留草稿及待确认记录。重连后按 ID 查列表或历史。找到即确认，查不到时可手动用同一 ID 和原内容重试。明确的 <code>400</code> 显示拒绝并保留文本。退出或重新登录都不会触发重发。清理已确认的草稿时保留用户后来输入的新内容。</li>
+    </ul>
+    <p class="source"><a href="../src/main/kotlin/top/ntutn/agent/bridge/desktop/DesktopApi.kt">SSE 生命周期与请求限制</a> · <a href="https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream">SSE 帧规范</a> · <a href="https://raw.githubusercontent.com/square/okhttp/parent-4.12.0/okhttp/src/main/kotlin/okhttp3/internal/http/RetryAndFollowUpInterceptor.kt">OkHttp 4.12 跟进请求行为</a></p>
+  </section>
+
+  <section id="release">
+    <h2>4. Release 打包与签名</h2>
+    <ol>
+      <li><strong>先跑 Release 基线。</strong>沿用当前 Gradle 9.5.0、AGP 9.3.0、JDK 21 和 <code>minSdk 24</code>。用 AGP 的 <code>release { optimization { enable = true } }</code> 开启 R8 与资源优化，先验收现有登录退出，再加入聊天。沿用依赖的 consumer rules。只为可复现的缺失入口补精确 keep 规则。用 Release lint 检查新增 Android API 的最低版本兼容性。</li>
+      <li><strong>固定应用签名。</strong>保留包名 <code>top.ntutn.agent.bridge.android</code>。首版聊天拟用 <code>versionCode 2</code>、<code>versionName 1.1.0</code>。使用本项目长期发布密钥，私钥和密码存放在仓库外。构建后先校验对齐，再用 Android SDK 的 <code>apksigner</code> 签名并校验签名指纹、包名、版本和 APK SHA-256。按构建保留 R8 <code>mapping.txt</code>，用于还原崩溃栈。</li>
+      <li><strong>验证实际交付 APK。</strong>安装签名后的同一份 APK 做冷启动、登录和聊天验收。当前 NX888J 上是 Debug 签名的同包名客户端，首次 Release 需要独立设备或模拟器，或经确认后在真机卸载 Debug 再安装。后续用同一发布密钥和递增版本号覆盖升级。</li>
+    </ol>
+    <pre><code>./gradlew -PwithAndroid=true :android-app:testDebugUnitTest :android-app:lintRelease :android-app:assembleRelease
+./gradlew test installDist
+python3 scripts/check_file_lines.py</code></pre>
+    <p class="source"><a href="../android-app/build.gradle.kts">现有 Android 构建配置</a> · <a href="https://developer.android.com/topic/performance/app-optimization/enable-app-optimization">AGP 9.3 的 R8 配置</a> · <a href="https://github.com/google/gson/blob/main/Troubleshooting.md#android---r8--proguard">Gson 与 R8</a> · <a href="https://developer.android.com/tools/apksigner">apksigner</a></p>
+  </section>
+
+  <section id="acceptance">
+    <h2>5. 实施顺序与验收</h2>
+    <ol>
+      <li>确认 Release 基线和签名流程，再完成只读列表、历史和 SSE。</li>
+      <li>实现创建会话、发送、全屏输入和本地草稿，接上幂等重试与会话失效处理。</li>
+      <li>先用模拟后端复现超时和乱序，再安装签名后的 Release APK 连接 <a href="https://zp-agent-dev.ntutn.top">dev</a> 验收。采用真机或模拟器覆盖最低支持版本的冷启动和登录。</li>
+    </ol>
+    <dl>
+      <dt>聊天通路</dt>
+      <dd>读取桌面会话和完整历史，新建会话，发送中文多行文本和第二条排队请求。看见流式预览和完整终态。滚动查看历史时新事件不抢滚动。</dd>
+      <dt>断网与重连</dt>
+      <dd>覆盖离线写草稿、发送后丢响应、快速切会话、旋转、切后台和杀进程重开。验证同一请求只执行一次、约 30 秒的正常续接和过期重新登录。</dd>
+      <dt>异常输入与大历史</dt>
+      <dd>覆盖超长输入、JSON 转义后超限、非预期 JSON、SSE 分片、同 revision 不同状态及超大历史。异常能显示明确错误并返回可操作状态。</dd>
+      <dt>发包门槛</dt>
+      <dd>签名和 R8 产物校验通过，安装后在上述路径没有崩溃或 ANR。记录 APK 校验值、设备和系统版本、实际覆盖用例及结果。</dd>
+    </dl>
+  </section>
+</main>
+</body>
+</html>

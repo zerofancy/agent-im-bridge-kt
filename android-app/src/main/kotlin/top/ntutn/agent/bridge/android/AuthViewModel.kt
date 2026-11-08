@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import java.io.File
 import java.io.IOException
 import kotlin.time.Clock
 import kotlinx.coroutines.Job
@@ -29,6 +30,7 @@ internal class AuthViewModel(application: Application) : AndroidViewModel(applic
             AuthUiState(preferences.getString("address", DEFAULT_ADDRESS) ?: DEFAULT_ADDRESS)
         )
     val state = mutableState.asStateFlow()
+    val chat = ChatController(viewModelScope, File(application.filesDir, "chat"))
 
     private class ActiveSession(val origin: HttpUrl, val token: String)
 
@@ -61,6 +63,13 @@ internal class AuthViewModel(application: Application) : AndroidViewModel(applic
                 val active = ActiveSession(origin, result.token)
                 activeSession = active
                 confirmSession(active, result.session)
+                if (activeSession === active) {
+                    chat.openSession(origin, active.token, result.session.environment) {
+                        if (activeSession === active) {
+                            clearSession("会话已失效，请重新登录。")
+                        }
+                    }
+                }
             } catch (e: AuthHttpFailure) {
                 val message =
                     when (e.status) {
@@ -124,13 +133,18 @@ internal class AuthViewModel(application: Application) : AndroidViewModel(applic
             return
         }
         expiration?.cancel()
+        chat.closeSession()
         mutableState.update { it.copy(busy = true, message = null) }
         viewModelScope.launch {
             try {
                 client.logout(active.origin, active.token)
-                clearSession("已退出登录。")
+                if (activeSession === active) {
+                    clearSession("已退出登录。")
+                }
             } catch (_: IOException) {
-                clearSession("已在本机退出，服务器退出未确认，会话将在到期时失效。")
+                if (activeSession === active) {
+                    clearSession("已在本机退出，服务器退出未确认，会话将在到期时失效。")
+                }
             }
         }
     }
@@ -156,6 +170,7 @@ internal class AuthViewModel(application: Application) : AndroidViewModel(applic
         expiration?.cancel()
         expiration = null
         activeSession = null
+        chat.closeSession()
         mutableState.value = AuthUiState(state.value.address, message = message)
     }
 
