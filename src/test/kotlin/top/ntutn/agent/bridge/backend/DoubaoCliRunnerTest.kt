@@ -17,6 +17,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.junit.jupiter.api.condition.DisabledOnOs
+import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import top.ntutn.agent.bridge.AgentProgress
 import top.ntutn.agent.bridge.AgentResult
@@ -83,6 +85,11 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason =
+            "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `streams output and resumes by session id`() = runBlocking {
         runner().use { runner ->
             val progress = mutableListOf<AgentProgress>()
@@ -112,6 +119,11 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason =
+            "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `tool status lines stay in process while answer keeps only final text`() = runBlocking {
         runner().use { runner ->
             val progress = mutableListOf<AgentProgress>()
@@ -129,19 +141,27 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason =
+            "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `accepts session event from stderr`() = runBlocking {
         runner().use { runner ->
             var saved: String? = null
             val result =
-                withTimeout(5000) {
-                    runner.run("stderr-session", null, temp, mode) { saved = it }
-                }
+                withTimeout(5000) { runner.run("stderr-session", null, temp, mode) { saved = it } }
             assertEquals("session from stderr", assertIs<AgentResult.Success>(result).text)
             assertEquals(saved, result.sessionId)
         }
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason =
+            "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `storage failure and stop are handled without leaving the run hanging`() = runBlocking {
         runner().use { runner ->
             assertEquals(
@@ -168,6 +188,11 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason =
+            "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `emits progress once session is established before answer output`() = runBlocking {
         runner().use { runner ->
             val progress = mutableListOf<AgentProgress>()

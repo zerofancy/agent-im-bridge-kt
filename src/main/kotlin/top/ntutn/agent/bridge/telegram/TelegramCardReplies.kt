@@ -173,6 +173,14 @@ class TelegramCardReplies(
         text: String,
         process: String,
         status: String,
+    ): Boolean = finishWithMeta(card, text, process, status, null)
+
+    override suspend fun finishWithMeta(
+        card: CardReference,
+        text: String,
+        process: String,
+        status: String,
+        meta: RunMeta?,
     ): Boolean {
         val state = state(card)
         if (state.finalized) {
@@ -209,13 +217,23 @@ class TelegramCardReplies(
                     },
                     status,
                     false,
+                    if (index == chunks.lastIndex) {
+                        meta
+                    } else {
+                        null
+                    },
                 )
             val plain =
                 if (status == "已完成") {
                     chunk.raw
                 } else {
                     "$status\n\n${chunk.raw}"
-                }
+                } +
+                    if (index == chunks.lastIndex) {
+                        telegramMetaFooter(meta)
+                    } else {
+                        ""
+                    }
             val existing =
                 if (index == 0) {
                     state.message
@@ -383,7 +401,13 @@ internal object TelegramRichReply {
         return safe + fence?.let { "\n$it\n" }.orEmpty()
     }
 
-    fun render(answer: String, process: String, status: String, streaming: Boolean): JsonObject =
+    fun render(
+        answer: String,
+        process: String,
+        status: String,
+        streaming: Boolean,
+        meta: RunMeta? = null,
+    ): JsonObject =
         JsonObject().apply {
             val body =
                 markdown(
@@ -414,7 +438,15 @@ internal object TelegramRichReply {
                     append(markdown(bounded(process, 1800))).append("\n\n</details>")
                 }
             }
-            addProperty("markdown", content)
+            addProperty(
+                "markdown",
+                content +
+                    if (!streaming) {
+                        telegramMetaFooter(meta, rich = true)
+                    } else {
+                        ""
+                    },
+            )
             addProperty("skip_entity_detection", true)
         }
 }
