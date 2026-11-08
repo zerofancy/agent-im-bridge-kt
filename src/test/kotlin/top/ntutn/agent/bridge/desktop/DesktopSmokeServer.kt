@@ -7,6 +7,9 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import kotlinx.coroutines.*
 import top.ntutn.agent.bridge.*
+import top.ntutn.agent.bridge.remote.RemoteAccessStore
+import top.ntutn.agent.bridge.remote.RemoteAuth
+import top.ntutn.agent.bridge.remote.RemoteClientServer
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionStore
 
@@ -14,7 +17,16 @@ import top.ntutn.agent.bridge.storage.SessionStore
  * Explicit UI smoke fixture: temporary state, simulated answers, no bot or external model
  * connection.
  */
-fun main() {
+fun main(args: Array<String>) {
+    val remoteAccess =
+        if (args.isEmpty()) {
+            null
+        } else {
+            require(args.size == 1 && args.single().startsWith("--remote-config-dir="))
+            val directory = Path.of(args.single().substringAfter('='))
+            require(directory.isAbsolute)
+            checkNotNull(RemoteAccessStore.load(directory))
+        }
     val root = Files.createTempDirectory("bridge-desktop-smoke-").toRealPath()
     val history = DesktopHistory(root.resolve("history.json"))
     seedMarkdownHistory(root, history)
@@ -85,14 +97,23 @@ fun main() {
             ),
         )
     val control = RuntimeControl(lifecycle, service, api)
+    val remote =
+        try {
+            remoteAccess?.let { RemoteClientServer(it.port, "dev", RemoteAuth(it), api) }
+        } catch (e: java.io.IOException) {
+            closeBridgeResources({ control.close() }, { api.close() }, { service.close() })
+            throw e
+        }
+    remote?.activate()
     Runtime.getRuntime()
         .addShutdownHook(
             Thread {
-                try {
-                    control.close()
-                } finally {
-                    service.close()
-                }
+                closeBridgeResources(
+                    { remote?.close() },
+                    { control.close() },
+                    { api.close() },
+                    { service.close() },
+                )
             }
         )
     println("DESKTOP_SMOKE_ROOT=$root")

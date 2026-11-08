@@ -13,6 +13,7 @@ class RuntimeControl(
     private val lifecycle: RuntimeLifecycle,
     private val service: ChatService,
     private val desktop: DesktopApi? = null,
+    private val onActivate: () -> Unit = {},
     private val backendHealthy: suspend () -> Boolean = { true },
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + FatalErrorHandler.context)
@@ -75,6 +76,7 @@ class RuntimeControl(
                                 return@launch
                             }
                             service.activate()
+                            onActivate()
                         }
                         "/reason/upgrade" -> {
                             lifecycle.stopReason = "版本升级"
@@ -115,28 +117,29 @@ class RuntimeControl(
                 }
             }
         }
-        server.start()
-        JsonFiles.write(
-            lifecycle.environment.directory.resolve("control/endpoint.json"),
-            json(
-                "port" to server.address.port,
-                "token" to token,
-                "bootId" to lifecycle.bootId,
-                "pid" to ProcessHandle.current().pid(),
-                "startedAt" to lifecycle.startedAt.toString(),
-            ),
-        )
+        try {
+            server.start()
+            JsonFiles.write(
+                lifecycle.environment.directory.resolve("control/endpoint.json"),
+                json(
+                    "port" to server.address.port,
+                    "token" to token,
+                    "bootId" to lifecycle.bootId,
+                    "pid" to ProcessHandle.current().pid(),
+                    "startedAt" to lifecycle.startedAt.toString(),
+                ),
+            )
+        } catch (error: java.io.IOException) {
+            close()
+            throw error
+        }
     }
 
     override fun close() {
         try {
             server.stop(0)
         } finally {
-            try {
-                runBlocking { scope.coroutineContext.job.cancelAndJoin() }
-            } finally {
-                desktop?.close()
-            }
+            runBlocking { scope.coroutineContext.job.cancelAndJoin() }
         }
     }
 }

@@ -53,7 +53,15 @@ tasks.register<JavaExec>("desktopSmokeServer") {
 distributions {
     main {
         contents {
-            from("deployment/bridgectl.py") { into("libexec") }
+            from(
+                listOf(
+                    "deployment/bridgectl.py",
+                    "deployment/remote_access.py",
+                    "deployment/state_files.py",
+                )
+            ) {
+                into("libexec")
+            }
             from("deployment/bridgectl") {
                 into("bin")
                 filePermissions { unix("755") }
