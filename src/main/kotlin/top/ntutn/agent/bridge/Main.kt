@@ -71,6 +71,12 @@ fun main(args: Array<String>) {
     var lifecycle: RuntimeLifecycle? = null
     var watchdog: top.ntutn.agent.bridge.feishu.ConnectionWatchdog? = null
     val processExit = ProcessExitRequest()
+    val startupStartedAt = System.nanoTime()
+    // Startup-only diagnostic state: written on the connecting thread, then detached after connect
+    // so watchdog reconnects cannot mutate it from an IO thread.
+    var startupPhase = "init"
+    var startupHost = "open.feishu.cn"
+    var startupPlatform = "unknown"
     try {
         // Preserve only the legacy stop operation for migration. New environments use bridgectl
         // stop.
@@ -89,6 +95,7 @@ fun main(args: Array<String>) {
         val config =
             ConfigStore(environment.directory.resolve("config.json")).load()
                 ?: throw IllegalArgumentException("环境尚未绑定机器人，请使用 bridgectl init")
+        startupPlatform = config.platform
         environment.validate(config)
         val options = environment.options()
         val sessions = SessionStore(environment.directory.resolve("sessions.json"))
@@ -123,7 +130,10 @@ fun main(args: Array<String>) {
                         fileLinks = fileLinks,
                         onInboundActivity = { onInboundActivity?.invoke() },
                     )
-                larkChannel = bridge.first
+                val connection = bridge.first
+                larkChannel = connection
+                startupHost = connection.endpointHost
+                connection.phaseChanged = { startupPhase = it }
                 service = bridge.second
             }
             "telegram" -> {
@@ -212,8 +222,23 @@ fun main(args: Array<String>) {
             )
         if (config.platform == "feishu") {
             val channel = activeLarkChannel!!
-            log.info("正在连接飞书…… environment={} release={}", environment.name, environment.release)
+            startupPhase = "sdk-connect"
+            log.info(
+                "正在连接飞书…… environment={} release={} host={} elapsedMs={}",
+                environment.name,
+                environment.release,
+                startupHost,
+                (System.nanoTime() - startupStartedAt) / 1_000_000,
+            )
             runBlocking { withTimeout(45_000) { channel.connect() } }
+            startupPhase = "connected"
+            // Runtime reconnects are not startup failures; stop cross-thread writes to the
+            // startup-only diagnostic state.
+            channel.phaseChanged = {}
+            log.info(
+                "飞书连接已建立 elapsedMs={}",
+                (System.nanoTime() - startupStartedAt) / 1_000_000,
+            )
         } else {
             log.info(
                 "正在连接 Telegram…… environment={} release={}",
@@ -250,8 +275,24 @@ fun main(args: Array<String>) {
         )
         processExit.awaitAndExit()
     } catch (e: Exception) {
+        val elapsedMs = (System.nanoTime() - startupStartedAt) / 1_000_000
+        val shouldProbe = larkChannel != null && startupPhase != "connected"
+        val probe = if (shouldProbe) StartupNetworkProbe.probe(startupHost) else "n/a"
+        val diagnostic =
+            if (shouldProbe) {
+                "phase=$startupPhase elapsedMs=$elapsedMs $probe"
+            } else {
+                "phase=$startupPhase elapsedMs=$elapsedMs platform=$startupPlatform"
+            }
+        lifecycle?.diagnostic = diagnostic
+        log.error(
+            "启动失败 phase={} elapsedMs={} type={} diagnostic={}",
+            startupPhase,
+            elapsedMs,
+            e.javaClass.simpleName,
+            diagnostic,
+        )
         FatalErrorHandler.rethrowProgrammingError(e)
-        log.error("启动失败 type={}", e.javaClass.simpleName)
         closeBridgeResources(
             { telegramClient?.stopPolling() },
             { watchdog?.close() },

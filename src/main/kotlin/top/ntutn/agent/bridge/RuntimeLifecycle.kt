@@ -16,6 +16,9 @@ class RuntimeLifecycle(val environment: RuntimeEnvironment) {
     private val path = environment.directory.resolve("lifecycle/current.json")
     private val ended = AtomicBoolean()
     @Volatile var stopReason = "主动停止或系统退出"
+
+    /** Optional startup diagnostics persisted with the exit record. Never contains secrets. */
+    @Volatile var diagnostic: String? = null
     val previous: JsonObject?
     private val record =
         json(
@@ -73,6 +76,7 @@ class RuntimeLifecycle(val environment: RuntimeEnvironment) {
             ?.stackTrace
             ?.firstOrNull { it.className.startsWith("top.ntutn.agent.bridge") }
             ?.let { final.addProperty("location", "${it.className}:${it.lineNumber}") }
+        diagnostic?.takeIf { it.isNotBlank() }?.let { final.addProperty("diagnostic", it) }
         JsonFiles.write(path, final)
     }
 
@@ -87,6 +91,9 @@ class RuntimeLifecycle(val environment: RuntimeEnvironment) {
                 "上次退出时间：${previous.string("endedAt")?.let { runCatching { format(Instant.parse(it)) }.getOrNull() } ?: "未知"}\n"
             )
             append("上次退出原因：${previous.string("reason")}\n退出码：${previous["exitCode"] ?: "未知"}\n")
+            previous.string("diagnostic")?.takeIf { it.isNotBlank() }?.let {
+                append("上次退出诊断：$it\n")
+            }
         }
     }
 

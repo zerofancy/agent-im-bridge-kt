@@ -8,6 +8,7 @@ import com.lark.oapi.event.EventDispatcher
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.slf4j.LoggerFactory
 import top.ntutn.agent.bridge.storage.BridgeConfig
 import top.ntutn.agent.bridge.string
 
@@ -44,9 +45,17 @@ internal constructor(
     private val config: BridgeConfig,
     private val comment: (CommentEvent) -> Unit,
 ) {
+    private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
+    internal val endpointHost: String =
+        runCatching { java.net.URI(feishuOpenBaseUrl(config)).host }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: "open.feishu.cn"
+    internal var phaseChanged: (String) -> Unit = {}
     var connectionChanged: (Boolean) -> Unit = {}
     internal var afterConnected: () -> Unit = {}
     private val socketLock = Mutex()
+    @Volatile private var phase = "init"
     private val http =
         okhttp3.OkHttpClient.Builder()
             .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
@@ -87,22 +96,70 @@ internal constructor(
             changed = { connectionChanged(it) },
         )
 
+    private fun markPhase(value: String, startedAt: Long) {
+        phase = value
+        phaseChanged(value)
+        log.info(
+            "飞书连接阶段 phase={} elapsedMs={} host={}",
+            value,
+            (System.nanoTime() - startedAt) / 1_000_000,
+            endpointHost,
+        )
+    }
+
     suspend fun connect() {
-        channel.connect().await() // Resolve bot identity before accepting events.
-        socketLock.withLock { socket.connect() }
-        afterConnected()
+        val startedAt = System.nanoTime()
+        markPhase("sdk-connect", startedAt)
+        try {
+            channel.connect().await() // Resolve bot identity before accepting events.
+            markPhase("sdk-ready", startedAt)
+            socketLock.withLock {
+                markPhase("websocket-connect", startedAt)
+                socket.connect()
+            }
+            markPhase("ready", startedAt)
+            afterConnected()
+            log.info(
+                "飞书连接完成 elapsedMs={}",
+                (System.nanoTime() - startedAt) / 1_000_000,
+            )
+        } catch (e: Throwable) {
+            log.warn(
+                "飞书连接失败 phase={} elapsedMs={} type={}",
+                phase,
+                (System.nanoTime() - startedAt) / 1_000_000,
+                e.javaClass.simpleName,
+            )
+            throw e
+        }
     }
 
     /**
      * Tear down and rebuild only the WebSocket; the outer channel keeps bot identity and outbound
      * sends.
      */
-    suspend fun reconnect() =
-        socketLock.withLock {
-            socket.close()
-            socket = buildSocket()
-            socket.connect()
+    suspend fun reconnect() {
+        val startedAt = System.nanoTime()
+        markPhase("websocket-reconnect", startedAt)
+        try {
+            socketLock.withLock {
+                socket.close()
+                socket = buildSocket()
+                socket.connect()
+            }
+            log.info(
+                "飞书 WebSocket 重建完成 elapsedMs={}",
+                (System.nanoTime() - startedAt) / 1_000_000,
+            )
+        } catch (e: Throwable) {
+            log.warn(
+                "飞书 WebSocket 重建失败 elapsedMs={} type={}",
+                (System.nanoTime() - startedAt) / 1_000_000,
+                e.javaClass.simpleName,
+            )
+            throw e
         }
+    }
 
     suspend fun disconnect() {
         try {

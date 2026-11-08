@@ -90,6 +90,20 @@ class RuntimeLifecycleTest {
     }
 
     @Test
+    fun `startup diagnostic is persisted with the failed exit`() {
+        val env = RuntimeEnvironment(temp, "dev", "release")
+        val first = RuntimeLifecycle(env)
+        first.diagnostic = "phase=sdk-connect elapsedMs=45000 host=open.feishu.cn tcp443=fail"
+        first.finish("未捕获异常 TimeoutCancellationException", 70)
+        val second = RuntimeLifecycle(env)
+        assertContains(second.status(), "上次退出诊断：phase=sdk-connect")
+        assertEquals(
+            "phase=sdk-connect elapsedMs=45000 host=open.feishu.cn tcp443=fail",
+            second.previous!!.string("diagnostic"),
+        )
+    }
+
+    @Test
     fun `only matching observed signal is merged`() {
         val env = RuntimeEnvironment(temp, "dev", "release")
         val first = RuntimeLifecycle(env)

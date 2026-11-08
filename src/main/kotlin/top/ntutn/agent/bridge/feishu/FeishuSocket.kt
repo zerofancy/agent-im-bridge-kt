@@ -48,10 +48,20 @@ internal class FeishuSocket(
     private var serviceId = 0
 
     suspend fun connect() {
+        val startedAt = System.nanoTime()
+        var phase = "discover"
         try {
+            log.info("飞书 WebSocket 阶段 phase=discover")
             val target = endpoint()
             serviceId = target.serviceId
             pingIntervalMs = target.pingIntervalMs
+            phase = "handshake"
+            log.info(
+                "飞书 WebSocket 阶段 phase=handshake serviceId={} pingIntervalMs={} elapsedMs={}",
+                serviceId,
+                pingIntervalMs,
+                (System.nanoTime() - startedAt) / 1_000_000,
+            )
             scope.launch { consume() }
             socket =
                 http.newWebSocket(
@@ -93,6 +103,12 @@ internal class FeishuSocket(
             ) {
                 throw IOException("Feishu handshake timeout")
             }
+            phase = "handshake-ready"
+            log.info(
+                "飞书 WebSocket 阶段 phase=handshake-ready elapsedMs={}",
+                (System.nanoTime() - startedAt) / 1_000_000,
+            )
+            phase = "readiness-pong"
             scope.launch { heartbeat() }
             // A handshake alone does not establish application-level readiness.
             if (
@@ -106,8 +122,20 @@ internal class FeishuSocket(
             if (closed) {
                 throw IOException("Feishu connection closed during readiness")
             }
+            log.info(
+                "飞书 WebSocket 阶段 phase=ready elapsedMs={}",
+                (System.nanoTime() - startedAt) / 1_000_000,
+            )
             changed(true)
         } catch (error: Throwable) {
+            // `discover` wraps failures with HTTP status/timeout only; keep messages here free of
+            // credentials and response bodies. Do not pass raw SDK exceptions through this path.
+            log.warn(
+                "飞书 WebSocket 失败 phase={} elapsedMs={} reason={}",
+                phase,
+                (System.nanoTime() - startedAt) / 1_000_000,
+                error.message ?: error.javaClass.simpleName,
+            )
             withContext(NonCancellable) { close() }
             throw error
         }
