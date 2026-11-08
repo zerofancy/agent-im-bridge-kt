@@ -60,6 +60,21 @@ class ChatService(
 
     suspend fun drain() = mutex.withLock { draining = true }
 
+    /**
+     * Non-suspending shutdown probe for polling callbacks. A contended lock yields false and the
+     * next poll retries, so callers must keep polling rather than treat false as "running".
+     */
+    internal fun shutdownRequested(): Boolean =
+        if (mutex.tryLock()) {
+            try {
+                draining || closed
+            } finally {
+                mutex.unlock()
+            }
+        } else {
+            false
+        }
+
     suspend fun activate() =
         mutex.withLock {
             check(!closed)

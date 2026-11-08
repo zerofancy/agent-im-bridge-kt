@@ -6,6 +6,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.withLock
 import top.ntutn.agent.bridge.storage.GroupCreationEntry
 import top.ntutn.agent.bridge.storage.GroupCreationPersistenceException
+import top.ntutn.agent.bridge.storage.SessionInitialization
 import top.ntutn.agent.bridge.storage.SessionPersistenceException
 
 internal fun ChatService.prepareNewGroup(work: ChatWork, name: String): suspend () -> Unit {
@@ -139,9 +140,31 @@ private suspend fun ChatService.createGroupConversation(
         val key = sessionKey(target.chatId).copy(workspace = directory.toString())
         sessions.changeWorkspace(sessionKey(target.chatId), directory)
         groups.store.confirmDirectory(target.chatId)
+        val controller = runner as AgentSessionController
         val descriptor =
-            withTimeout(30_000) {
-                (runner as AgentSessionController).createSession(directory, sandboxMode)
+            if (controller.sessionControlTimeoutMs == null) {
+                // Doubao's session creation is a real (possibly long) model turn: announce it and
+                // let shutdown drain cancel it instead of waiting silently without a timeout.
+                if (controller.sessionBootstrapExecutesTurn) {
+                    send(source, "新群已创建，正在执行基础初始提示创建会话…")
+                }
+                val cancelled: (() -> Boolean)? =
+                    if (controller.sessionBootstrapExecutesTurn) {
+                        val service: ChatService = this
+                        { service.shutdownRequested() }
+                    } else {
+                        null
+                    }
+                controller.createSession(
+                    directory,
+                    sandboxMode,
+                    null,
+                    isCancelled = cancelled,
+                )
+            } else {
+                withTimeout(controller.sessionControlTimeoutMs!!) {
+                    controller.createSession(directory, sandboxMode)
+                }
             }
         val sameDirectory =
             withContext(Dispatchers.IO) { canonicalDirectory(descriptor.workspace) == directory }
@@ -149,20 +172,42 @@ private suspend fun ChatService.createGroupConversation(
             !sameDirectory ||
                 descriptor.active != false ||
                 descriptor.archived ||
-                !(if (key.backendId == "opencode") {
-                    openCodeId(descriptor.id, "ses")
-                } else {
-                    validSessionId(descriptor.id)
+                !(when (key.backendId) {
+                    BackendId.OPENCODE.configValue -> {
+                        openCodeId(descriptor.id, "ses")
+                    }
+                    BackendId.DOUBAO.configValue -> {
+                        validDoubaoSessionId(descriptor.id)
+                    }
+                    else -> {
+                        validSessionId(descriptor.id)
+                    }
                 })
         ) {
             throw GroupConversationException("后端返回的会话不适用于新群，未提交模型任务。")
         }
         ensureContinuing()
         sessions.activate(key, descriptor.id, operation, true)
+        if (controller.sessionBootstrapExecutesTurn) {
+            // The backend's creation turn already executed the basic initial prompt; keep the
+            // session COMPLETE so the group's first real question is a normal continuation.
+            withContext(NonCancellable) {
+                sessions.markInitialization(
+                    key,
+                    descriptor.id,
+                    SessionInitialization.COMPLETE,
+                )
+            }
+        }
         entry = requireNotNull(entry).copy(sessionId = descriptor.id)
         save("SESSION_BOUND")
         ensureContinuing()
-        val display = "新群会话已就绪。\n工作目录：$directory\n尚未提交模型任务，可先使用 /cd <path> 切换目录，再 @机器人发送问题。"
+        val display =
+            if (controller.sessionBootstrapExecutesTurn) {
+                "新群会话已就绪。\n工作目录：$directory\n新会话已通过基础初始提示创建，可先使用 /cd <path> 切换目录，再 @机器人发送问题。"
+            } else {
+                "新群会话已就绪。\n工作目录：$directory\n尚未提交模型任务，可先使用 /cd <path> 切换目录，再 @机器人发送问题。"
+            }
         val messageId =
             sendWithNotice(ReplyRoute(target.chatId, operation)) {
                 groups.gateway.postInitial(target.chatId, display, operation)

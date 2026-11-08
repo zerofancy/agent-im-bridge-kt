@@ -7,6 +7,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import top.ntutn.agent.bridge.storage.GroupCreationPersistenceException
+import top.ntutn.agent.bridge.storage.SessionInitialization
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionPersistenceException
 import top.ntutn.agent.bridge.storage.SessionStore
@@ -25,22 +26,49 @@ internal class SessionControlService(
         beforeCommit: suspend () -> Boolean,
         cancelled: () -> Boolean = { false },
         activate: suspend (Boolean) -> Unit,
+        onProgress: (AgentProgress) -> Unit = {},
+        isCancelled: () -> Boolean = { false },
+        onBootstrapAnswer: (suspend (String) -> Unit)? = null,
+        onSwitchStarting: (suspend () -> Unit)? = null,
+        onConfirmation: (suspend (String) -> Unit)? = null,
     ) {
         try {
             val chatId = input?.sessionChatId ?: route.chatId
             val base = sessionKey(chatId)
             val previous = sessions.get(base.copy(workspace = sessions.workspace(base).toString()))
-            val changed = switch(route, input, command, beforeCommit)
+            val controller = runner as? AgentSessionController
+            val bootstrapTurn =
+                command.name == "/new" && controller?.sessionBootstrapExecutesTurn == true
+            // Bootstrap backends run a real (possibly long) turn to create the session; announce
+            // the switch immediately so users do not stare at a silent task with no id yet.
+            if (bootstrapTurn) {
+                onSwitchStarting?.invoke()
+            }
+            val changed =
+                switch(
+                    route,
+                    input,
+                    command,
+                    onProgress,
+                    isCancelled,
+                    onBootstrapAnswer,
+                    beforeCommit,
+                )
             activate(changed)
             if (changed) {
-                confirmation(
-                    route,
-                    chatId,
-                    previous,
-                    command.name == "/new",
-                    cancelled(),
-                    command.argument.isBlank(),
-                )
+                val text =
+                    confirmationText(
+                        chatId,
+                        previous,
+                        command.name == "/new",
+                        cancelled(),
+                        command.argument.isBlank(),
+                    )
+                if (bootstrapTurn && onConfirmation != null) {
+                    onConfirmation(text)
+                } else {
+                    send(route, text)
+                }
             }
         } catch (e: SessionControlException) {
             send(route, e.userMessage)
@@ -53,6 +81,9 @@ internal class SessionControlService(
         route: ReplyRoute,
         input: MessageInput?,
         command: BridgeCommand,
+        onProgress: (AgentProgress) -> Unit = {},
+        isCancelled: () -> Boolean = { false },
+        onBootstrapAnswer: (suspend (String) -> Unit)? = null,
         beforeCommit: suspend () -> Boolean,
     ): Boolean {
         val controller =
@@ -77,14 +108,30 @@ internal class SessionControlService(
         }
         val target =
             if (command.name == "/new") {
-                backendCall { controller.createSession(workspace, sandboxMode) }
+                val bootstrapPrompt =
+                    if (controller.sessionBootstrapExecutesTurn) {
+                        InitialSessionPrompt.build(command.argument)
+                    } else {
+                        null
+                    }
+                backendCall(controller) {
+                    controller.createSession(
+                        workspace,
+                        sandboxMode,
+                        bootstrapPrompt,
+                        onProgress.takeIf { controller.sessionBootstrapExecutesTurn },
+                        isCancelled.takeIf { controller.sessionBootstrapExecutesTurn },
+                        onBootstrapAnswer.takeIf { controller.sessionBootstrapExecutesTurn },
+                    )
+                }
             } else {
                 validateId(base, command.argument)
                 if (sessions.ownedElsewhere(key, command.argument)) {
                     throw SessionControlException("目标会话不属于当前可恢复范围；当前会话未变。")
                 }
                 val known = sessions.known(key, command.argument)
-                val descriptor = backendCall { controller.inspectSession(command.argument) }
+                val descriptor =
+                    backendCall(controller) { controller.inspectSession(command.argument) }
                 validateTarget(descriptor, command.argument, workspace)
                 if (!known) {
                     val privateChat = input?.chatType in setOf("p2p", "private")
@@ -98,7 +145,9 @@ internal class SessionControlService(
                         throw SessionControlException("无法安全导入未登记的会话；请使用当前聊天的历史会话 ID。")
                     }
                 }
-                backendCall { controller.prepareResume(command.argument, workspace, sandboxMode) }
+                backendCall(controller) {
+                    controller.prepareResume(command.argument, workspace, sandboxMode)
+                }
             }
         validateId(base, target.id)
         validateTarget(
@@ -125,6 +174,13 @@ internal class SessionControlService(
             send(route, "该会话切换已处理。\n当前会话：${sessions.get(key)}")
             return false
         }
+        if (command.name == "/new" && controller.sessionBootstrapExecutesTurn) {
+            // The initial prompt was already executed as the backend's required bootstrap turn;
+            // no queued model turn follows, so the session must not stay PENDING.
+            withContext(NonCancellable) {
+                sessions.markInitialization(key, target.id, SessionInitialization.COMPLETE)
+            }
+        }
         return true
     }
 
@@ -136,42 +192,54 @@ internal class SessionControlService(
         cancelled: Boolean,
         usingBasic: Boolean,
     ) {
+        send(route, confirmationText(chatId, previous, fresh, cancelled, usingBasic))
+    }
+
+    private suspend fun confirmationText(
+        chatId: String,
+        previous: String?,
+        fresh: Boolean,
+        cancelled: Boolean,
+        usingBasic: Boolean,
+    ): String {
         val base = sessionKey(chatId)
         val workspace = sessions.workspace(base)
         val id = sessions.get(base.copy(workspace = workspace.toString()))
-        send(
-            route,
-            buildString {
-                append(
-                    if (fresh) {
-                        "已创建并切换到新会话"
-                    } else {
-                        "已切换会话"
-                    }
-                )
-                append("\n后端：${runner.displayName}\n工作目录：$workspace")
-                append("\n上个会话：${previous ?: "无"}\n当前会话：$id")
-                if (previous != null) {
-                    append("\n恢复上个会话：/resume $previous")
+        return buildString {
+            append(
+                if (fresh) {
+                    "已创建并切换到新会话"
+                } else {
+                    "已切换会话"
                 }
-                append(
-                    when {
-                        fresh && cancelled -> {
-                            "\n会话切换已提交，初始对话已取消。"
-                        }
-                        fresh && usingBasic -> {
-                            "\n使用基础提示初始化，初始对话已加入模型队列。"
-                        }
-                        fresh -> {
-                            "\n初始对话已加入模型队列。"
-                        }
-                        else -> {
-                            "\n下一条消息将继续该会话。"
-                        }
+            )
+            append("\n后端：${runner.displayName}\n工作目录：$workspace")
+            append("\n上个会话：${previous ?: "无"}\n当前会话：$id")
+            if (previous != null) {
+                append("\n恢复上个会话：/resume $previous")
+            }
+            val bootstrapExecutesTurn =
+                (runner as? AgentSessionController)?.sessionBootstrapExecutesTurn == true
+            append(
+                when {
+                    fresh && bootstrapExecutesTurn -> {
+                        "\n初始对话已随新会话创建一并执行，下一条消息将继续该会话。"
                     }
-                )
-            },
-        )
+                    fresh && cancelled -> {
+                        "\n会话切换已提交，初始对话已取消。"
+                    }
+                    fresh && usingBasic -> {
+                        "\n使用基础提示初始化，初始对话已加入模型队列。"
+                    }
+                    fresh -> {
+                        "\n初始对话已加入模型队列。"
+                    }
+                    else -> {
+                        "\n下一条消息将继续该会话。"
+                    }
+                }
+            )
+        }
     }
 
     suspend fun status(chatId: String): String {
@@ -220,19 +288,31 @@ internal class SessionControlService(
 
     private fun validateId(key: SessionKey, id: String) {
         val valid =
-            if (key.backendId == "opencode") {
-                openCodeId(id, "ses")
-            } else {
-                validSessionId(id)
+            when (key.backendId) {
+                BackendId.OPENCODE.configValue -> {
+                    openCodeId(id, "ses")
+                }
+                BackendId.DOUBAO.configValue -> {
+                    validDoubaoSessionId(id)
+                }
+                else -> {
+                    validSessionId(id)
+                }
             }
         if (!valid) {
             throw SessionControlException("Session ID 格式无效，请提供当前后端的完整 ID；当前会话未变。")
         }
     }
 
-    private suspend fun backendCall(action: suspend () -> SessionDescriptor): SessionDescriptor =
+    private suspend fun backendCall(controller: AgentSessionController, action: suspend () -> SessionDescriptor): SessionDescriptor =
         try {
-            withTimeout(30_000) { action() }
+            // Reuse the controller resolved by the caller instead of re-casting the runner.
+            val timeout = controller.sessionControlTimeoutMs
+            if (timeout == null) {
+                action()
+            } else {
+                withTimeout(timeout) { action() }
+            }
         } catch (_: TimeoutCancellationException) {
             throw SessionControlException("会话操作超时，结果未确认，当前绑定未变；未自动重试。")
         }

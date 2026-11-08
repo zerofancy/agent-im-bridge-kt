@@ -62,7 +62,12 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
                 )
             }
             BackendId.DOUBAO -> {
-                BackendSpec(id, options.doubaoBinary, path("doubaoHome", "backend/doubao"))
+                BackendSpec(
+                    id,
+                    options.doubaoBinary,
+                    path("doubaoHome", "backend/doubao"),
+                    sessionRegistryRoot = directory.resolve("session-registry"),
+                )
             }
         }.copy(temporaryRoot = temporary)
     }

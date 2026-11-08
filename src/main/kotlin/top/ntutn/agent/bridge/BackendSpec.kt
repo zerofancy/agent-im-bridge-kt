@@ -22,6 +22,9 @@ data class BackendSpec(
     val runtimeRoot: Path,
     val sharedRoot: Path = runtimeRoot,
     val temporaryRoot: Path? = null,
+    // Dedicated environment-global directory for Bridge-derived session registries, separate
+    // from both chat workspaces and the CLI's own model state directory.
+    val sessionRegistryRoot: Path? = null,
     internal val binaryArguments: List<String> = emptyList(),
 ) {
     val displayName: String

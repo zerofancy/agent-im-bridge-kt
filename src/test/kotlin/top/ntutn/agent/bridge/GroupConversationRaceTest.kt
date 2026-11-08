@@ -220,12 +220,23 @@ class GroupConversationRaceTest {
         override suspend fun createSession(
             workspace: Path,
             sandboxMode: SandboxMode,
+            bootstrapPrompt: String?,
+            onProgress: ((AgentProgress) -> Unit)?,
+            isCancelled: (() -> Boolean)?,
+            onBootstrapAnswer: (suspend (String) -> Unit)?,
         ): SessionDescriptor {
             if (holdCreate) {
                 createEntered.complete(Unit)
                 createRelease.await()
             }
-            return delegate.createSession(workspace, sandboxMode)
+            return delegate.createSession(
+                workspace,
+                sandboxMode,
+                bootstrapPrompt,
+                onProgress,
+                isCancelled,
+                onBootstrapAnswer,
+            )
         }
     }
 

@@ -253,9 +253,48 @@ private fun ChatService.prepareSessionControl(
         queue.add(it)
         outstanding.add(it.completed)
     }
+    val bootstrapTurn =
+        (runner as? AgentSessionController)?.sessionBootstrapExecutesTurn == true &&
+            command.name == "/new"
+    // The bootstrap turn bypasses ChatTurnExecutor, so mirror its user-input document binding
+    // before the turn starts; otherwise doc links in "/new <含飞书文档链接>" lose route metadata.
+    val bootstrapReferences =
+        if (bootstrapTurn && route.origin == ReplyOrigin.IM) {
+            work.input?.documentReferences.orEmpty() +
+                extractFeishuDocumentReferences(command.argument)
+        } else {
+            emptySet()
+        }
     return suspend {
         work.handle.controlJob = currentCoroutineContext().job
         var activated = false
+        var bootstrapAnswer: String? = null
+        var switchConfirmation: String? = null
+        if (bootstrapReferences.isNotEmpty()) {
+            documentRoutes?.bind(
+                work.input?.sessionChatId ?: route.chatId,
+                bootstrapReferences,
+                DocumentRouteSource.USER_INPUT,
+            )
+        }
+        // Backends whose /new is itself a model turn stream into the same kind of progress card
+        // as ordinary runs, so the user gets live feedback instead of silence until completion.
+        val presentation =
+            if (bootstrapTurn && route.origin == ReplyOrigin.IM && cardReplies != null) {
+                createReplyPresentation(
+                    CoroutineScope(currentCoroutineContext()),
+                    cardReplies,
+                    route,
+                    work.input?.inputId ?: route.messageId,
+                ) {
+                    currentCoroutineContext().ensureActive()
+                    if (mutex.withLock { closed }) {
+                        throw CancellationException("Bridge closed")
+                    }
+                }
+            } else {
+                null
+            }
         try {
             sessionControls.execute(
                 route,
@@ -271,28 +310,71 @@ private fun ChatService.prepareSessionControl(
                         }
                     }
                 },
-                cancelled = { work.handle.stopRequested },
-            ) { changed ->
-                activated = changed
-                if (changed) {
-                    turnExecutor.invalidateSession(work.input?.sessionChatId ?: route.chatId)
-                }
-                mutex.withLock {
-                    if (
-                        activated &&
-                            initial != null &&
-                            initial in queue &&
-                            !work.handle.stopRequested
-                    ) {
-                        initial.ready = true
-                    } else if (initial != null) {
-                        queue.remove(initial)
-                        initial.finish()
+                cancelled = { work.handle.stopRequested || shutdownRequested() },
+                onProgress = { value -> presentation?.progress(value) },
+                isCancelled = { work.handle.stopRequested || shutdownRequested() },
+                onBootstrapAnswer = { answer -> bootstrapAnswer = answer },
+                onSwitchStarting = {
+                    // Surface the switch before the (possibly long) bootstrap turn; the new id is
+                    // only known afterwards and arrives merged into the result card.
+                    send(route, "正在创建并切换到新会话，初始对话将随新会话一并执行…")
+                },
+                onConfirmation = { text -> switchConfirmation = text },
+                activate = { changed ->
+                    activated = changed
+                    if (changed) {
+                        turnExecutor.invalidateSession(work.input?.sessionChatId ?: route.chatId)
+                    }
+                    mutex.withLock {
+                        if (
+                            activated &&
+                                initial != null &&
+                                initial in queue &&
+                                !work.handle.stopRequested &&
+                                (runner as? AgentSessionController)?.sessionBootstrapExecutesTurn != true
+                        ) {
+                            initial.ready = true
+                        } else if (initial != null) {
+                            // Bootstrap-turn backends already executed the initial prompt during
+                            // session creation; do not enqueue a second turn.
+                            queue.remove(initial)
+                            initial.finish()
+                        }
+                    }
+                },
+            )
+            val confirmation = switchConfirmation
+            if (presentation != null) {
+                val combined =
+                    listOfNotNull(bootstrapAnswer, confirmation).joinToString("\n\n")
+                if (combined.isNotBlank()) {
+                    val delivery = presentation.finishDelivery(combined)
+                    if (delivery == CardDelivery.FALLBACK_REQUIRED) {
+                        // Card I/O failed: fall back to ordinary text so neither the bootstrap
+                        // answer nor the switch details are silently dropped.
+                        splitAnswer(presentation.fallbackText(combined)).forEach { chunk ->
+                            send(route, chunk)
+                        }
                     }
                 }
+            } else {
+                // No card channel (e.g. desktop local replies): keep both the answer and the
+                // switch details as ordinary text instead of dropping them.
+                bootstrapAnswer?.let { send(route, it) }
+                confirmation?.let { send(route, it) }
             }
         } finally {
             withContext(NonCancellable) {
+                presentation?.close(
+                    if (bootstrapAnswer != null || switchConfirmation != null) {
+                        "回复已结束"
+                    } else {
+                        "回复已结束，执行结果未确认"
+                    },
+                    work.handle.stopRequested && !activated,
+                )
+                // queue is a plain mutable list read by dispatch(); every mutation must hold the
+                // service mutex, never touch it from an unsynchronized finally block.
                 mutex.withLock {
                     if (!activated && initial != null) {
                         queue.remove(initial)

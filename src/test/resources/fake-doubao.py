@@ -6,8 +6,23 @@ import time
 from pathlib import Path
 
 root = Path.cwd()
-state_file = root / "doubao-sessions.json"
 requests_file = root / "doubao-requests.jsonl"
+
+
+def find_state_file():
+    # The real CLI keeps an account-global history; emulate that by walking up from cwd, so
+    # --list launched from the runtime root still discovers sessions created in workspaces below.
+    directory = Path.cwd()
+    while True:
+        candidate = directory / "doubao-sessions.json"
+        if candidate.exists():
+            return candidate
+        if directory.parent == directory:
+            return Path.cwd() / "doubao-sessions.json"
+        directory = directory.parent
+
+
+state_file = find_state_file()
 
 
 def load_state():
@@ -28,6 +43,7 @@ args = sys.argv[1:]
 workspace = None
 resume = None
 prompt = None
+list_sessions = False
 i = 0
 while i < len(args):
     if args[i] == "-C":
@@ -39,8 +55,17 @@ while i < len(args):
     elif args[i] == "-p":
         prompt = args[i + 1]
         i += 2
+    elif args[i] == "--list":
+        list_sessions = True
+        i += 1
     else:
         i += 1
+
+if list_sessions:
+    state = load_state()
+    for session_id, info in state["sessions"].items():
+        print(f"{session_id}  {info.get('prompt', '会话')}")
+    sys.exit(0)
 
 if not prompt:
     print("invalid_arguments: 请在 `-p` 后填写非空提示词", file=sys.stderr)
@@ -54,7 +79,7 @@ if resume is not None and resume not in state["sessions"]:
 if resume is None:
     session = str(state["next"])
     state["next"] += 1
-    state["sessions"][session] = {"workspace": workspace}
+    state["sessions"][session] = {"workspace": workspace, "prompt": prompt}
     save_state(state)
 else:
     session = resume
@@ -82,7 +107,7 @@ if prompt == "stderr-session":
 else:
     print(session_event, flush=True)
 
-if prompt == "wait":
+if prompt == "wait" or prompt.endswith("\n\nwait"):
     (root / "waiting").write_text("yes")
     while True:
         time.sleep(0.05)

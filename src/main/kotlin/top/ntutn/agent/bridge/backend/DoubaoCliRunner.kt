@@ -1,11 +1,9 @@
 package top.ntutn.agent.bridge.backend
 
-import com.google.gson.JsonParser
 import java.io.IOException
-import java.io.Reader
-import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
@@ -15,6 +13,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.selects.select
@@ -24,22 +25,26 @@ import kotlinx.coroutines.withContext
 import top.ntutn.agent.bridge.AgentProgress
 import top.ntutn.agent.bridge.AgentResult
 import top.ntutn.agent.bridge.AgentRunHandle
+import top.ntutn.agent.bridge.AgentSessionController
 import top.ntutn.agent.bridge.BackendId
 import top.ntutn.agent.bridge.BackendSpec
 import top.ntutn.agent.bridge.FatalErrorHandler
 import top.ntutn.agent.bridge.ManagedAgentRunner
-import top.ntutn.agent.bridge.RunMeta
-import top.ntutn.agent.bridge.RunMetaSource
 import top.ntutn.agent.bridge.SandboxMode
-import top.ntutn.agent.bridge.string
+import top.ntutn.agent.bridge.SessionDescriptor
 
-class DoubaoCliRunner(private val backend: BackendSpec, private val mode: SandboxMode) :
-    ManagedAgentRunner {
+class DoubaoCliRunner(
+    private val backend: BackendSpec,
+    private val mode: SandboxMode,
+    private val maintenanceIntervalMillis: Long = DEFAULT_MAINTENANCE_INTERVAL_MILLIS,
+) : ManagedAgentRunner,
+    AgentSessionController {
     init {
         require(backend.id == BackendId.DOUBAO)
         require(mode == SandboxMode.FULL_ACCESS) {
             "Doubao 仅支持 danger-full-access；当前简单接入不会伪装 read-only/workspace-write。"
         }
+        require(maintenanceIntervalMillis > 0)
     }
 
     override val displayName = "Doubao"
@@ -51,6 +56,27 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
     private val mutex = Mutex()
     private var closed = false
     private val active = mutableMapOf<AgentRunHandle, Process>()
+    private val registry =
+        DoubaoSessionRegistry(
+            backend.sessionRegistryRoot ?: backend.runtimeRoot.resolve("session-registry")
+        )
+    private val sessionControl =
+        DoubaoSessionControl(backend, mode, registry) { mutex.withLock { closed } }
+
+    init {
+        // Periodically drop registry entries whose project directory disappeared; the loop is
+        // bound to the runner scope and stops with close(), never using GlobalScope.
+        scope.launch {
+            registry.pruneMissingWorkspaces()
+            while (isActive) {
+                delay(maintenanceIntervalMillis)
+                registry.pruneMissingWorkspaces()
+            }
+        }
+    }
+
+    /** Visible for tests and shutdown diagnostics; removes sessions whose workspace is gone. */
+    internal suspend fun pruneStaleWorkspaces(): List<String> = registry.pruneMissingWorkspaces()
 
     private fun progress(process: String, answer: String = "") = AgentProgress(process = process, answer = answer)
 
@@ -59,6 +85,44 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
     }
 
     override suspend fun healthy(): Boolean = !mutex.withLock { closed } && versionCheck()
+
+    // Must be exposed on the runner itself: SessionControlService reads the property from the
+    // runner, not from the internal DoubaoSessionControl. A bootstrap turn is a real model task
+    // and therefore gets no automatic timeout.
+    override val sessionControlTimeoutMs: Long? = null
+
+    override val sessionBootstrapExecutesTurn: Boolean = true
+
+    override suspend fun createSession(
+        workspace: Path,
+        sandboxMode: SandboxMode,
+    ): SessionDescriptor = sessionControl.createSession(workspace, sandboxMode)
+
+    override suspend fun createSession(
+        workspace: Path,
+        sandboxMode: SandboxMode,
+        bootstrapPrompt: String?,
+        onProgress: ((AgentProgress) -> Unit)?,
+        isCancelled: (() -> Boolean)?,
+        onBootstrapAnswer: (suspend (String) -> Unit)?,
+    ): SessionDescriptor =
+        sessionControl.createSession(
+            workspace,
+            sandboxMode,
+            bootstrapPrompt,
+            onProgress,
+            isCancelled,
+            onBootstrapAnswer,
+        )
+
+    override suspend fun inspectSession(sessionId: String): SessionDescriptor =
+        sessionControl.inspectSession(sessionId)
+
+    override suspend fun prepareResume(
+        sessionId: String,
+        workspace: Path,
+        sandboxMode: SandboxMode,
+    ): SessionDescriptor = sessionControl.prepareResume(sessionId, workspace, sandboxMode)
 
     override suspend fun run(
         prompt: String,
@@ -103,7 +167,7 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
             return select {
                 task.onAwait { it }
                 handle.stop.onAwait {
-                    terminate(processRef.get())
+                    DoubaoProcessSupport.terminate(processRef.get())
                     withContext(NonCancellable) { task.join() }
                     if (task.isCancelled) {
                         AgentResult.Failure(AgentResult.Kind.STOPPED, sessionId = sessionId)
@@ -114,7 +178,7 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
             }
         } catch (e: CancellationException) {
             handle.requestStop()
-            terminate(processRef.get())
+            DoubaoProcessSupport.terminate(processRef.get())
             withContext(NonCancellable) { task.join() }
             throw e
         }
@@ -128,18 +192,23 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
         processRef: AtomicReference<Process?>,
         onSession: suspend (String) -> Unit,
     ): AgentResult {
-        var observed = sessionId
+        val observed = AtomicReference(sessionId)
         fun failure(
             kind: AgentResult.Kind,
             exitCode: Int? = null,
             diagnostic: String? = null,
-        ) = AgentResult.Failure(kind, exitCode = exitCode, sessionId = observed, diagnostic = diagnostic)
+        ) = AgentResult.Failure(
+            kind,
+            exitCode = exitCode,
+            sessionId = observed.get(),
+            diagnostic = diagnostic,
+        )
         if (handle.stopRequested) {
             return failure(AgentResult.Kind.STOPPED)
         }
         val process =
             try {
-                startProcess(prompt, observed, workspace)
+                DoubaoProcessSupport.start(backend, prompt, observed.get(), workspace)
             } catch (_: IOException) {
                 return failure(AgentResult.Kind.START)
             }
@@ -155,86 +224,104 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
                     }
                 }
             if (!startAllowed) {
-                terminate(process)
+                DoubaoProcessSupport.terminate(process)
                 return failure(AgentResult.Kind.START)
             }
             val stream = DoubaoStreamAssembler()
             val stderr = StringBuilder()
-            var sessionMismatch = false
-            var storageFailure: Throwable? = null
+            val sessionMismatch = AtomicBoolean(false)
+            val missingSession = AtomicBoolean(false)
+            val storageFailure = AtomicReference<Throwable?>(null)
+            val submitted = AtomicBoolean(false)
+            // stdout/stderr readers are separate coroutines; all shared turn state goes through
+            // this lock so session events are accepted once and buffers cannot interleave.
+            val stateLock = Mutex()
+            // Callers must already hold stateLock; never re-lock here (Mutex is non-reentrant).
+            suspend fun acceptSessionLocked(id: String) {
+                if (sessionId != null && id != sessionId) {
+                    sessionMismatch.set(true)
+                    return
+                }
+                if (observed.get() == null) {
+                    observed.set(id)
+                    try {
+                        registry.record(id, workspace, "automatic")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Registry persistence is derived data: its failure must not fail a
+                        // turn the CLI already admitted.
+                        FatalErrorHandler.rethrowProgrammingError(e)
+                        storageFailure.set(e)
+                    }
+                    try {
+                        onSession(id)
+                        handle.onProgress(progress("正在通过 Doubao CLI 持续输出…\n\n会话：$id"))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        FatalErrorHandler.rethrowProgrammingError(e)
+                        storageFailure.set(e)
+                        DoubaoProcessSupport.terminate(process)
+                        return
+                    }
+                }
+                // The session event is the CLI-side admission proof, equivalent to a confirmed
+                // turn/start: the prompt was passed as argv and the process accepted it.
+                if (submitted.compareAndSet(false, true)) {
+                    withContext(NonCancellable) { handle.onSubmitted(id) }
+                }
+            }
+
+            suspend fun acceptLine(line: String, terminated: Boolean, errorStream: Boolean) =
+                stateLock.withLock {
+                    val id = DoubaoProcessSupport.sessionEvent(line)
+                    if (id != null) {
+                        acceptSessionLocked(id)
+                        return@withLock
+                    }
+                    if (line.contains(MISSING_SESSION_MARKER)) {
+                        // The PTY wrapper merges stderr into stdout; require the CLI's own Error
+                        // prefix so model prose mentioning the bare code cannot trigger a rebuild.
+                        missingSession.set(true)
+                    }
+                    if (errorStream) {
+                        if (stderr.length < MAX_STDERR_CHARS && (line.isNotEmpty() || terminated)) {
+                            val remaining = MAX_STDERR_CHARS - stderr.length
+                            val fragment = if (terminated) { line } else { "$line\n" }
+                            stderr.append(fragment.take(remaining))
+                        }
+                        return@withLock
+                    }
+                    if (line.isNotEmpty() || terminated) {
+                        stream.append(line, terminated)
+                        val header =
+                            observed.get()?.let { "正在通过 Doubao CLI 持续输出…\n\n会话：$it" }
+                                ?: "正在通过 Doubao CLI 建立会话…"
+                        val processText =
+                            if (stream.process.isEmpty()) {
+                                header
+                            } else {
+                                "$header\n\n${stream.process.trimEnd()}"
+                            }
+                        handle.onProgress(progress(processText, stream.answer))
+                    }
+                }
             handle.onProgress(progress("正在启动 Doubao CLI…"))
             return coroutineScope {
                 val output =
                     async(Dispatchers.IO) {
                         process.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                            readStdout(reader) { line, terminated ->
-                                val id = sessionEvent(line)
-                                if (id != null) {
-                                    if (sessionId != null && id != sessionId) {
-                                        sessionMismatch = true
-                                    } else if (observed == null) {
-                                        observed = id
-                                        try {
-                                            onSession(id)
-                                            handle.onProgress(progress("正在通过 Doubao CLI 持续输出…\n\n会话：$id"))
-                                        } catch (e: CancellationException) {
-                                            throw e
-                                        } catch (e: Exception) {
-                                            FatalErrorHandler.rethrowProgrammingError(e)
-                                            storageFailure = e
-                                            terminate(process)
-                                            return@readStdout
-                                        }
-                                    }
-                                    return@readStdout
-                                }
-                                if (line.isNotEmpty() || terminated) {
-                                    stream.append(line, terminated)
-                                    val header =
-                                        if (observed != null) {
-                                            "正在通过 Doubao CLI 持续输出…\n\n会话：$observed"
-                                        } else {
-                                            "正在通过 Doubao CLI 建立会话…"
-                                        }
-                                    val process =
-                                        if (stream.process.isEmpty()) {
-                                            header
-                                        } else {
-                                            "$header\n\n${stream.process.trimEnd()}"
-                                        }
-                                    handle.onProgress(progress(process, stream.answer))
-                                }
+                            DoubaoProcessSupport.readOutput(reader) { line, terminated ->
+                                acceptLine(line, terminated, false)
                             }
                         }
                     }
                 val errors =
                     async(Dispatchers.IO) {
                         process.errorStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                            readStdout(reader) { line, terminated ->
-                                val id = sessionEvent(line)
-                                if (id != null) {
-                                    if (sessionId != null && id != sessionId) {
-                                        sessionMismatch = true
-                                    } else if (observed == null) {
-                                        observed = id
-                                        try {
-                                            onSession(id)
-                                            handle.onProgress(progress("正在通过 Doubao CLI 持续输出…\n\n会话：$id"))
-                                        } catch (e: CancellationException) {
-                                            throw e
-                                        } catch (e: Exception) {
-                                            FatalErrorHandler.rethrowProgrammingError(e)
-                                            storageFailure = e
-                                            terminate(process)
-                                        }
-                                    }
-                                    return@readStdout
-                                }
-                                if (stderr.length < MAX_STDERR_CHARS && (line.isNotEmpty() || terminated)) {
-                                    val remaining = MAX_STDERR_CHARS - stderr.length
-                                    val fragment = if (terminated) { line } else { "$line\n" }
-                                    stderr.append(fragment.take(remaining))
-                                }
+                            DoubaoProcessSupport.readOutput(reader) { line, terminated ->
+                                acceptLine(line, terminated, true)
                             }
                         }
                     }
@@ -244,13 +331,13 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
                     output.await()
                     errors.await()
                     when {
-                        storageFailure != null -> {
+                        storageFailure.get() != null -> {
                             failure(AgentResult.Kind.STORAGE)
                         }
                         handle.stopRequested -> {
                             failure(AgentResult.Kind.STOPPED, code)
                         }
-                        sessionMismatch -> {
+                        sessionMismatch.get() -> {
                             failure(AgentResult.Kind.PROTOCOL, code)
                         }
                         code != 0 -> {
@@ -258,22 +345,32 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
                             if (diagnostic != null) {
                                 log.warn(
                                     "Doubao CLI 退出异常 sessionId={} exitCode={} diagnostic={}",
-                                    observed,
+                                    observed.get(),
                                     code,
                                     diagnostic,
                                 )
                             }
+                            val missingResume =
+                                sessionId != null &&
+                                    observed.get() == sessionId &&
+                                    missingSession.get()
                             failure(
-                                if (observed == null) {
-                                    AgentResult.Kind.START
-                                } else {
-                                    AgentResult.Kind.EXECUTION
+                                when {
+                                    missingResume -> {
+                                        AgentResult.Kind.SESSION_MISSING
+                                    }
+                                    observed.get() == null -> {
+                                        AgentResult.Kind.START
+                                    }
+                                    else -> {
+                                        AgentResult.Kind.EXECUTION
+                                    }
                                 },
                                 code,
                                 diagnostic,
                             )
                         }
-                        observed == null -> {
+                        observed.get() == null -> {
                             failure(AgentResult.Kind.PROTOCOL, code)
                         }
                         stream.answer.isBlank() && stream.process.isBlank() -> {
@@ -284,7 +381,7 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
                             // fall back to the status trail instead of reporting an empty run.
                             val text =
                                 stream.answer.trimEnd('\n').ifBlank { stream.process.trimEnd() }
-                            AgentResult.Success(text, observed)
+                            AgentResult.Success(text, observed.get())
                         }
                     }
                 } finally {
@@ -295,53 +392,10 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
         } finally {
             withContext(NonCancellable) {
                 mutex.withLock { active.remove(handle) }
-                terminate(process)
+                DoubaoProcessSupport.terminate(process)
             }
         }
     }
-
-    private suspend fun startProcess(prompt: String, sessionId: String?, workspace: Path): Process =
-        withContext(Dispatchers.IO) {
-            Files.createDirectories(backend.runtimeRoot)
-            val command = runCommand(prompt, sessionId, workspace)
-            ProcessBuilder(command)
-                .directory(workspace.toFile())
-                .apply {
-                    environment().putAll(backend.environment)
-                    backend.temporaryRoot?.let {
-                        environment()["TMPDIR"] = it.toString()
-                        environment()["TMP"] = it.toString()
-                        environment()["TEMP"] = it.toString()
-                    }
-                }
-                .start()
-        }
-
-    private fun runCommand(prompt: String, sessionId: String?, workspace: Path): List<String> {
-        val base =
-            mutableListOf<String>().apply {
-                add(backend.binary)
-                addAll(backend.binaryArguments)
-                add("-C")
-                add(workspace.toString())
-                if (sessionId != null) {
-                    add("--resume")
-                    add(sessionId)
-                }
-                add("--dangerously-bypass-approvals-and-sandbox")
-                add("-p")
-                add(prompt)
-            }
-        val wrapper = ptyWrapper()
-        return if (wrapper != null) {
-            listOf(wrapper.toString(), "-q", "/dev/null") + base
-        } else {
-            base
-        }
-    }
-
-    private fun ptyWrapper(): Path? =
-        PTY_WRAPPER.takeIf { Files.isExecutable(it) }
 
     private suspend fun versionCheck(): Boolean =
         withContext(Dispatchers.IO) {
@@ -357,50 +411,11 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
                     }
                     process.exitValue() == 0
                 } finally {
-                    terminate(process)
+                    DoubaoProcessSupport.terminate(process)
                 }
             } catch (_: IOException) {
                 false
             }
-        }
-
-    private suspend fun readStdout(
-        reader: Reader,
-        consume: suspend (String, Boolean) -> Unit,
-    ) {
-        val pending = StringBuilder()
-        val buffer = CharArray(256)
-        while (true) {
-            val count = runInterruptible { reader.read(buffer) }
-            if (count < 0) {
-                break
-            }
-            pending.append(buffer, 0, count)
-            while (true) {
-                val newline = pending.indexOf("\n")
-                if (newline < 0) {
-                    break
-                }
-                val line = sanitizeTerminalLine(pending.substring(0, newline).removeSuffix("\r"))
-                pending.delete(0, newline + 1)
-                consume(line, false)
-            }
-        }
-        if (pending.isNotEmpty()) {
-            consume(sanitizeTerminalLine(pending.toString()), true)
-        }
-    }
-
-    private fun sessionEvent(line: String): String? =
-        try {
-            val json = JsonParser.parseString(line).asJsonObject
-            if (json.string("type") == "session") {
-                json.string("session_id")?.takeIf { it.isNotBlank() }
-            } else {
-                null
-            }
-        } catch (_: Exception) {
-            null
         }
 
     private fun stderrDiagnostic(stderr: String): String? =
@@ -410,51 +425,28 @@ class DoubaoCliRunner(private val backend: BackendSpec, private val mode: Sandbo
             .trim()
             .takeIf { it.isNotEmpty() }
 
-    private fun sanitizeTerminalLine(line: String): String =
-        line
-            .replace(ANSI_ESCAPE_REGEX, "")
-            .replace(BACKSPACE_OVERSTRIKE_REGEX, "")
-            .replace(CONTROL_CHARS_REGEX, "")
-
     override fun close() {
         runBlocking {
+            sessionControl.close()
             val processes =
                 mutex.withLock {
                     closed = true
                     active.values.toList().also { active.clear() }
                 }
             withContext(NonCancellable + Dispatchers.IO) {
-                processes.forEach { terminate(it) }
+                processes.forEach { DoubaoProcessSupport.terminate(it) }
                 scope.cancel()
             }
         }
     }
 
-    private fun terminate(process: Process?) {
-        if (process == null) {
-            return
-        }
-        try {
-            val handles =
-                process
-                    .toHandle()
-                    .descendants()
-                    .use { descendants -> descendants.toArray().map { it as ProcessHandle } }
-                    .reversed() + process.toHandle()
-            handles.filter { it.isAlive }.forEach { it.destroy() }
-            if (!process.waitFor(500, TimeUnit.MILLISECONDS)) {
-                handles.filter { it.isAlive }.forEach { it.destroyForcibly() }
-                process.waitFor(500, TimeUnit.MILLISECONDS)
-            }
-        } catch (_: Exception) {
-            process.destroyForcibly()
-        }
-    }
     companion object {
         private const val MAX_STDERR_CHARS = 512
-        private val PTY_WRAPPER = Path.of("/usr/bin/script")
-        private val ANSI_ESCAPE_REGEX = Regex("\\u001B\\[[;?0-9]*[ -/]*[@-~]")
-        private val BACKSPACE_OVERSTRIKE_REGEX = Regex(".\\u0008")
-        private val CONTROL_CHARS_REGEX = Regex("[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]")
+
+        // Verified against doubao CLI 2.31.x: resuming an unknown/nonexistent session exits 1
+        // with "Error: IM request failed: 712017001". Match the whole marker so model prose
+        // mentioning the bare numeric code cannot be misclassified as a missing session.
+        private const val MISSING_SESSION_MARKER = "IM request failed: 712017001"
+        private const val DEFAULT_MAINTENANCE_INTERVAL_MILLIS = 10L * 60L * 1000L
     }
 }
