@@ -85,6 +85,74 @@ class TelegramCardRepliesTest {
     }
 
     @Test
+    fun `run metadata survives presentation delegation and rich fallback only on last chunk`() =
+        runBlocking {
+            for (unsupported in listOf(false, true)) {
+                Api().use { api ->
+                    api.rejectRich = unsupported
+                    val cards = TelegramCardReplies(api.client)
+                    val reply = TelegramRunReplies(cards).presentation(this, route, "metadata", {})
+                    try {
+                        val meta =
+                            RunMeta(
+                                backend = "Codex",
+                                model = "model-test",
+                                effort = "high",
+                                effortDefault = true,
+                            )
+                        assertEquals(
+                            CardDelivery.DELIVERED,
+                            reply.finishDeliveryWithMeta("answer ".repeat(500), "已完成", 10000, meta),
+                        )
+                        val delivered =
+                            api.calls.filter {
+                                if (unsupported) {
+                                    it.first == "editMessageText" && it.second.has("text") ||
+                                        it.first == "sendMessage" &&
+                                            it.second["text"]?.asString != "正在处理…"
+                                } else {
+                                    it.first == "sendRichMessage"
+                                }
+                            }
+                        assertTrue(delivered.size >= 2)
+                        val payloads = delivered.map { it.second.toString() }
+                        assertTrue(payloads.last().contains("后端 Codex"))
+                        assertTrue(payloads.last().contains("强度 high（默认）"))
+                        assertTrue(payloads.dropLast(1).none { it.contains("后端 Codex") })
+                        if (unsupported) {
+                            assertTrue(delivered.all { it.second["text"].asString.length <= 4096 })
+                        }
+                    } finally {
+                        reply.close("已完成")
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun `metadata is optional escaped and bounded`() {
+        assertEquals("", telegramMetaFooter(null))
+        assertEquals("", telegramMetaFooter(RunMeta()))
+        val meta =
+            RunMeta(
+                backend = "OpenCode",
+                model = "[model](https://example.com)<b>",
+                effort = "high",
+                effortFixed = true,
+            )
+        val rich = TelegramRichReply.render("answer", "", "已完成", false, meta)["markdown"].asString
+        assertTrue(rich.contains("强度 high（固定）"))
+        assertFalse(rich.contains("<b>"))
+        assertFalse(rich.contains("[model]("))
+        assertFalse(
+            TelegramRichReply.render("answer", "", "进行中", true, meta)
+                .toString()
+                .contains("后端 OpenCode")
+        )
+        assertTrue(telegramMetaFooter(RunMeta(model = "x".repeat(5000))).length < 700)
+    }
+
+    @Test
     fun `local links use captured workspace in drafts final and plain fallback`(): Unit =
         runBlocking {
             for (unsupported in listOf(false, true)) {
