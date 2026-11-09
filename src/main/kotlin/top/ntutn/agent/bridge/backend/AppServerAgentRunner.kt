@@ -247,6 +247,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
             }
             val events = server.subscribe(id)
             var interrupt: Job? = null
+            var queueRefresh: Job? = null
             try {
                 val policy =
                     when (sandboxMode) {
@@ -314,6 +315,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                     sessions.submitted(id)
                     handle.onSubmitted(id)
                 }
+                val progress = AgentProgressReducer(id, turnId)
                 log.info(
                     "${displayName} 轮次开始 requestId={} sessionId={} turnId={}",
                     handle.requestId,
@@ -329,7 +331,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                         turnId,
                     )
                     try {
-                        interruptTurn(server, id, turnId)
+                        interruptTurn(backend, progress, server, id, turnId)
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -343,7 +345,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                 val messages = linkedMapOf<String, Pair<String?, String>>()
                 val images = NativeImages(sandboxMode = sandboxMode)
                 var sawAuthoritativeAgentMessage = false
-                val progress = AgentProgressReducer(id, turnId)
+                queueRefresh = trackQueueProgress(progress, handle)
                 val runEvents = NativeRunEvents(id, turnId, handle.onRunEvent)
                 fun finishSuccessOrEmpty(): AgentResult {
                     val final = messages.values.filter { it.first == "final_answer" }
@@ -442,6 +444,7 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                 server.exited.await()
                 failure(AgentResult.Kind.PROTOCOL)
             } finally {
+                queueRefresh?.cancelAndJoin()
                 interrupt?.cancelAndJoin()
                 server.unsubscribe(id)
             }
@@ -458,10 +461,6 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
             )
             failure(AgentResult.Kind.PROTOCOL)
         }
-    }
-
-    private suspend fun interruptTurn(server: AppServerClient, threadId: String, turnId: String) {
-        interruptAppServerTurn(backend, server, threadId, turnId)
     }
 
     override fun close() = runBlocking {

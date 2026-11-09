@@ -168,4 +168,34 @@ class CotPresentationTest {
         assertEquals(1, cards.results)
         assertEquals(0, cards.progressCreates)
     }
+
+    @Test
+    fun `queued progress appends its own COT status chunks`() = runBlocking {
+        val api = FakeCotApi()
+        val reply: ReplyPresentation =
+            CotPresentation(
+                this,
+                CotTestCards(),
+                CotRuntime(api, CotRunStore(temp)),
+                ReplyRoute("oc", "om"),
+                "request",
+                beforeReply = {},
+                queueNoticeIntervalMs = 0,
+            )
+        reply.event(AgentRunEvent(AgentRunEvent.Kind.START, threadId = "thread", turnId = "turn"))
+        reply.progress(AgentProgress(process = "⏳ 排队中 · 队列位置 3（已等待 0 秒）"))
+        reply.progress(AgentProgress(process = "⏳ 排队中 · 队列位置 3（已等待 10 秒）"))
+        reply.progress(AgentProgress(process = "正在处理…"))
+        withTimeout(3_000) {
+            while (api.events.none { it.toString().contains("排队结束") }) {
+                delay(10)
+            }
+        }
+        assertTrue(api.events.any { it.toString().contains("排队中") })
+        assertTrue(api.events.any { it.toString().contains("已等待 10 秒") })
+        assertTrue(api.events.any { it.toString().contains("排队结束") })
+        reply.backendFinished(AgentResult.Success("answer"))
+        assertEquals(CardDelivery.DELIVERED, reply.finishDelivery("answer"))
+        reply.close("finished")
+    }
 }

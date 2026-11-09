@@ -115,4 +115,89 @@ class AgentProgressTest {
         assertTrue(last.process.length <= 1800)
         assertEquals(12, last.process.split("\n\n").size)
     }
+
+    private fun queue(
+        state: String,
+        position: Int? = null,
+        operation: String? = null,
+        lowPriority: Boolean = false,
+    ) =
+        json(
+            "method" to "queue/status",
+            "params" to
+                json(
+                    "threadId" to "thread",
+                    "turnId" to "turn",
+                    "state" to state,
+                    "position" to position,
+                    "operation" to operation,
+                    "modelQuotaLowPriority" to lowPriority,
+                ),
+        )
+
+    @Test
+    fun `queue status shows position and clears when capacity is granted`() {
+        var now = 1_000L
+        val state = AgentProgressReducer("thread", "turn") { now }
+
+        val queued = assertNotNull(state.accept(queue("queued", position = 3)))
+        assertContains(queued.process, "排队中")
+        assertContains(queued.process, "队列位置 3")
+        assertContains(queued.process, "已等待 0 秒")
+
+        now = 125_000L
+        val refreshed = assertNotNull(state.queueSnapshot())
+        assertContains(refreshed.process, "已等待 2 分 4 秒")
+
+        val ready = assertNotNull(state.accept(queue("ready")))
+        assertFalse(ready.process.contains("排队中"))
+        assertNull(state.queueSnapshot())
+    }
+
+    @Test
+    fun `context compaction queue has its own label and turn start clears it`() {
+        val state = AgentProgressReducer("thread", "turn")
+        val queued =
+            assertNotNull(
+                state.accept(
+                    queue("queued", operation = "contextCompaction", lowPriority = true)
+                )
+            )
+        assertContains(queued.process, "整理上下文")
+
+        val started =
+            assertNotNull(
+                state.accept(
+                    json(
+                        "method" to "turn/started",
+                        "params" to
+                            json(
+                                "threadId" to "thread",
+                                "turn" to json("id" to "turn"),
+                            ),
+                    )
+                )
+            )
+        assertFalse(started.process.contains("⏳"))
+        assertNull(state.queueSnapshot())
+    }
+
+    @Test
+    fun `queue status for another turn never reaches this card`() {
+        val state = AgentProgressReducer("thread", "turn")
+        assertNull(
+            state.accept(
+                json(
+                    "method" to "queue/status",
+                    "params" to
+                        json(
+                            "threadId" to "thread",
+                            "turnId" to "other",
+                            "state" to "queued",
+                        ),
+                )
+            )
+        )
+        assertNull(state.queueSnapshot())
+    }
 }

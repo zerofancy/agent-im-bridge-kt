@@ -60,6 +60,8 @@ for line in sys.stdin:
             __import__('threading').Timer(0.5, lambda request=req, turn_id=turn: result(request, {'turn':{'id':turn_id,'status':'inProgress'}})).start()
         else: result(req, {'turn':{'id':turn,'status':'inProgress'}})
         if prompt.startswith('wait'):
+            if prompt == 'wait-queue':
+                event('queue/status', tid, turn, state='queued', position=3)
             if prompt == 'wait-child':
                 child=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); children.append(child)
                 with open(os.path.join(root, 'child'),'w') as f:f.write(str(child.pid))
@@ -112,7 +114,7 @@ for line in sys.stdin:
         tid=p['threadId']; turn,prompt=active[tid]
         assert p['turnId'] == turn
         interrupts[tid]=interrupts.get(tid,0)+1
-        if prompt in ('wait-activation','wait-natural','wait-wrong-error','wait-inactive-forever') and (interrupts[tid] == 1 or prompt == 'wait-inactive-forever'):
+        if prompt in ('wait-activation','wait-natural','wait-wrong-error','wait-inactive-forever','wait-queue') and (interrupts[tid] == 1 or prompt == 'wait-inactive-forever'):
             send({'id':req['id'],'error':{'code':-32600,'message':'no active turn to interrupt' if prompt != 'wait-wrong-error' else 'permission denied'}})
             if prompt == 'wait-natural':
                 item(tid,turn,'answer','natural final','final_answer')

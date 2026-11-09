@@ -14,7 +14,7 @@ internal class CotReplies(private val cards: SplitCardReplies, private val runti
         route: ReplyRoute,
         requestId: String,
         beforeReply: suspend () -> Unit,
-    ): ReplyPresentation = CotPresentation(scope, cards, runtime, route, requestId, beforeReply)
+    ): ReplyPresentation = CotPresentation(scope, cards, runtime, route, requestId, beforeReply = beforeReply)
 }
 
 private class SilentCards(private val delegate: SplitCardReplies) : SplitCardReplies {
@@ -41,7 +41,8 @@ internal class CotPresentation(
     runtime: CotRuntime,
     private val route: ReplyRoute,
     requestId: String,
-    private val beforeReply: suspend () -> Unit,
+    private val queueNoticeIntervalMs: Long = 10_000L,
+    private val beforeReply: suspend () -> Unit = {},
 ) : ReplyPresentation {
     override val imageAnswerInResultCard: Boolean
         get() = result.imageAnswerInResultCard
@@ -51,6 +52,8 @@ internal class CotPresentation(
     private val backendResult = MutableStateFlow<AgentResult?>(null)
     private val deliveryConfirmed = MutableStateFlow(false)
     private val deliveryStatus = MutableStateFlow("已完成")
+    private var lastQueueLine: String? = null
+    private var lastQueueNoticeAt = 0L
     private val result =
         StreamingReply(scope, SilentCards(cards), route, beforeReply, requestId = requestId)
     private val reporter =
@@ -77,6 +80,42 @@ internal class CotPresentation(
     override fun progress(value: AgentProgress) {
         latest.value = value
         fallback.value?.progress(value)
+        reportQueue(value)
+    }
+
+    /**
+     * COT only appends events, so each notice is its own text chunk. The runner refreshes
+     * [AgentProgress] every ~10s while queued; throttle to one notice per interval so a noisy
+     * event stream cannot flood the thought panel.
+     *
+     * `progress` is called from the event reader and the queue refresher concurrently; guard the
+     * dedup state so a stale notice cannot trail the "queue ended" line.
+     */
+    @Synchronized
+    private fun reportQueue(value: AgentProgress) {
+        val line =
+            value.process
+                .lineSequence()
+                .firstOrNull()
+                ?.trim()
+                ?.takeIf { it.startsWith("⏳ ") }
+        val now = System.currentTimeMillis()
+        if (line == null) {
+            if (lastQueueLine != null) {
+                lastQueueLine = null
+                lastQueueNoticeAt = 0
+                reporter.offer(AgentRunEvent(AgentRunEvent.Kind.STATUS, "queue", "\n排队结束，开始执行"))
+            }
+            return
+        }
+        if (
+            line != lastQueueLine &&
+                (lastQueueLine == null || now - lastQueueNoticeAt >= queueNoticeIntervalMs)
+        ) {
+            lastQueueLine = line
+            lastQueueNoticeAt = now
+            reporter.offer(AgentRunEvent(AgentRunEvent.Kind.STATUS, "queue", "\n$line"))
+        }
     }
 
     override fun stopping() {

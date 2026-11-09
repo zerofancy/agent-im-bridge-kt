@@ -56,6 +56,32 @@ class TraexProtocolTest : CodexProtocolTest() {
         }
 
     @Test
+    fun `queued turn reports position and stop still interrupts it`(): Unit = runBlocking {
+        runner().use { r ->
+            val handle = AgentRunHandle()
+            val progress = mutableListOf<String>()
+            handle.onProgress = { progress.add(it.process) }
+            val task = async {
+                r.runControlled(handle, "wait-queue", null, temp, SandboxMode.READ_ONLY) {}
+            }
+            handle.turnId.await()
+            withTimeout(5_000) {
+                while (progress.none { it.contains("排队中") }) {
+                    delay(10)
+                }
+            }
+            assertTrue(progress.any { it.contains("队列位置 3") })
+            handle.requestStop()
+            assertEquals(
+                AgentResult.Kind.STOPPED,
+                assertIs<AgentResult.Failure>(withTimeout(5_000) { task.await() }).kind,
+            )
+            // One rejected interrupt retries while the queue is still reported, then succeeds.
+            assertTrue(requests(temp).count { it.string("method") == "turn/interrupt" } >= 2)
+        }
+    }
+
+    @Test
     fun `natural terminal stops pending interrupt retries`(): Unit = runBlocking {
         runner().use { r ->
             val handle = AgentRunHandle()
