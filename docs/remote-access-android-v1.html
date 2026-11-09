@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Bridge · 固定端口、远程认证与 Android 首版</title>
+  <style>
+    :root { color-scheme: light; --ink: #182723; --muted: #4d6059; --accent: #176655; --line: #d9e4df; --wash: #edf5f1; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f7f9f7; color: var(--ink); font: 16px/1.75 system-ui, "Noto Sans CJK SC", sans-serif; }
+    main { width: min(100% - 2rem, 62rem); margin: 2rem auto 4rem; }
+    header, section { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: clamp(1rem, 4vw, 2rem); }
+    header { background: var(--wash); }
+    section { margin-top: 1.1rem; scroll-margin-top: 1rem; }
+    h1, h2, h3 { line-height: 1.35; margin: 0 0 .75rem; }
+    h1 { font-size: clamp(1.9rem, 5vw, 2.75rem); }
+    h2 { font-size: 1.42rem; }
+    h3 { font-size: 1.05rem; margin-top: 1.25rem; }
+    p, ul, ol, pre, dl { margin: .65rem 0 0; }
+    ul, ol { padding-inline-start: 1.5rem; }
+    li + li { margin-top: .3rem; }
+    a { color: var(--accent); text-underline-offset: .2em; }
+    .meta, .source { color: var(--muted); font-size: .875rem; }
+    .meta { margin: 0 0 .55rem; font-weight: 600; }
+    nav { display: flex; flex-wrap: wrap; gap: .45rem 1rem; margin-top: 1rem; }
+    code { font: .9em/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
+    :not(pre) > code { padding: .08em .24em; border-radius: 4px; background: var(--wash); }
+    pre { padding: .8rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: #f4f7f5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); }
+    dt, dd { padding: .6rem 0; margin: 0; border-top: 1px solid var(--line); }
+    dt { padding-right: .9rem; font-weight: 600; }
+    footer { margin-top: 1rem; }
+    @media (max-width: 38rem) {
+      main { width: calc(100% - 1rem); margin-top: .5rem; }
+      dl { grid-template-columns: minmax(0, 1fr); }
+      dt { padding-bottom: .2rem; }
+      dd { border-top: 0; padding-top: 0; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="meta">Agent Bridge · 评审稿 · 2026-11-09</p>
+    <h1>固定端口、远程认证与 Android 首版</h1>
+    <p>Bridge 新增按环境启用的固定端口。任何通过这个入口访问会话的客户端都要先用固定密码和 TOTP 登录。Android 首版提供服务器地址、登录、已登录状态和退出登录。</p>
+    <nav aria-label="目录">
+      <a href="#binding">端口与访问</a>
+      <a href="#auth">认证与会话</a>
+      <a href="#api">HTTP 接口</a>
+      <a href="#android">Android</a>
+      <a href="#delivery">实施与验收</a>
+    </nav>
+  </header>
+
+  <section id="binding">
+    <h2>1. 端口与访问</h2>
+    <dl>
+      <dt>本机管理与桌面</dt>
+      <dd><code>RuntimeControl</code> 继续监听回环随机端口。桌面端和 <code>bridgectl</code> 继续使用私有 <code>control/endpoint.json</code> 中的启动代次和管理令牌。</dd>
+      <dt>远程客户端入口</dt>
+      <dd>新增独立 HTTP 监听器，默认关闭。启用后绑定 <code>127.0.0.1:1315</code>。同机并行开启两个环境时，为另一环境显式指定不同的固定端口。端口冲突时报告环境及端口并让启动失败，由现有部署流程处理回滚。</dd>
+      <dt>手机到宿主机</dt>
+      <dd>同机 HTTPS 反向代理将 <code>https://zp-agent.ntutn.top</code> 转发到远程监听器，支持 SSE 流式转发。另一环境使用独立 HTTPS 入口。Android 校验证书和主机名。</dd>
+    </dl>
+    <p>认证按监听器划分。即使请求来自 <code>127.0.0.1</code>，远程监听器也要求会话令牌。代理转发头和 Host 都不能授予本机权限。管理路由 <code>/status</code>、<code>/drain</code>、<code>/activate</code>、<code>/resume</code>、<code>/reason/*</code> 仅由本机监听器注册。</p>
+    <p>两个监听器共用同一个 <code>DesktopApi</code>，会话历史、提交去重、SSE 上限、排队与停止语义共享。远程会话使用所属环境的现有工作目录和 sandbox 配置。连接断开、登录过期或退出时，已提交的任务继续运行。</p>
+    <p class="source"><a href="../src/main/kotlin/top/ntutn/agent/bridge/RuntimeControl.kt">现有本机控制入口</a> · <a href="../src/main/kotlin/top/ntutn/agent/bridge/desktop/DesktopApi.kt">会话 API</a> · <a href="https://tailscale.com/docs/features/tailscale-serve">Tailscale Serve</a></p>
+  </section>
+
+  <section id="auth">
+    <h2>2. 固定密码、TOTP 与会话</h2>
+    <h3>配置和验证</h3>
+    <ul>
+      <li>每个环境只有一个隐式账号，登录表单提交密码和六位 TOTP。两项都正确才签发会话。dev 与 prod 分别设置密码和认证器条目。</li>
+      <li>本机交互命令为 <code>bridgectl remote setup --env dev [--port 1315]</code>，正式配置显式传 <code>--env prod</code>。在对应实例停止时隐藏输入密码。首次设置或显式 <code>--rotate-totp</code> 时生成独立的 160 位密钥，并在交互终端展示一次配对信息。通过 <code>bridgectl remote disable --env dev</code> 关闭入口。守护进程启动时只读取配置。</li>
+      <li>每环境的私有 <code>remote-access.json</code> 保存端口、启用状态、带随机盐的 PBKDF2-HMAC-SHA256 校验值和 TOTP 密钥及状态。JDK 21 实现以 600,000 次迭代为基线。POSIX 文件权限为 <code>0600</code>，其他平台使用现有私有文件权限机制。口令、验证码、密钥、令牌和授权头排除在日志、发布快照和诊断导出之外。</li>
+      <li>沿用 updater-server 的 HMAC-SHA1、30 秒时间步，接受当前和前一个时间步。通过 <code>Mutex</code> 串行比较和原子提交已消费的最大时间步、失败次数和封锁截止时间。持久化成功后才签发令牌。同一验证码的并发请求最多一个成功，重启也保留消费记录和退避。</li>
+      <li>登录先做小请求体校验、全局及按直接来源限流，再做有并发上限的密码校验。参考值为每来源 10 次/分钟、突发 3 次，全局 120 次/分钟、突发 20 次。代理后的连接可共用一个来源额度。密码正确后连续 5 次 TOTP 失败触发 1 分钟退避，后续翻倍至 1 小时，成功后清零。退避期间统一拒绝登录，凭据错误使用相同响应。</li>
+    </ul>
+    <p>配置写入与 TOTP 状态更新沿用私有临时文件和原子替换。配置或状态损坏时停止启动，保留原文件供本机恢复。仅改密码时保留同一密钥的防重放状态，换密钥时初始化新状态。</p>
+    <h3>会话生命周期</h3>
+    <p>成功登录生成 32 字节随机 Bearer，服务端只在内存保存其摘要与到期时间。绝对有效期 8 小时，会话表上限 100，过期记录回收。容量不足时返回 <code>503</code>，验证码可在有效期内重新提交。退出撤销当前会话，重启撤销全部会话。退出或到期要同时关闭该会话已建立的 SSE。连接注册与会话校验同一临界区，关闭连接在锁外执行。</p>
+    <p class="source"><a href="../../updater-server/src/main/kotlin/top/ntutn/update/auth/TotpCredential.kt">参考 TOTP 实现</a> · <a href="../../updater-server/src/main/kotlin/top/ntutn/update/auth/TotpVerification.kt">参考防重放和退避</a> · <a href="../../updater-server/src/main/kotlin/top/ntutn/update/auth/LoginSecurity.kt">参考会话</a> · <a href="https://www.rfc-editor.org/rfc/rfc6238">RFC 6238</a> · <a href="https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html">口令存储参数</a></p>
+  </section>
+
+  <section id="api">
+    <h2>3. HTTP 接口</h2>
+    <p>认证使用 JSON 和 <code>Authorization: Bearer …</code>。登录是唯一无需会话令牌的路由。认证响应使用 <code>Cache-Control: no-store</code>，令牌只在登录响应和授权头中传输。</p>
+    <dl>
+      <dt><code>POST /api/v1/auth/login</code></dt>
+      <dd>提交 <code>{"password":"…","totp":"012345"}</code>。成功返回 <code>200</code> 和 <code>token</code>、<code>expiresAt</code>（UTC 时间戳，ISO 8601）、<code>environment</code>。参数错误 <code>400</code>，凭据无效或验证码重放 <code>401</code>，限流或退避 <code>429</code> 并带 <code>Retry-After</code>。请求体上限 8 KiB，密码上限 1024 UTF-8 字节。</dd>
+      <dt><code>GET /api/v1/auth/session</code></dt>
+      <dd>验证当前会话，返回环境和到期时间。Android 回到前台时校验，收到 <code>401</code> 回到登录页；网络故障保留尚未到期的本机登录状态并提示连接失败。</dd>
+      <dt><code>POST /api/v1/auth/logout</code></dt>
+      <dd>撤销当前会话并返回 <code>204</code>。令牌已撤销、过期或无效时返回 <code>401</code>，客户端可以同样回到登录页。</dd>
+      <dt><code>/desktop/*</code> 会话接口</dt>
+      <dd>只开放已有的 <code>GET /desktop/snapshot</code>、<code>GET /desktop/events</code>、<code>POST /desktop/conversations</code>、<code>POST /desktop/messages</code>。未认证返回 <code>401</code>，在读取业务请求体、分配 SSE 槽位或写入历史之前拒绝。其他路径返回 <code>404</code>。</dd>
+    </dl>
+    <p>沿用 <code>DesktopApi</code> 的 JSON 格式与 SSE 快照。当前桌面历史里的原生图片引用是宿主机路径，本期会话接口沿用既有协议，Android 首版仅调用认证接口。</p>
+  </section>
+
+  <section id="android">
+    <h2>4. Android 首版</h2>
+    <ol>
+      <li><strong>登录页。</strong>填写 HTTPS 地址、固定密码和六位验证码。记住服务器地址；密码遮挡，验证码用数字键盘并保留前导零。提交期间避免重复点击。连接失败、凭据错误和稍后重试分别提示。</li>
+      <li><strong>已登录页。</strong>显示服务器、dev/prod 环境、会话到期时间和退出按钮。ViewModel 持有内存令牌，横竖屏切换保留登录态。App 进程结束后重新登录。密码和验证码只留在本次输入和提交过程中。</li>
+      <li><strong>退出。</strong>向已登录的地址发送撤销请求。收到 <code>204</code> 或 <code>401</code> 后清理本机令牌。网络失败时也清理，并提示「已在本机退出，服务器退出未确认，会话将在到期时失效」。服务器地址仅可在退出后修改。HTTP 客户端禁用重定向和凭据日志。</li>
+    </ol>
+    <p>新增独立 <code>:android-app</code>，使用原生 Jetpack Compose 和 OkHttp。沿用版本目录与 JDK 21 构建环境。候选组合为 Gradle 9.5.0、AGP 9.3 系列、<code>minSdk 24</code> 和 <code>compileSdk 37</code>，以最小 APK 构建确认后锁定。使用显式 <code>-PwithAndroid=true</code> 启用 Android 模块，保障无 SDK 的 JVM 构建。客户端功能范围为认证和连接状态，工作台界面留作后续迭代。</p>
+    <p class="source"><a href="https://developer.android.com/build/releases/about-agp">AGP 与 Gradle 兼容表</a> · <a href="https://developer.android.com/build/migrate-to-built-in-kotlin">AGP 内建 Kotlin</a> · <a href="https://developer.android.com/privacy-and-security/security-config">Android 网络安全配置</a></p>
+  </section>
+
+  <section id="delivery">
+    <h2>5. 实施顺序与验收</h2>
+    <ol>
+      <li><strong>先交付服务端。</strong>拆出远程监听器、认证和配置逻辑，复用同一个 <code>DesktopApi</code>。由 <code>Main</code> 统一持有两套监听器及共享 API。启动失败和正常退出都先关闭监听器与连接，再清理 API、调度和后端。启用配置时，端口绑定成功是就绪条件。候选版本待激活时，远程请求返回暂不可用，登录不消费验证码。</li>
+      <li><strong>再交付 APK。</strong>接入三个认证接口。先对隔离服务验证完整流程。通过 <code>bridgectl publish/deploy</code> 升级到支持远程入口的版本后，停止 dev 实例并设置凭据，再启动实例和配置代理。用 Android 真机通过蜂窝网络验证 dev 私网入口后，再按需为 prod 单独启用。</li>
+    </ol>
+    <h3>验收条件</h3>
+    <ul>
+      <li>远程入口默认关闭；启用后重启仍用配置端口；dev/prod 可以并行启动。端口冲突及无效配置能诊断，升级失败沿用既有回滚。</li>
+      <li>分别测试四条业务路由，匿名、伪造转发头、管理令牌和另一环境令牌都不能通过认证。远程令牌不能访问本机管理接口。</li>
+      <li>验证 RFC 测试向量、当前/前一步、过期和未来验证码、并发及重启后防重放、退避与限流。验证退出、过期和重启后拒绝旧令牌并释放 SSE 槽位。</li>
+      <li>验证 Android HTTPS 登录、错误证书和 HTTP 地址拒绝、断网退出、旋转和杀进程恢复行为。用 <code>./gradlew -PwithAndroid=true :android-app:testDebugUnitTest :android-app:assembleDebug</code> 构建与测试，按需运行真机测试。</li>
+      <li>用 <code>./gradlew test installDist</code> 回归桌面、本机控制、部署和会话语义。用 <code>python3 scripts/check_file_lines.py</code> 检查行数，按职责拆出新增部署逻辑。</li>
+    </ul>
+    <p class="source"><a href="../deployment/bridgectl.py">现有部署事务</a> · <a href="../src/test/kotlin/top/ntutn/agent/bridge/desktop/DesktopSmokeServer.kt">隔离工作台测试服务</a></p>
+  </section>
+  <footer class="meta">本方案待评审，端口、会话时长和 Android 保存策略为首版提议。</footer>
+</main>
+</body>
+</html>

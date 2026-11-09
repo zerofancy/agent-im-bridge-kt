@@ -4,6 +4,44 @@
 
 初始化 DEV / PROD、平台守护、升级回滚与运行诊断。
 
+## 固定端口与远程认证
+
+远程入口默认关闭。先按既有发布流程升级到支持远程入口的版本，再在宿主机的前台终端设置认证。以正式环境为例：
+
+```bash
+./bridgectl stop --env prod
+./bridgectl remote setup --env prod
+./bridgectl start --env prod
+```
+
+设置时隐藏输入固定密码。首次设置和显式使用 `--rotate-totp` 时，终端展示认证器配对地址。将其导入认证器后，登录同时填写密码和六位验证码。再次设置密码时保留现有 TOTP 密钥和防重放状态。两套环境分别保存认证配置。
+
+首次启用监听 `127.0.0.1:1315`。同机的 HTTPS 反向代理将 `https://zp-agent.ntutn.top` 转发到该端口，并允许 SSE 流式响应。代理只连接远程入口，本机管理端口继续由桌面端和 `bridgectl` 通过私有端点文件发现。若同机并行启用另一环境，使用 `--port` 指定不同的固定端口和 HTTPS 入口。
+
+要关闭远程入口，先停止对应环境，再执行 `./bridgectl remote disable --env prod` 并重新启动。密码修改、配对变更和关闭均在对应环境停止时配置。会话最长八小时，Bridge 重启后需要重新登录。
+
+### 构建 Android 客户端
+
+使用 JDK 21 和 Android SDK 37。普通 JVM 构建无需安装 Android SDK。
+
+在 Android Studio 打开仓库根目录并使用项目的 Gradle Wrapper。IDE 同步会自动导入 `android-app`。SDK 路径可用 `ANDROID_HOME` 或 `android-app/local.properties` 中的 `sdk.dir` 指定。Android 是独立 Gradle 构建，有自己的 `local.properties`。Compose 预览使用 Android 的 Debug 变体。
+
+```bash
+./gradlew -PwithAndroid=true :android-app:testDebugUnitTest :android-app:assembleDebug
+adb install -r android-app/build/outputs/apk/debug/android-app-debug.apk
+```
+
+默认连接 `https://zp-agent.ntutn.top`。用 dev 验证时，在登录页选择 `https://zp-agent-dev.ntutn.top`。登录后可以新建会话、读历史、发消息并查看流式回复。关闭 App 进程后需要重新登录，已保存的草稿按服务器和会话恢复。
+
+Release 构建开启 R8 和资源优化。构建、Lint 和测试可共用一个增大 Metaspace 的 Gradle 进程：
+
+```bash
+./gradlew -Dorg.gradle.jvmargs="-Xmx1536m -XX:MaxMetaspaceSize=1024m" \
+  -PwithAndroid=true :android-app:testDebugUnitTest :android-app:lintRelease :android-app:assembleRelease
+```
+
+使用 Android SDK Build Tools 对 `android-app/build/outputs/apk/release/android-app-release-unsigned.apk` 先执行 `zipalign -P 16 -f 4`，再用项目的长期发布密钥执行 `apksigner sign`。安装前运行 `apksigner verify --verbose --print-certs` 并保留 `android-app/build/outputs/mapping/release/mapping.txt`。签名密钥和口令存放于仓库外。
+
 ## 部署与运行（macOS）
 
 需要 JDK 21+、Python 3.9+，以及当前 macOS 用户已登录的图形会话。正式服务由用户级 launchd 守护，调试与正式使用不同机器人、配置、会话、运行锁、模型目录、附件和默认工作目录。完整说明见 [部署与运行诊断](macos-deployment.html)。

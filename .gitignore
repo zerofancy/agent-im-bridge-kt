@@ -6,4 +6,5 @@ build/
 .DS_Store
 .env
 /local.properties
+/android-app/local.properties
 __pycache__/

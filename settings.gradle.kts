@@ -23,3 +23,14 @@ plugins {
 rootProject.name = "agent-im-bridge-kt"
 
 include("desktop-app")
+
+val withAndroid =
+    providers
+        .gradleProperty("withAndroid")
+        .orElse(providers.gradleProperty("android.injected.invoked.from.ide"))
+        .getOrElse("false")
+
+if (withAndroid == "true") {
+    // Keep AGP and its built-in Kotlin plugin in their own Gradle classloader.
+    includeBuild("android-app")
+}

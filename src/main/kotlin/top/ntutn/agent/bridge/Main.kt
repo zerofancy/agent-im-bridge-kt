@@ -13,6 +13,9 @@ import top.ntutn.agent.bridge.desktop.DesktopHistory
 import top.ntutn.agent.bridge.feishu.ConnectionWatchdog
 import top.ntutn.agent.bridge.feishu.FeishuConnection
 import top.ntutn.agent.bridge.feishu.createAgentChannel
+import top.ntutn.agent.bridge.remote.RemoteAccessStore
+import top.ntutn.agent.bridge.remote.RemoteAuth
+import top.ntutn.agent.bridge.remote.RemoteClientServer
 import top.ntutn.agent.bridge.storage.ConfigStore
 import top.ntutn.agent.bridge.storage.InstanceLock
 import top.ntutn.agent.bridge.storage.SessionStore
@@ -67,6 +70,8 @@ fun main(args: Array<String>) {
     var service: ChatService? = null
     var instance: InstanceLock? = null
     var control: RuntimeControl? = null
+    var desktop: DesktopApi? = null
+    var remote: RemoteClientServer? = null
     var fileLinks: top.ntutn.agent.bridge.localfiles.LocalFileServer? = null
     var lifecycle: RuntimeLifecycle? = null
     var watchdog: top.ntutn.agent.bridge.feishu.ConnectionWatchdog? = null
@@ -97,6 +102,13 @@ fun main(args: Array<String>) {
                 ?: throw IllegalArgumentException("环境尚未绑定机器人，请使用 bridgectl init")
         startupPlatform = config.platform
         environment.validate(config)
+        val remoteAccess =
+            try {
+                RemoteAccessStore.load(environment.directory)
+            } catch (error: IllegalArgumentException) {
+                log.error("远程访问配置无效 environment={} file=remote-access.json", environment.name)
+                throw error
+            }
         val options = environment.options()
         val sessions = SessionStore(environment.directory.resolve("sessions.json"))
         val backend = environment.backend(BackendId.parse(config.backend), options)
@@ -158,7 +170,7 @@ fun main(args: Array<String>) {
             }
         }
         val monitoredRunner = runner
-        val desktop =
+        val desktopApi =
             DesktopApi(
                 desktopHistory,
                 service,
@@ -171,7 +183,21 @@ fun main(args: Array<String>) {
                     "bootId" to lifecycle.bootId,
                 ),
             )
-        control = RuntimeControl(lifecycle, service, desktop) { monitoredRunner.healthy() }
+        desktop = desktopApi
+        val remoteClient =
+            remoteAccess?.let {
+                RemoteClientServer(it.port, environment.name, RemoteAuth(it), desktopApi)
+            }
+        remote = remoteClient
+        control =
+            RuntimeControl(
+                lifecycle,
+                service,
+                desktopApi,
+                onActivate = { remoteClient?.activate() },
+            ) {
+                monitoredRunner.healthy()
+            }
         val activeLarkChannel = larkChannel
         val activeTelegramClient = telegramClient
         val activeService = service
@@ -209,7 +235,9 @@ fun main(args: Array<String>) {
                     closeBridgeResources(
                         { activeTelegramClient?.stopPolling() },
                         { watchdog?.close() },
+                        { remoteClient?.close() },
                         { activeControl.close() },
+                        { desktopApi.close() },
                         { activeFileLinks?.close() },
                         { activeService.close() },
                         { activeRunner.close() },
@@ -250,6 +278,9 @@ fun main(args: Array<String>) {
             log.info("Telegram Bot 已连接: @{}", bot.username ?: bot.displayName)
         }
         control.connected(true)
+        if (!held) {
+            remoteClient?.activate()
+        }
         watchdog?.start()
         val notice =
             StartupNotice(
@@ -296,7 +327,9 @@ fun main(args: Array<String>) {
         closeBridgeResources(
             { telegramClient?.stopPolling() },
             { watchdog?.close() },
+            { remote?.close() },
             { control?.close() },
+            { desktop?.close() },
             { fileLinks?.close() },
             { service?.close() },
             { runner?.close() },

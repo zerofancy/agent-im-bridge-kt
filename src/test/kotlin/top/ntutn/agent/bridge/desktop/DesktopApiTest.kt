@@ -175,11 +175,7 @@ class DesktopApiTest {
             }
 
         override fun close() {
-            try {
-                control.close()
-            } finally {
-                service.close()
-            }
+            closeBridgeResources({ control.close() }, { api.close() }, { service.close() })
         }
     }
 

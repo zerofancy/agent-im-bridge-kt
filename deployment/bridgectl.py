@@ -26,32 +26,14 @@ import time
 import urllib.request
 import uuid
 
+if __name__ == '__main__':
+    sys.dont_write_bytecode = True  # Published libexec directories are immutable.
+from state_files import atomic, read
+
 if sys.platform == 'darwin':
     import plistlib
 
 TERMINAL = {'succeeded', 'cancelled', 'rolled-back', 'failed'}
-
-
-def read(path, default=None):
-    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else default
-
-
-def atomic(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd, tmp = tempfile.mkstemp(prefix='.atomic-', dir=path.parent)
-    try:
-        with os.fdopen(fd, 'wb') as f:
-            f.write(data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False, indent=2).encode())
-            f.flush(); os.fsync(f.fileno())
-        for attempt in range(50):
-            try:
-                os.replace(tmp, path)
-                break
-            except PermissionError:
-                if attempt == 49: raise
-                time.sleep(.02)
-    finally:
-        if os.path.exists(tmp): os.unlink(tmp)
 
 
 @contextlib.contextmanager
@@ -1004,14 +986,21 @@ class Manager:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['publish','prune','init','migrate-legacy','dev','status','start','stop','deploy','deploy-status','deploy-force','deploy-cancel','rollback','enable-unattended','_launch','_deploy','_deploy-active'])
+    parser.add_argument('command', choices=['publish','prune','init','migrate-legacy','dev','status','start','stop','deploy','deploy-status','deploy-force','deploy-cancel','rollback','enable-unattended','remote','_launch','_deploy','_deploy-active'])
     parser.add_argument('--root', default=str(Path.home() / '.agent-im-bridge-kt'))
     parser.add_argument('--env', choices=['dev','prod'])
     parser.add_argument('--release'); parser.add_argument('--job'); parser.add_argument('--held', action='store_true')
     parser.add_argument('--distribution', default='build/install/agent-im-bridge-kt')
     parser.add_argument('--workspace'); parser.add_argument('--config'); parser.add_argument('--java', default=shutil.which('java'))
-    parser.add_argument('job_id', nargs='?')
+    parser.add_argument('job_id', nargs='?', help='部署编号，或 remote 的 setup/disable 操作')
+    parser.add_argument('--port', type=int, help='remote setup 的固定端口（首次默认 1315）')
+    parser.add_argument('--rotate-totp', action='store_true', help='remote setup 时重置 TOTP 配对')
     args = parser.parse_args()
+    if args.command == 'remote':
+        if args.job_id not in ('setup', 'disable'): parser.error('用法：bridgectl remote setup|disable --env dev|prod')
+        if args.job_id == 'disable' and (args.port is not None or args.rotate_totp): parser.error('端口与 TOTP 重置仅适用于 remote setup')
+    elif args.port is not None or args.rotate_totp:
+        parser.error('端口与 TOTP 重置仅适用于 remote setup')
     if args.command.startswith('deploy-') and not args.env:
         job_id = args.job_id or args.job
         if not job_id or str(uuid.UUID(job_id)) != job_id: parser.error('需要有效部署编号')
@@ -1073,10 +1062,13 @@ def main():
         try: status = m.rpc()
         except Exception: status = {'running':False, 'lifecycle':read(m.directory / 'lifecycle/current.json'), 'release':m.current()}
         status['deployment'] = m.active_job(); print(json.dumps(status, ensure_ascii=False, indent=2))
-    if args.command in ('dev', 'start', 'stop'):
+    if args.command in ('dev', 'start', 'stop', 'remote'):
         with locked(m.deploydir / 'deploy.lock'):
             if m.active_job(): raise RuntimeError('部署中，请使用部署控制命令')
             if args.command == 'stop': m.stop(); print('已停止，守护已卸载')
+            elif args.command == 'remote':
+                from remote_access import configure
+                configure(m, args, locked)
             else:
                 release = args.release or (m.publish(args.distribution) if args.command == 'dev' else m.current())
                 m.verify(release)
