@@ -66,7 +66,7 @@ class DesktopImageTest {
         ChatService(
                 agent,
                 SessionStore(temp.resolve("sessions.json")),
-                { SessionKey("test", it, temp.toString(), temp.resolve("backend").toString()) },
+                { chat, _ -> SessionKey("test", chat, temp.toString(), temp.resolve("backend").toString()) },
                 localReplies = history,
                 sender = ReplySender { _, _ -> error("Desktop must not send to IM") },
             )

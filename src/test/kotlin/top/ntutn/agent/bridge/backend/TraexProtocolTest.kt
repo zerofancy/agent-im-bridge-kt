@@ -178,10 +178,10 @@ class TraexProtocolTest : CodexProtocolTest() {
         ChatService(
                 runner(),
                 SessionStore(temp.resolve("sessions.json")),
-                {
+                { chat, _ ->
                     SessionKey(
                         "test",
-                        it,
+                        chat,
                         temp.toString(),
                         temp.resolve("runtime").toString(),
                         "traex",
@@ -205,7 +205,7 @@ class TraexProtocolTest : CodexProtocolTest() {
         ChatService(
                 unavailable,
                 SessionStore(temp.resolve("missing-sessions.json")),
-                { SessionKey("test", it, temp.toString(), temp.toString(), "traex") },
+                { chat, _ -> SessionKey("test", chat, temp.toString(), temp.toString(), "traex") },
                 sender =
                     ReplySender { _, text ->
                         messages.add(text)

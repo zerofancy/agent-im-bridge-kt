@@ -10,6 +10,7 @@ import top.ntutn.agent.bridge.BackendId
 import top.ntutn.agent.bridge.BackendSpec
 import top.ntutn.agent.bridge.CardReplies
 import top.ntutn.agent.bridge.OutgoingImages
+import top.ntutn.agent.bridge.ReplyRoute
 import top.ntutn.agent.bridge.SplitCardReplies
 import top.ntutn.agent.bridge.feishu.cot.*
 import top.ntutn.agent.bridge.localfiles.LocalFileServer
@@ -36,14 +37,15 @@ internal fun createFeishuReplies(
         (environmentDirectory ?: Path.of(System.getProperty("user.home"), ".agent-im-bridge-kt"))
             .resolve("cot-runs/$appDirectory"),
         effectiveFeishuProgressMode(config, backend),
-    ) { chatId ->
+    ) { route ->
         sessions.workspace(
             SessionKey(
                 config.appId,
-                chatId,
+                route.chatId,
                 workspace.toString(),
                 backend.runtimeRoot.toString(),
                 backend.id.configValue,
+                route.topicId,
             )
         )
     }
@@ -62,7 +64,7 @@ internal fun createFeishuCardReplies(
     fileLinks: LocalFileServer?,
     cotDirectory: Path,
     progressMode: String,
-    workspace: suspend (String) -> Path?,
+    workspace: suspend (ReplyRoute) -> Path?,
 ): CardReplies {
     org.slf4j.LoggerFactory.getLogger("top.ntutn.agent.bridge")
         .info("飞书过程展示 mode={}", progressMode)

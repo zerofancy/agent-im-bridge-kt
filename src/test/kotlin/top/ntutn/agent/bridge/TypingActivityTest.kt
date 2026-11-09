@@ -59,7 +59,7 @@ class TypingActivityTest {
         ChatService(
             agent,
             SessionStore(temp.resolve("sessions.json")),
-            { SessionKey("app", it, temp.toString(), temp.toString()) },
+            { chat, _ -> SessionKey("app", chat, temp.toString(), temp.toString()) },
             typingReactions = reactions,
             sender = sender,
         )

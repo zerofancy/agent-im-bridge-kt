@@ -211,7 +211,7 @@ class SessionStoreV4Test {
                 assertTrue(store.known(key(), session))
                 store.set(key(), session)
                 assertEquals(
-                    4,
+                    5,
                     JsonParser.parseString(Files.readString(path)).asJsonObject["version"].asInt,
                 )
                 assertEquals(
@@ -251,13 +251,13 @@ class SessionStoreV4Test {
     }
 
     @Test
-    fun `unknown and malformed v4 files are rejected without rewriting`(): Unit = runBlocking {
+    fun `unknown and malformed v5 files are rejected without rewriting`(): Unit = runBlocking {
         val store = SessionStore(path)
         store.activate(key(), id(), "event", true)
         val valid = Files.readString(path)
         val invalid =
             listOf(
-                valid.replace("\"version\": 4", "\"version\": 5"),
+                valid.replace("\"version\": 5", "\"version\": 6"),
                 valid.replace("\"PENDING\"", "\"UNKNOWN\""),
                 valid.replace("\"strictResume\": true", "\"strictResume\": \"true\""),
                 valid.replace("\"catalog\"", "\"missingCatalog\""),

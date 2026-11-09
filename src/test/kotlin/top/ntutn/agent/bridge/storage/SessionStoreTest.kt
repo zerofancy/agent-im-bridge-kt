@@ -15,8 +15,14 @@ import top.ntutn.agent.bridge.*
 class SessionStoreTest {
     @TempDir lateinit var temp: Path
 
-    private fun key(chat: String) =
-        SessionKey("cli_test", chat, temp.toString(), temp.resolve("codex").toString())
+    private fun key(chat: String, topicId: String? = null, workspace: Path = temp) =
+        SessionKey(
+            "cli_test",
+            chat,
+            workspace.toRealPath().toString(),
+            temp.resolve("codex").toString(),
+            topicId = topicId,
+        )
 
     @Test
     fun `bindings persist privately and isolate every namespace dimension`(): Unit = runBlocking {
@@ -91,5 +97,58 @@ class SessionStoreTest {
             assertFailsWith<IllegalArgumentException> { InstanceLock.acquire(temp) }
         }
         InstanceLock.acquire(temp).close()
+    }
+    @Test
+    fun `topics of one chat keep isolated bindings at the same workspace`(): Unit = runBlocking {
+        val path = temp.resolve("sessions.json")
+        val store = SessionStore(path)
+        val a = key("topic-group", "omt-a")
+        val b = key("topic-group", "omt-b")
+        val idA = UUID.randomUUID().toString()
+        val idB = UUID.randomUUID().toString()
+        store.set(a, idA)
+        store.set(b, idB)
+        assertEquals(idA, store.get(a))
+        assertEquals(idB, store.get(b))
+        val restored = SessionStore(path)
+        assertEquals(idA, restored.get(a))
+        assertEquals(idB, restored.get(b))
+        assertNull(restored.get(key("topic-group")))
+    }
+
+    @Test
+    fun `new topic inherits the latest sibling cd and cd never moves another topic`(): Unit =
+        runBlocking {
+            val path = temp.resolve("sessions.json")
+            val store = SessionStore(path)
+            val dirA = temp.resolve("project-a").also { Files.createDirectories(it) }.toRealPath()
+            val dirB = temp.resolve("project-b").also { Files.createDirectories(it) }.toRealPath()
+            // First topic starts at the configured default and gets bound.
+            val topicA = key("topic-group", "omt-a")
+            store.set(topicA, UUID.randomUUID().toString())
+            // /cd in topic A changes only topic A and becomes the inherited directory.
+            store.changeWorkspace(topicA, dirA)
+            assertEquals(dirA, store.workspace(key("topic-group", "omt-b")))
+            // Topic B binds at the inherited directory.
+            val topicB = key("topic-group", "omt-b", dirA)
+            store.set(topicB, UUID.randomUUID().toString())
+            Thread.sleep(10)
+            // /cd in topic B must not move topic A.
+            store.changeWorkspace(topicB, dirB)
+            assertEquals(dirA, store.workspace(topicA))
+            assertEquals(dirB, store.workspace(topicB))
+            // A subsequently created topic inherits the latest selection (topic B's /cd).
+            assertEquals(dirB, store.workspace(key("topic-group", "omt-c")))
+            // Inheritance survives a restart.
+            val restored = SessionStore(path)
+            assertEquals(dirA, restored.workspace(topicA))
+            assertEquals(dirB, restored.workspace(topicB))
+            assertEquals(dirB, restored.workspace(key("topic-group", "omt-c")))
+        }
+
+    @Test
+    fun `a topic without any sibling selection uses the configured default`(): Unit = runBlocking {
+        val store = SessionStore(temp.resolve("sessions.json"))
+        assertEquals(temp.toRealPath(), store.workspace(key("topic-group", "omt-first")))
     }
 }

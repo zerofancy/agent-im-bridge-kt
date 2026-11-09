@@ -26,7 +26,7 @@ internal suspend fun ChatService.execute(work: Work) {
         if (mutex.withLock { closed }) {
             return
         }
-        if (mutex.withLock { unavailable.contains(route.chatId) }) {
+        if (mutex.withLock { unavailable.contains(route.scopeId) }) {
             throw SessionPersistenceException()
         }
         val sessionChatId = work.input?.sessionChatId ?: route.chatId
@@ -120,7 +120,7 @@ internal suspend fun ChatService.execute(work: Work) {
             return
         }
         if (result is AgentResult.Failure && result.kind == AgentResult.Kind.STORAGE) {
-            mutex.withLock { unavailable.add(route.chatId) }
+            mutex.withLock { unavailable.add(route.scopeId) }
         }
         stage(work, Stage.REPLYING)
         val outputReferences =
@@ -141,7 +141,7 @@ internal suspend fun ChatService.execute(work: Work) {
     } catch (e: CancellationException) {
         throw e
     } catch (_: SessionPersistenceException) {
-        mutex.withLock { unavailable.add(route.chatId) }
+        mutex.withLock { unavailable.add(route.scopeId) }
         try {
             send(route, "会话存储不可用，当前聊天已暂停执行，请修复后重启。")
         } catch (e: CancellationException) {
@@ -176,8 +176,8 @@ internal suspend fun ChatService.execute(work: Work) {
                 } finally {
                     try {
                         mutex.withLock {
-                            if (running[route.chatId] === work) {
-                                running.remove(route.chatId)
+                            if (running[route.scopeId] === work) {
+                                running.remove(route.scopeId)
                             }
                             dispatch()
                         }

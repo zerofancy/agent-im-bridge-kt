@@ -115,6 +115,7 @@ class LarkMessageSourceTest {
         var senderType = "app"
         var mode = "p2p"
         var deleted = false
+        var threadId = "omt-topic"
         val client =
             Client.newBuilder("reaction-app", "test-secret")
                 .httpTransport(
@@ -131,7 +132,7 @@ class LarkMessageSourceTest {
                                         """{"code":0,"data":{"chat_mode":"$mode"}}"""
                                     }
                                     else -> {
-                                        """{"code":0,"data":{"items":[{"message_id":"om_bot","chat_id":"chat","msg_type":"text","deleted":$deleted,"sender":{"id":"$owner","id_type":"app_id","sender_type":"$senderType"},"body":{"content":"{\"text\":\"continue?\"}"}}]}}"""
+                                        """{"code":0,"data":{"items":[{"message_id":"om_bot","chat_id":"chat","thread_id":"$threadId","msg_type":"text","deleted":$deleted,"sender":{"id":"$owner","id_type":"app_id","sender_type":"$senderType"},"body":{"content":"{\"text\":\"continue?\"}"}}]}}"""
                                     }
                                 }.toByteArray()
                         }
@@ -140,10 +141,13 @@ class LarkMessageSourceTest {
                 .build()
         val source = LarkMessageSource({ client })
         val reaction = ReactionInput("rx:1", "om_bot", "allowed", "1", "[Yes]")
-        assertEquals("p2p", source.reaction(reaction, "reaction-app", null)?.input?.chatType)
+        val direct = assertNotNull(source.reaction(reaction, "reaction-app", null))
+        assertEquals("p2p", direct.input.chatType)
+        assertNull(direct.route.topicId)
         mode = "topic"
         val resolved = assertNotNull(source.reaction(reaction, "reaction-app", null))
         assertEquals("topic_group", resolved.input.chatType)
+        assertEquals("omt-topic", resolved.route.topicId)
         assertEquals("om_bot", resolved.route.messageId)
         assertEquals("rx:1", resolved.input.inputId)
         assertEquals("om_bot", resolved.input.parentId)

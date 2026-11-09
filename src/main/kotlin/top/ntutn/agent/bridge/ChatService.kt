@@ -15,11 +15,12 @@ import top.ntutn.agent.bridge.ChatWork as Work
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionStore
 import top.ntutn.agent.bridge.storage.chatKey
+import top.ntutn.agent.bridge.storage.sameChatAs
 
 class ChatService(
     internal val runner: AgentRunner,
     internal val sessions: SessionStore,
-    internal val sessionKey: (String) -> SessionKey,
+    internal val sessionKey: (String, String?) -> SessionKey,
     maxConcurrentRuns: Int = 10,
     internal val sandboxMode: SandboxMode = SandboxMode.READ_ONLY,
     private val replyContext: ReplyContext? = null,
@@ -111,7 +112,10 @@ class ChatService(
     internal var creatingGroups = 0
     internal val knownChats =
         sessions.persistedChatKeys
-            .filter { it == sessionKey(it.chatId).chatKey() }
+            .filter { persisted ->
+                // Any topic directory of the chat counts as "this chat is known".
+                persisted.sameChatAs(sessionKey(persisted.chatId, null).chatKey())
+            }
             .map { it.chatId }
             .toMutableSet()
     internal val groupGates = mutableMapOf<String, CompletableDeferred<Unit>>()
@@ -174,7 +178,7 @@ class ChatService(
         }
 
     internal suspend fun workspace(chatId: String) =
-        sessions.workspace(sessionKey(chatId)).toString()
+        sessions.workspace(sessionKey(chatId, null)).toString()
 
     internal fun admit(
         route: ReplyRoute,
@@ -194,22 +198,24 @@ class ChatService(
             )
         val admission =
             scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                val slot = route.scopeId
                 val control =
                     mutex.withLock {
                         if (
                             closed ||
                                 (incomingOrder != null &&
-                                    incomingOrder <= (stoppedIncoming[route.chatId] ?: 0L))
+                                    incomingOrder <= (stoppedIncoming[slot] ?: 0L))
                         ) {
                             work.finish()
                             return@withLock null
                         }
                         outstanding.removeAll { it.isDone }
                         outstanding.add(work.completed)
-                        if (
-                            creatingGroups == 0 ||
-                                sessionKey(route.chatId).chatKey() in sessions.persistedChatKeys
-                        ) {
+                        val chatKnown =
+                            sessions.persistedChatKeys.any {
+                                it.sameChatAs(sessionKey(route.chatId, null).chatKey())
+                            }
+                        if (creatingGroups == 0 || chatKnown) {
                             knownChats.add(route.chatId)
                         }
                         val groupInitializing =
@@ -217,11 +223,13 @@ class ChatService(
                                 (creatingGroups > 0 && route.chatId !in knownChats)
                         if (groupInitializing && command != null) {
                             if (command.name == "/stop" && command.argument.isBlank()) {
+                                // Group creation lifecycle is chat-wide, but the stop watermark
+                                // and queued work are scoped per topic in topic groups.
                                 stoppedGroupInitializers.add(route.chatId)
-                                stoppedIncoming[route.chatId] = incomingSequence.get()
+                                stoppedIncoming[slot] = incomingSequence.get()
                                 cancelDeferredGroupControls(route.chatId)
-                                sessionSwitches[route.chatId]?.requestStop()
-                                val stopped = queue.filter { it.route.chatId == route.chatId }
+                                sessionSwitches[slot]?.requestStop()
+                                val stopped = queue.filter { it.route.scopeId == slot }
                                 queue.removeAll(stopped.toSet())
                                 stopped.forEach {
                                     it.notice?.cancel()
@@ -278,14 +286,14 @@ class ChatService(
                         }
                         work.ready =
                             running.size < limit &&
-                                route.chatId !in running &&
-                                route.chatId !in switching &&
+                                slot !in running &&
+                                slot !in switching &&
                                 queue.isEmpty()
                         queue.add(work)
                         if (groupInitializing) {
                             work.ready = true
                         } else if (!work.ready) {
-                            log.info("请求排队 chatId={} messageId={}", route.chatId, route.messageId)
+                            log.info("请求排队 scope={} messageId={}", slot, route.messageId)
                             work.notice =
                                 scope.launch {
                                     try {
@@ -344,17 +352,17 @@ class ChatService(
             return
         }
         while (running.size < limit) {
-            val seenChats = mutableSetOf<String>()
+            val seenScopes = mutableSetOf<String>()
             val next =
                 queue.firstOrNull { work ->
-                    seenChats.add(work.route.chatId) &&
+                    seenScopes.add(work.route.scopeId) &&
                         work.ready &&
-                        work.route.chatId !in running &&
-                        work.route.chatId !in switching &&
+                        work.route.scopeId !in running &&
+                        work.route.scopeId !in switching &&
                         (creatingGroups == 0 || work.route.chatId in knownChats)
                 } ?: break
             queue.remove(next)
-            running[next.route.chatId] = next
+            running[next.route.scopeId] = next
             next.task = scope.launch(start = CoroutineStart.ATOMIC) { execute(next) }
         }
     }

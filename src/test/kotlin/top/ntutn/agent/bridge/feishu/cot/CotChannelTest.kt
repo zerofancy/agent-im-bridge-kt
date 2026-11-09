@@ -76,7 +76,7 @@ class CotChannelTest {
             ChatService(
                 runner,
                 SessionStore(temp.resolve("sessions.json")),
-                { SessionKey("test", it, temp.toString(), temp.resolve("backend").toString()) },
+                { chat, _ -> SessionKey("test", chat, temp.toString(), temp.resolve("backend").toString()) },
                 cardReplies = CotReplies(cards, CotRuntime(api, CotRunStore(temp.resolve("cot")))),
                 outgoingImages =
                     OutgoingImages(temp.resolve("images")) { _, _ ->

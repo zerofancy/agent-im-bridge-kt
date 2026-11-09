@@ -26,6 +26,13 @@ import top.ntutn.agent.bridge.storage.GroupCreationStore
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionStore
 
+/**
+ * Only topic groups isolate conversations per topic; regular groups (and their in-group topics)
+ * keep one whole-chat session.
+ */
+internal fun topicIdOf(message: NormalizedMessage): String? =
+    message.threadId?.takeIf { it.isNotBlank() && message.chatType == "topic_group" }
+
 fun extractPrompt(message: NormalizedMessage, allowedUserId: String): String? {
     if (
         message.senderId != allowedUserId ||
@@ -290,13 +297,14 @@ fun createAgentChannel(
         ChatService(
             runner,
             sessions,
-            { chatId ->
+            { chatId, topicId ->
                 SessionKey(
                     config.appId,
                     chatId,
                     options.workspace.toString(),
                     backend.runtimeRoot.toString(),
                     backend.id.configValue,
+                    topicId,
                 )
             },
             options.maxConcurrentRuns,
@@ -411,7 +419,11 @@ fun createAgentChannel(
                 )
                 service.receive(
                     IncomingMessage(
-                        ReplyRoute(message.chatId, message.messageId),
+                        ReplyRoute(
+                            message.chatId,
+                            message.messageId,
+                            topicId = topicIdOf(message),
+                        ),
                         prompt,
                         extractMessageInput(message),
                     )

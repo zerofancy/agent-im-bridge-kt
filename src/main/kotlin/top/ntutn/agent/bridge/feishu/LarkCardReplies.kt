@@ -144,10 +144,10 @@ internal class LarkCardReplies(
     private val fileLinks: top.ntutn.agent.bridge.localfiles.LocalFileServer? = null,
     private val resultApi: ResultCardApi,
     private val limiter: CardRateLimiter = CardRateLimiter(),
-    private val workspace: suspend (String) -> Path? = { null },
+    private val workspace: suspend (ReplyRoute) -> Path? = { null },
 ) : SplitCardReplies {
     override suspend fun prepareResult(route: ReplyRoute, requestId: String): ResultDelivery =
-        LarkResultDelivery(route, workspace(route.chatId), resultApi, answers, fileLinks, requestId)
+        LarkResultDelivery(route, workspace(route), resultApi, answers, fileLinks, requestId)
 
     private val log = org.slf4j.LoggerFactory.getLogger("top.ntutn.agent.bridge")
 
@@ -209,7 +209,7 @@ internal class LarkCardReplies(
     }
 
     override suspend fun create(route: ReplyRoute): CardReference {
-        val directory = workspace(route.chatId)
+        val directory = workspace(route)
         val api = client().cardkit().v1().card()
         val create =
             CreateCardReq.newBuilder()

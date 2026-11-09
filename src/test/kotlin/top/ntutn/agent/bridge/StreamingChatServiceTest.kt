@@ -72,7 +72,7 @@ class StreamingChatServiceTest {
         ChatService(
             runner,
             SessionStore(temp.resolve("sessions.json")),
-            { chat -> SessionKey("app", chat, temp.toString(), temp.resolve("model").toString()) },
+            { chat, _ -> SessionKey("app", chat, temp.toString(), temp.resolve("model").toString()) },
             2,
             cardReplies = cards,
             sender = sender,

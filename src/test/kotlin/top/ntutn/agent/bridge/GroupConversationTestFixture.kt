@@ -29,7 +29,7 @@ internal class GroupConversationTestFixture(
         ChatService(
             runner,
             sessions,
-            ::key,
+            { chat, _ -> key(chat) },
             maxConcurrentRuns = 1,
             groupConversations = GroupConversations(gateway, operations, "owner"),
             sender =

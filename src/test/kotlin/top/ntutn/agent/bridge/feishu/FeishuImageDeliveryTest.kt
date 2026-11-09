@@ -88,7 +88,7 @@ class FeishuImageDeliveryTest {
         return ChatService(
             runner,
             SessionStore(temp.resolve("sessions.json")),
-            { SessionKey("fixture", it, temp.toString(), temp.resolve("model").toString()) },
+            { chat, _ -> SessionKey("fixture", chat, temp.toString(), temp.resolve("model").toString()) },
             cardReplies = cards,
             outgoingImages = media,
             sender =

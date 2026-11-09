@@ -20,17 +20,24 @@ internal fun validateSessionV4(root: JsonObject) {
         for (field in listOf("appId", "chatId", "runtimeRoot", "backendId")) {
             text(key, field)
         }
+        key["topicId"]
+            ?.also {
+                require(it.isJsonPrimitive && it.asJsonPrimitive.isString)
+                require(it.asString.isNotBlank())
+            }
         if (session) {
             text(key, "workspace")
         }
     }
 
-    val version = root["version"]
-    require(version.isJsonPrimitive && version.asJsonPrimitive.isNumber)
     for (raw in root["workspaces"].asJsonArray) {
         val item = raw.asJsonObject
         key(item, false)
         text(item, "workspace")
+        item["updatedAt"]?.let {
+            require(it.isJsonPrimitive && it.asJsonPrimitive.isNumber)
+            require(it.asString.toLong() >= 0)
+        }
     }
     for (raw in root["sessions"].asJsonArray) {
         val item = raw.asJsonObject

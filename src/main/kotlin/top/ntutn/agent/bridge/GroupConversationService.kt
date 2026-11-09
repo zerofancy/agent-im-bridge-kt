@@ -63,7 +63,7 @@ private suspend fun ChatService.createGroupConversation(
     groups: GroupConversations,
 ) {
     val source = work.route
-    val base = sessionKey(work.input?.sessionChatId ?: source.chatId)
+    val base = sessionKey(work.input?.sessionChatId ?: source.chatId, null)
     val operation =
         UUID.nameUUIDFromBytes(
                 "${base.appId}\u0000${base.runtimeRoot}\u0000${base.backendId}\u0000${source.chatId}\u0000${source.messageId}"
@@ -137,8 +137,8 @@ private suspend fun ChatService.createGroupConversation(
         withTimeout(30_000) { groups.gateway.verify(target.chatId) }
         save("MEMBERS_VERIFIED")
         ensureContinuing()
-        val key = sessionKey(target.chatId).copy(workspace = directory.toString())
-        sessions.changeWorkspace(sessionKey(target.chatId), directory)
+        val key = sessionKey(target.chatId, null).copy(workspace = directory.toString())
+        sessions.changeWorkspace(sessionKey(target.chatId, null), directory)
         groups.store.confirmDirectory(target.chatId)
         val controller = runner as AgentSessionController
         val descriptor =

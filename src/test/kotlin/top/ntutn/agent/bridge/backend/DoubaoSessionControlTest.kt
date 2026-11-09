@@ -87,7 +87,7 @@ class DoubaoSessionControlTest {
         ChatService(
             runner,
             SessionStore(temp.resolve(storeName)),
-            { key() },
+            { _, _ -> key() },
             sandboxMode = mode,
             cardReplies = cards,
             sender =

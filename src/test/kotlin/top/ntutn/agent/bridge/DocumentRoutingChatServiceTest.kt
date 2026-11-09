@@ -13,7 +13,7 @@ import top.ntutn.agent.bridge.storage.SessionStore
 class DocumentRoutingChatServiceTest {
     @TempDir lateinit var temp: Path
 
-    private fun key(chat: String) =
+    private fun key(chat: String, topicId: String? = null) =
         SessionKey("app", chat, temp.toString(), temp.resolve("runtime").toString())
 
     @Test

@@ -63,7 +63,7 @@ fun main() {
         ChatService(
             runner,
             sessions,
-            { SessionKey("smoke", it, root.toString(), root.resolve("model").toString()) },
+            { chat, _ -> SessionKey("smoke", chat, root.toString(), root.resolve("model").toString()) },
             localReplies = history,
             sender =
                 ReplySender { _, _ ->

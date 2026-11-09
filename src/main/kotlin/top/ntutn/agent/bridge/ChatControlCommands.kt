@@ -10,6 +10,8 @@ import top.ntutn.agent.bridge.ChatWorkStage as Stage
 // Called under the state mutex: reserve state or capture a snapshot before any suspension.
 internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): suspend () -> Unit {
     val route = work.route
+    // Conversation slot identity: per topic in topic groups, whole chat elsewhere.
+    val slot = route.scopeId
     fun reply(text: String): suspend () -> Unit = { send(route, text) }
     if (command.name !in setOf("/cd", "/new", "/resume") && command.argument.isNotEmpty()) {
         return reply("用法：${command.name}；查看 /help 获取帮助。")
@@ -19,13 +21,13 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
             reply(BridgeCommand.help(runner.displayName))
         }
         "/status" -> {
-            val current = running[route.chatId]
+            val current = running[slot]
             val state =
                 if (current?.stage == Stage.STOPPING && current.backendEnded.isCompleted) {
                     "后端已结束，回复清理中"
                 } else {
                     current?.stage?.label
-                        ?: if (route.chatId in switching) {
+                        ?: if (slot in switching) {
                             "切换上下文中"
                         } else {
                             "空闲"
@@ -33,11 +35,15 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
                 }
             val status =
                 (lifecycle?.status().orEmpty()) +
-                    "部署状态：${if (draining) { "排空或等待激活" } else { "空闲" }}\n当前后端：${runner.displayName}\n正在执行：${running.size}/$limit\n正在排队：${queue.size}\n当前聊天：$state\n当前聊天排队：${queue.count { it.route.chatId == route.chatId }}"
+                    "部署状态：${if (draining) { "排空或等待激活" } else { "空闲" }}\n当前后端：${runner.displayName}\n正在执行：${running.size}/$limit\n正在排队：${queue.size}\n当前聊天：$state\n当前聊天排队：${queue.count { it.route.scopeId == slot }}"
             suspend {
                 send(
                     route,
-                    status + sessionControls.status(work.input?.sessionChatId ?: route.chatId),
+                    status +
+                        sessionControls.status(
+                            work.input?.sessionChatId ?: route.chatId,
+                            route.topicId,
+                        ),
                 )
             }
         }
@@ -51,7 +57,10 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
                         "新群初始化未完成；预期继承目录：${expected ?: "结果未确认"}。请用 /cd <绝对路径> 确认，不使用默认目录执行。",
                     )
                 } else {
-                    send(route, "当前目录：${sessions.workspace(sessionKey(route.chatId))}")
+                    send(
+                        route,
+                        "当前目录：${sessions.workspace(sessionKey(route.chatId, route.topicId))}"
+                    )
                 }
             }
         }
@@ -64,7 +73,7 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
             }
         }
         "/stop" -> {
-            val target = running[route.chatId]
+            val target = running[slot]
             // Native stop buttons must not cancel a newer request or its queue.
             if (
                 work.input?.stopRequestId != null &&
@@ -73,15 +82,15 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
                 return suspend {}
             }
             cancelDeferredGroupControls(route.chatId)
-            sessionSwitches[route.chatId]?.requestStop()
+            sessionSwitches[slot]?.requestStop()
             if (target?.stage != Stage.STOPPING) {
-                stoppedIncoming[route.chatId] = incomingSequence.get()
+                stoppedIncoming[slot] = incomingSequence.get()
             }
             val cancelled =
                 if (target?.stage == Stage.STOPPING) {
                     emptyList()
                 } else {
-                    queue.filter { it.route.chatId == route.chatId }
+                    queue.filter { it.route.scopeId == slot }
                 }
             queue.removeAll(cancelled.toSet())
             cancelled.forEach {
@@ -150,7 +159,7 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
                 reply(
                     if (cancelled.isNotEmpty()) {
                         "已取消 ${cancelled.size} 个排队请求，当前没有运行任务。"
-                    } else if (route.chatId in switching) {
+                    } else if (slot in switching) {
                         "当前正在切换上下文，没有运行中的模型任务。"
                     } else if (incomingCount.get() > 0) {
                         "当前没有运行任务；本聊天此前收到、仍在接收准备中的请求也将取消。"
@@ -186,13 +195,13 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
             } else if (incomingCount.get() > 0) {
                 reply("正在准备接收到的消息，请稍后再切换目录。")
             } else if (
-                route.chatId in running ||
-                    route.chatId in switching ||
-                    queue.any { it.route.chatId == route.chatId }
+                slot in running ||
+                    slot in switching ||
+                    queue.any { it.route.scopeId == slot }
             ) {
-                reply("当前聊天忙碌，请等待空闲，或先 /stop 停止任务后再切换目录。")
+                reply("当前话题忙碌，请等待空闲，或先 /stop 停止任务后再切换目录。")
             } else {
-                switching.add(route.chatId)
+                switching.add(slot)
                 suspend {
                     try {
                         sessionControls.changeDirectory(route, command.argument) {
@@ -205,7 +214,7 @@ internal fun ChatService.prepareControl(work: Work, command: BridgeCommand): sus
                     } finally {
                         withContext(NonCancellable) {
                             mutex.withLock {
-                                switching.remove(route.chatId)
+                                switching.remove(slot)
                                 dispatch()
                             }
                         }
@@ -224,6 +233,7 @@ private fun ChatService.prepareSessionControl(
     command: BridgeCommand,
 ): suspend () -> Unit {
     val route = work.route
+    val slot = route.scopeId
     if (
         command.name == "/resume" &&
             (command.argument.isEmpty() || command.argument.any { it.isWhitespace() })
@@ -235,14 +245,14 @@ private fun ChatService.prepareSessionControl(
     }
     if (
         incomingCount.get() > 0 ||
-            route.chatId in running ||
-            route.chatId in switching ||
-            queue.any { it.route.chatId == route.chatId }
+            slot in running ||
+            slot in switching ||
+            queue.any { it.route.scopeId == slot }
     ) {
         return { send(route, "当前聊天忙碌，请等待空闲，或先 /stop 并等待停止完成后切换会话。") }
     }
-    switching.add(route.chatId)
-    sessionSwitches[route.chatId] = work.handle
+    switching.add(slot)
+    sessionSwitches[slot] = work.handle
     val initial =
         if (command.name == "/new") {
             initialSessionWork(route, command.argument, work.input)
@@ -323,7 +333,10 @@ private fun ChatService.prepareSessionControl(
                 activate = { changed ->
                     activated = changed
                     if (changed) {
-                        turnExecutor.invalidateSession(work.input?.sessionChatId ?: route.chatId)
+                        turnExecutor.invalidateSession(
+                            work.input?.sessionChatId ?: route.chatId,
+                            route.topicId,
+                        )
                     }
                     mutex.withLock {
                         if (
@@ -380,8 +393,8 @@ private fun ChatService.prepareSessionControl(
                         queue.remove(initial)
                         initial.finish()
                     }
-                    sessionSwitches.remove(route.chatId)
-                    switching.remove(route.chatId)
+                    sessionSwitches.remove(slot)
+                    switching.remove(slot)
                     dispatch()
                 }
             }

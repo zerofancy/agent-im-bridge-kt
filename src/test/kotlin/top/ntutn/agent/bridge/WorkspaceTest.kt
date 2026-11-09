@@ -22,7 +22,7 @@ import top.ntutn.agent.bridge.storage.SessionStore
 class WorkspaceTest {
     @TempDir lateinit var temp: Path
 
-    private fun key(chat: String) =
+    private fun key(chat: String, topicId: String? = null) =
         SessionKey("cli_test", chat, temp.toRealPath().toString(), temp.resolve("codex").toString())
 
     @Test
@@ -72,7 +72,7 @@ class WorkspaceTest {
             assertNull(restored.get(a.copy(workspace = target.toString())))
             assertEquals(id, restored.get(b))
             assertEquals(
-                4,
+                5,
                 JsonParser.parseString(Files.readString(file)).asJsonObject["version"].asInt,
             )
             Files.delete(file)

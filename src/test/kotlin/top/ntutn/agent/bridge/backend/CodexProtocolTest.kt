@@ -267,7 +267,7 @@ open class CodexProtocolTest {
                 ChatService(
                     r,
                     SessionStore(temp.resolve("sessions.json")),
-                    { chat ->
+                    { chat, _ ->
                         SessionKey("test", chat, temp.toRealPath().toString(), temp.toString())
                     },
                     2,

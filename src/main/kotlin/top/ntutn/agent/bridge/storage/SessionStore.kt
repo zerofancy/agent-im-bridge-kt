@@ -14,25 +14,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import top.ntutn.agent.bridge.*
 
-data class SessionKey(
-    val appId: String,
-    val chatId: String,
-    val workspace: String,
-    val runtimeRoot: String,
-    val backendId: String = "codex",
-)
-
-data class ChatKey(
-    val appId: String,
-    val chatId: String,
-    val runtimeRoot: String,
-    val backendId: String = "codex",
-)
-
-data class WorkspaceEntry(val key: ChatKey, val workspace: String)
-
-fun SessionKey.chatKey() = ChatKey(appId, chatId, runtimeRoot, backendId)
-
 enum class SessionInitialization {
     PENDING,
     SUBMITTING,
@@ -81,9 +62,9 @@ class SessionStore(private val path: Path) {
                 PlatformFiles.setPrivatePermissions(path, directory = false)
                 val root = JsonParser.parseString(Files.readString(path)).asJsonObject
                 val version = root["version"].asInt
-                require(version in 1..4)
+                require(version in 1..5)
                 require(root["version"].asString == version.toString())
-                if (version == 4) {
+                if (version >= 4) {
                     validateSessionV4(root)
                 }
                 val homeField =
@@ -98,6 +79,11 @@ class SessionStore(private val path: Path) {
                     } else {
                         BackendId.parse(requireNotNull(key.string("backendId"))).configValue
                     }
+                fun topicOf(key: com.google.gson.JsonObject): String? =
+                    key["topicId"]
+                        ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+                        ?.asString
+                        ?.takeIf { it.isNotBlank() }
                 if (version >= 2) {
                     for (raw in root["workspaces"].asJsonArray) {
                         val item = raw.asJsonObject
@@ -108,8 +94,22 @@ class SessionStore(private val path: Path) {
                                 key["chatId"].asString,
                                 key[homeField].asString,
                                 backend(key),
+                                if (version >= 5) {
+                                    topicOf(key)
+                                } else {
+                                    null
+                                },
                             )
-                        val entry = WorkspaceEntry(chat, item["workspace"].asString)
+                        val updatedAt =
+                            if (version >= 5) {
+                                item["updatedAt"]
+                                    ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
+                                    ?.asLong
+                                    ?: 0L
+                            } else {
+                                0L
+                            }
+                        val entry = WorkspaceEntry(chat, item["workspace"].asString, updatedAt)
                         require(chat.appId.isNotBlank() && chat.chatId.isNotBlank())
                         require(
                             Path.of(chat.runtimeRoot).isAbsolute &&
@@ -128,20 +128,25 @@ class SessionStore(private val path: Path) {
                             k["workspace"].asString,
                             k[homeField].asString,
                             backend(k),
+                            if (version >= 5) {
+                                topicOf(k)
+                            } else {
+                                null
+                            },
                         )
                     val entry =
                         SessionEntry(
                             key,
                             item["sessionId"].asString,
                             item["updatedAt"].asLong,
-                            if (version == 4) {
+                            if (version >= 4) {
                                 val strict = item["strictResume"]
                                 require(strict.isJsonPrimitive && strict.asJsonPrimitive.isBoolean)
                                 strict.asBoolean
                             } else {
                                 false
                             },
-                            if (version == 4) {
+                            if (version >= 4) {
                                 SessionInitialization.valueOf(item["initialization"].asString)
                             } else {
                                 SessionInitialization.COMPLETE
@@ -150,7 +155,7 @@ class SessionStore(private val path: Path) {
                     validate(entry)
                     require(entries.put(key, entry) == null)
                 }
-                if (version == 4) {
+                if (version >= 4) {
                     for (raw in root["catalog"].asJsonArray) {
                         val item = raw.asJsonObject
                         val known = gson.fromJson(item, KnownSession::class.java)
@@ -171,7 +176,7 @@ class SessionStore(private val path: Path) {
                 }
                 for (entry in entries.values) {
                     val identity = entry.key to entry.sessionId
-                    if (version == 4) {
+                    if (version >= 4) {
                         require(catalog.containsKey(identity))
                         require(catalog[identity]?.initialization == entry.initialization)
                     } else {
@@ -266,7 +271,13 @@ class SessionStore(private val path: Path) {
                 LinkedHashMap(switches).apply {
                     put(key, SessionSwitch(key, previousId, id, commandId, now))
                 }
-            commit(next, directories, nextCatalog, nextSwitches)
+            val nextDirectories =
+                if (key.topicId != null) {
+                    seedInheritedDirectory(directories, key)
+                } else {
+                    directories
+                }
+            commit(next, nextDirectories, nextCatalog, nextSwitches)
             true
         }
 
@@ -288,8 +299,12 @@ class SessionStore(private val path: Path) {
             commit(next, directories, nextCatalog)
         }
 
+    /**
+     * Effective workspace without writing: a topic without its own directory inherits the most
+     * recently used workspace of the chat's other topics (or the configured default).
+     */
     suspend fun workspace(key: SessionKey): Path =
-        mutex.withLock { Path.of(directories[key.chatKey()]?.workspace ?: key.workspace) }
+        mutex.withLock { resolveWorkspace(directories, key) }
 
     suspend fun latestChat(appId: String, runtimeRoot: String, backendId: String): String? =
         mutex.withLock {
@@ -312,9 +327,14 @@ class SessionStore(private val path: Path) {
             require(target.isAbsolute)
             val nextDirectories =
                 LinkedHashMap(directories).apply {
-                    put(base.chatKey(), WorkspaceEntry(base.chatKey(), target.toString()))
+                    // /cd only retargets this conversation; updatedAt makes it the workspace that
+                    // subsequently created topics inherit.
+                    put(
+                        base.chatKey(),
+                        WorkspaceEntry(base.chatKey(), target.toString(), System.currentTimeMillis()),
+                    )
                 }
-            val current = directories[base.chatKey()]?.workspace ?: base.workspace
+            val current = resolveWorkspace(directories, base).toString()
             val next =
                 LinkedHashMap(entries).apply {
                     if (target.toString() != current) {
@@ -339,7 +359,13 @@ class SessionStore(private val path: Path) {
                     )
             validate(entry)
             val next = LinkedHashMap(entries).apply { put(key, entry) }
-            commit(next, directories, selected(entry, "automatic"))
+            val nextDirectories =
+                if (key.topicId != null) {
+                    seedInheritedDirectory(directories, key)
+                } else {
+                    directories
+                }
+            commit(next, nextDirectories, selected(entry, "automatic"))
         }
 
     private fun selected(
@@ -392,6 +418,7 @@ class SessionStore(private val path: Path) {
     private fun validate(entry: SessionEntry) {
         val backend = BackendId.parse(entry.key.backendId)
         require(entry.key.appId.isNotBlank() && entry.key.chatId.isNotBlank())
+        require(entry.key.topicId?.isNotBlank() ?: true)
         require(
             Path.of(entry.key.workspace).isAbsolute && Path.of(entry.key.runtimeRoot).isAbsolute
         )
@@ -428,7 +455,7 @@ class SessionStore(private val path: Path) {
                 temp,
                 gson.toJson(
                     mapOf(
-                        "version" to 4,
+                        "version" to 5,
                         "sessions" to next.values,
                         "workspaces" to nextDirectories.values,
                         "catalog" to nextCatalog.values,

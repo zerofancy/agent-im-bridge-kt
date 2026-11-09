@@ -404,7 +404,7 @@ class DoubaoCliRunnerTest {
                 ChatService(
                     runner,
                     SessionStore(temp.resolve("store/sessions.json")),
-                    { key },
+                    { _, _ -> key },
                     sandboxMode = mode,
                     sender =
                         ReplySender { route, text ->

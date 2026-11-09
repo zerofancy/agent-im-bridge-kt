@@ -21,7 +21,7 @@ internal suspend fun ChatService.notifyGroupRecovery() {
     for (entry in queuedGroupRecovery) {
         val chatId = entry.chatId ?: continue
         val messageId = entry.messageId ?: continue
-        val key = sessionKey(chatId).copy(workspace = entry.workspace)
+        val key = sessionKey(chatId, null).copy(workspace = entry.workspace)
         val session = sessions.entry(key) ?: continue
         if (
             session.sessionId != entry.sessionId ||

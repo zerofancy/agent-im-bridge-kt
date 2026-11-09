@@ -15,7 +15,7 @@ import top.ntutn.agent.bridge.storage.SessionStore
 class ControlCommandTest {
     @TempDir lateinit var temp: Path
 
-    private fun key(chat: String) =
+    private fun key(chat: String, topicId: String? = null) =
         SessionKey("cli_test", chat, temp.toRealPath().toString(), temp.toString())
 
     private fun runner(block: suspend (String) -> AgentResult) =

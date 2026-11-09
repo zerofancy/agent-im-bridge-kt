@@ -52,7 +52,7 @@ class SessionControlSafetyTest {
             SessionDescriptor(UUID.randomUUID().toString(), workspace, false, origin = "cli")
         val backend = Backend(target)
         val control =
-            SessionControlService(backend, store, { key }, SandboxMode.READ_ONLY) { _, _ -> }
+            SessionControlService(backend, store, { _, _ -> key }, SandboxMode.READ_ONLY) { _, _ -> }
         assertFailsWith<SessionControlException> {
             control.switch(
                 ReplyRoute("chat", "resume"),
@@ -78,7 +78,7 @@ class SessionControlSafetyTest {
         val backend =
             Backend(target).apply { response = target.copy(id = UUID.randomUUID().toString()) }
         val control =
-            SessionControlService(backend, store, { key }, SandboxMode.READ_ONLY) { _, _ -> }
+            SessionControlService(backend, store, { _, _ -> key }, SandboxMode.READ_ONLY) { _, _ -> }
         assertFailsWith<SessionControlException> {
             control.switch(
                 ReplyRoute("chat", "resume"),

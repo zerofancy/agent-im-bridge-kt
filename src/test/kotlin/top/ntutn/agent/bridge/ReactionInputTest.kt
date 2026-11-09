@@ -133,7 +133,7 @@ class ReactionInputTest {
         return ChatService(
             runner,
             SessionStore(temp.resolve("sessions.json")),
-            { SessionKey("app", it, temp.toString(), temp.resolve("runtime").toString()) },
+            { chat, _ -> SessionKey("app", chat, temp.toString(), temp.resolve("runtime").toString()) },
             replyContext = ReplyContext(source, AttachmentStore(temp.resolve("attachments"))),
             typingReactions = typing,
             sender =

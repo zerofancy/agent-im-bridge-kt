@@ -42,7 +42,7 @@ class DeploymentDrainTest {
                 ChatService(
                     runner,
                     SessionStore(temp.resolve("sessions.json")),
-                    { SessionKey("app", it, temp.toString(), temp.toString()) },
+                    { chat, _ -> SessionKey("app", chat, temp.toString(), temp.toString()) },
                     sender =
                         ReplySender { _, text ->
                             messages += text

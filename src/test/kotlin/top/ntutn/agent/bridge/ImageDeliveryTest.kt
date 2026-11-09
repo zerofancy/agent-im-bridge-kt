@@ -49,7 +49,7 @@ class ImageDeliveryTest {
         ChatService(
             agent,
             SessionStore(temp.resolve("sessions.json")),
-            { SessionKey("test", it, temp.toString(), temp.resolve("backend").toString()) },
+            { chat, _ -> SessionKey("test", chat, temp.toString(), temp.resolve("backend").toString()) },
             cardReplies = cards,
             outgoingImages = media,
             sender =
@@ -78,7 +78,7 @@ class ImageDeliveryTest {
             ChatService(
                 agent,
                 SessionStore(temp.resolve("sessions.json")),
-                { SessionKey("test", it, temp.toString(), temp.resolve("backend").toString()) },
+                { chat, _ -> SessionKey("test", chat, temp.toString(), temp.resolve("backend").toString()) },
                 outgoingImages = media,
                 sender =
                     ReplySender { _, text ->

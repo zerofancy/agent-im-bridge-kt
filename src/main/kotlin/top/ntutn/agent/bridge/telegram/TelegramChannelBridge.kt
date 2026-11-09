@@ -161,7 +161,7 @@ fun createTelegramChannel(
         ChatService(
             runner,
             sessions,
-            { chatId ->
+            { chatId, _ ->
                 SessionKey(
                     config.appId,
                     chatId,

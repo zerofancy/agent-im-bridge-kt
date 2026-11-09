@@ -13,7 +13,7 @@ import top.ntutn.agent.bridge.storage.SessionStore
 internal class ChatTurnExecutor(
     private val runner: AgentRunner,
     private val sessions: SessionStore,
-    private val sessionKey: (String) -> SessionKey,
+    private val sessionKey: (String, String?) -> SessionKey,
     private val sandboxMode: SandboxMode,
     private val replyContext: ReplyContext?,
     private val senderNames: SenderNameCache?,
@@ -23,8 +23,8 @@ internal class ChatTurnExecutor(
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val sentMessages = SentMessageLru()
 
-    suspend fun invalidateSession(chatId: String) {
-        val base = sessionKey(chatId)
+    suspend fun invalidateSession(chatId: String, topicId: String? = null) {
+        val base = sessionKey(chatId, topicId)
         sentMessages.invalidate(base.copy(workspace = sessions.workspace(base).toString()))
     }
 
@@ -40,7 +40,7 @@ internal class ChatTurnExecutor(
         basicOnlyInitializer: Boolean = false,
     ): AgentResult? {
         val sessionChatId = input?.sessionChatId ?: route.chatId
-        val base = sessionKey(sessionChatId)
+        val base = sessionKey(sessionChatId, route.topicId)
         val current = sessions.workspace(base)
         val workspace =
             try {

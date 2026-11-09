@@ -251,7 +251,7 @@ class GroupConversationRaceTest {
             ChatService(
                 controller,
                 sessions,
-                { chat ->
+                { chat, _ ->
                     SessionKey(
                         "cli_race_test",
                         chat,

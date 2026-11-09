@@ -384,7 +384,7 @@ class TelegramCardRepliesTest {
         ChatService(
                 runner,
                 SessionStore(temp.resolve("sessions.json")),
-                { SessionKey("bot", it, temp.toString(), temp.toString()) },
+                { chat, _ -> SessionKey("bot", chat, temp.toString(), temp.toString()) },
                 sender = ReplySender { _, _ -> CompletableFuture.completedFuture(Unit) },
             )
             .use { service ->

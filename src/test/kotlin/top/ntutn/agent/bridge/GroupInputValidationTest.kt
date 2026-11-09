@@ -54,7 +54,7 @@ class GroupInputValidationTest {
             ChatService(
                     runner,
                     SessionStore(temp.resolve("sessions.json")),
-                    { chat ->
+                    { chat, _ ->
                         SessionKey("app", chat, temp.toString(), temp.resolve("codex").toString())
                     },
                     groupConversations = GroupConversations(gateway, operations, "owner"),

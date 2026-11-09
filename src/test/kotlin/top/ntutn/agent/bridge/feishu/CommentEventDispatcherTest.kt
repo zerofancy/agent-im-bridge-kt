@@ -41,7 +41,7 @@ class CommentEventDispatcherTest {
         ChatService(
                 runner,
                 SessionStore(temp.resolve("sessions.json")),
-                { chat ->
+                { chat, _ ->
                     SessionKey("app", chat, temp.toString(), temp.resolve("runtime").toString())
                 },
                 sender = ReplySender { _, _ -> CompletableFuture.completedFuture(Unit) },

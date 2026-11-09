@@ -82,7 +82,8 @@ internal fun ChatService.startIncoming() {
                         message == null ||
                             mutex.withLock {
                                 closed ||
-                                    item.sequence <= (stoppedIncoming[message.route.chatId] ?: 0L)
+                                    item.sequence <=
+                                        (stoppedIncoming[message.route.scopeId] ?: 0L)
                             }
                     ) {
                         item.completed.complete(Unit)

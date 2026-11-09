@@ -16,8 +16,14 @@ class ChatServiceTest {
     @TempDir lateinit var temp: Path
     private val route = ReplyRoute("private", "om_test")
 
-    private fun key(chat: String) =
-        SessionKey("cli_test", chat, temp.toRealPath().toString(), temp.resolve("codex").toString())
+    private fun key(chat: String, topicId: String? = null) =
+        SessionKey(
+            "cli_test",
+            chat,
+            temp.toRealPath().toString(),
+            temp.resolve("codex").toString(),
+            topicId = topicId,
+        )
 
     private fun runner(block: suspend (String, String?, suspend (String) -> Unit) -> AgentResult) =
         object : AgentRunner {
@@ -102,6 +108,90 @@ class ChatServiceTest {
                     }
                 )
                 .use { it.accept(route, "after restart").get(5, TimeUnit.SECONDS) }
+        }
+
+    @Test
+    fun `topics of one topic group run concurrently and stay FIFO within a topic`(): Unit =
+        runBlocking {
+            val entered = CountDownLatch(2)
+            val release = CountDownLatch(1)
+            val calls = Collections.synchronizedList(mutableListOf<Pair<String, String?>>())
+            val replies = Collections.synchronizedList(mutableListOf<Pair<ReplyRoute, String>>())
+            val topicA1 = ReplyRoute("topic-group", "om_a1", topicId = "omt-a")
+            val topicA2 = ReplyRoute("topic-group", "om_a2", topicId = "omt-a")
+            val topicB1 = ReplyRoute("topic-group", "om_b1", topicId = "omt-b")
+            val agent = runner { prompt, id, callback ->
+                calls += prompt to id
+                val session = id ?: UUID.randomUUID().toString()
+                callback(session)
+                if (prompt.endsWith("1")) {
+                    entered.countDown()
+                    release.await(5, TimeUnit.SECONDS)
+                }
+                AgentResult.Success(session, session)
+            }
+            service(
+                    agent,
+                    2,
+                    ReplySender { r, t ->
+                        replies += r to t
+                        CompletableFuture.completedFuture(Unit)
+                    },
+                )
+                .use { svc ->
+                    val a1 = svc.accept(topicA1, "a1")
+                    val b1 = svc.accept(topicB1, "b1")
+                    val a2 = svc.accept(topicA2, "a2")
+                    assertTrue(entered.await(5, TimeUnit.SECONDS))
+                    assertEquals(setOf("a1", "b1"), calls.map { it.first }.toSet())
+                    release.countDown()
+                    listOf(a1, b1, a2).forEach { it.get(5, TimeUnit.SECONDS) }
+                    assertEquals("a2", calls.map { it.first }.last())
+                    assertEquals(setOf("a1", "b1"), calls.map { it.first }.take(2).toSet())
+                    val store = SessionStore(temp.resolve("sessions.json"))
+                    assertNotEquals(
+                        store.get(key("topic-group", "omt-a")),
+                        store.get(key("topic-group", "omt-b")),
+                    )
+                    assertTrue(
+                        replies.any { it.first.messageId == "om_a2" && it.second.contains("队列") }
+                    )
+                }
+        }
+
+    @Test
+    fun `stop in one topic cancels only that topic and leaves sibling topics running`(): Unit =
+        runBlocking {
+            val entered = CountDownLatch(2)
+            val release = CountDownLatch(1)
+            val calls = Collections.synchronizedList(mutableListOf<String>())
+            val topicA1 = ReplyRoute("topic-group", "om_a1", topicId = "omt-a")
+            val topicA2 = ReplyRoute("topic-group", "om_a2", topicId = "omt-a")
+            val topicB1 = ReplyRoute("topic-group", "om_b1", topicId = "omt-b")
+            val agent = runner { prompt, _, _ ->
+                calls += prompt
+                if (prompt.endsWith("1")) {
+                    entered.countDown()
+                    // Interruptible so /stop cancels the task instead of waiting out the latch.
+                    runInterruptible(Dispatchers.IO) { release.await(10, TimeUnit.SECONDS) }
+                }
+                AgentResult.Success(prompt, null)
+            }
+            service(agent, 2).use { svc ->
+                val a1 = svc.accept(topicA1, "a1")
+                val b1 = svc.accept(topicB1, "b1")
+                val a2 = svc.accept(topicA2, "a2")
+                assertTrue(entered.await(5, TimeUnit.SECONDS))
+                svc.accept(topicA1.copy(messageId = "om_stop"), "/stop").get(5, TimeUnit.SECONDS)
+                a1.get(5, TimeUnit.SECONDS)
+                a2.get(5, TimeUnit.SECONDS)
+                // The queued request in topic A was dropped; topic B is unaffected.
+                assertEquals(setOf("a1", "b1"), calls.toSet())
+                assertFalse(b1.isDone)
+                release.countDown()
+                b1.get(5, TimeUnit.SECONDS)
+                assertEquals(setOf("a1", "b1"), calls.toSet())
+            }
         }
 
     @Test

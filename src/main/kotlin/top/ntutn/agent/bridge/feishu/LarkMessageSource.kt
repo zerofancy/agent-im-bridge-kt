@@ -98,7 +98,8 @@ class LarkMessageSource(
                     forwardIncomplete =
                         result.forwardIncomplete ||
                             (root.msgType == "merge_forward" &&
-                                items.any { it.messageId !in visited })
+                                items.any { it.messageId !in visited }),
+                    threadId = root.threadId?.takeIf { it.isNotBlank() },
                 )
             }
         suspend fun enrich(message: QuotedMessage): QuotedMessage {
@@ -161,7 +162,12 @@ class LarkMessageSource(
             return null
         }
         return IncomingMessage(
-            ReplyRoute(message.chatId, message.id),
+            ReplyRoute(
+                message.chatId,
+                message.id,
+                // Emoji stop on a topic-group card must target the topic's own run slot.
+                topicId = if (chatType == "topic") message.threadId else null,
+            ),
             input.text,
             MessageInput(
                 if (chatType == "topic") {

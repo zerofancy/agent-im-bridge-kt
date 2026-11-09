@@ -45,6 +45,7 @@ data class QuotedMessage(
     val createTime: String? = null,
     val forwarded: List<QuotedMessage> = emptyList(),
     val forwardIncomplete: Boolean = false,
+    val threadId: String? = null,
 )
 
 interface MessageSource {

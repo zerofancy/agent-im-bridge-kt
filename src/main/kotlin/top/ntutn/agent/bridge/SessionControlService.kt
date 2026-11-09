@@ -15,7 +15,7 @@ import top.ntutn.agent.bridge.storage.SessionStore
 internal class SessionControlService(
     private val runner: AgentRunner,
     private val sessions: SessionStore,
-    private val sessionKey: (String) -> SessionKey,
+    private val sessionKey: (String, String?) -> SessionKey,
     private val sandboxMode: SandboxMode,
     private val send: suspend (ReplyRoute, String) -> Unit,
 ) {
@@ -34,7 +34,7 @@ internal class SessionControlService(
     ) {
         try {
             val chatId = input?.sessionChatId ?: route.chatId
-            val base = sessionKey(chatId)
+            val base = sessionKey(chatId, route.topicId)
             val previous = sessions.get(base.copy(workspace = sessions.workspace(base).toString()))
             val controller = runner as? AgentSessionController
             val bootstrapTurn =
@@ -59,6 +59,7 @@ internal class SessionControlService(
                 val text =
                     confirmationText(
                         chatId,
+                        route.topicId,
                         previous,
                         command.name == "/new",
                         cancelled(),
@@ -89,7 +90,7 @@ internal class SessionControlService(
         val controller =
             runner as? AgentSessionController
                 ?: throw SessionControlException("当前后端不支持会话控制；当前会话未变。")
-        val base = sessionKey(input?.sessionChatId ?: route.chatId)
+        val base = sessionKey(input?.sessionChatId ?: route.chatId, route.topicId)
         val workspace =
             try {
                 withContext(Dispatchers.IO) { checkedWorkspace(sessions.workspace(base)) }
@@ -192,17 +193,29 @@ internal class SessionControlService(
         cancelled: Boolean,
         usingBasic: Boolean,
     ) {
-        send(route, confirmationText(chatId, previous, fresh, cancelled, usingBasic))
+        send(
+            route,
+            confirmationText(chatId, route.topicId, previous, fresh, cancelled, usingBasic)
+        )
+    }
+
+    suspend fun status(chatId: String, topicId: String? = null): String {
+        val base = sessionKey(chatId, topicId)
+        val key = base.copy(workspace = sessions.workspace(base).toString())
+        return "\n当前会话：${sessions.get(key) ?: "无"}" +
+            (sessions.recentSwitch(key)?.let { "\n最近切换：${it.previousId ?: "无"} → ${it.sessionId}" }
+                ?: "")
     }
 
     private suspend fun confirmationText(
         chatId: String,
+        topicId: String?,
         previous: String?,
         fresh: Boolean,
         cancelled: Boolean,
         usingBasic: Boolean,
     ): String {
-        val base = sessionKey(chatId)
+        val base = sessionKey(chatId, topicId)
         val workspace = sessions.workspace(base)
         val id = sessions.get(base.copy(workspace = workspace.toString()))
         return buildString {
@@ -242,20 +255,12 @@ internal class SessionControlService(
         }
     }
 
-    suspend fun status(chatId: String): String {
-        val base = sessionKey(chatId)
-        val key = base.copy(workspace = sessions.workspace(base).toString())
-        return "\n当前会话：${sessions.get(key) ?: "无"}" +
-            (sessions.recentSwitch(key)?.let { "\n最近切换：${it.previousId ?: "无"} → ${it.sessionId}" }
-                ?: "")
-    }
-
     suspend fun changeDirectory(
         route: ReplyRoute,
         argument: String,
         onChanged: suspend () -> Unit = {},
     ): Boolean {
-        val base = sessionKey(route.chatId)
+        val base = sessionKey(route.chatId, route.topicId)
         val current = sessions.workspace(base)
         val target =
             try {

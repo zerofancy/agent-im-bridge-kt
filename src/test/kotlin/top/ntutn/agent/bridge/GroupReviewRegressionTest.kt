@@ -16,7 +16,7 @@ import top.ntutn.agent.bridge.storage.SessionStore
 class GroupReviewRegressionTest {
     @TempDir lateinit var temp: Path
 
-    private fun key(chat: String) =
+    private fun key(chat: String, topicId: String? = null) =
         SessionKey(
             "cli_group_test",
             chat,

@@ -83,7 +83,7 @@ class DesktopApiTest {
             ChatService(
                 runner,
                 sessions,
-                { SessionKey("test-app", it, temp.toString(), temp.resolve("model").toString()) },
+                { chat, _ -> SessionKey("test-app", chat, temp.toString(), temp.resolve("model").toString()) },
                 limit,
                 localReplies = history,
                 sender =
