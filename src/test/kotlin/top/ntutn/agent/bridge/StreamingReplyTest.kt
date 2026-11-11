@@ -294,7 +294,7 @@ class StreamingReplyTest {
     }
 
     @Test
-    fun `result card appends backend then model then effort`() {
+    fun `result card appends backend model effort and project link`() {
         val meta =
             RunMeta(
                 backend = "Codex",
@@ -312,6 +312,10 @@ class StreamingReplyTest {
         val line = metaElement.string("content").orEmpty()
         assertTrue(line.indexOf("后端 Codex") < line.indexOf("模型 gpt-6.1-sol"))
         assertTrue(line.indexOf("模型 gpt-6.1-sol") < line.indexOf("强度 medium"))
+        assertContains(
+            line,
+            "[agent-im-bridge-kt](https://github.com/zerofancy/agent-im-bridge-kt)",
+        )
         assertEquals(1, elements.count { it.asJsonObject.string("tag") == "hr" })
     }
 
