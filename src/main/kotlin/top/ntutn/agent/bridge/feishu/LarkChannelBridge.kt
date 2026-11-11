@@ -367,6 +367,7 @@ fun createAgentChannel(
                     ),
                     config.allowedUserId,
                 ),
+            createModelRouting(config, backend, runner, environment?.directory),
         ) { route, text ->
             val sent = CompletableFuture<Unit>()
             try {

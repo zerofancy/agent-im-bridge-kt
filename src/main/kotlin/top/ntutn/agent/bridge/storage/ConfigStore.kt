@@ -17,6 +17,10 @@ class BridgeConfig(
     val sandboxMode: String = "read-only",
     val backend: String = "codex",
     val feishuProgressMode: String = "cot",
+    /** 是否展示模型容量排队状态。默认开启，只在 Traex 后端生效。 */
+    val traexQueueStatus: Boolean = true,
+    /** 是否启用模型档位自动升/降。默认开启，只在 Traex 后端生效；关闭即整条功能退出。 */
+    val traexModelTiering: Boolean = true,
 ) {
     val platform: String
         get() =
@@ -98,6 +102,14 @@ class ConfigStore(val path: Path) {
                         require(it.isJsonPrimitive && it.asJsonPrimitive.isString)
                         it.asString
                     } ?: "cot",
+                    json["traexQueueStatus"]?.let {
+                        require(it.isJsonPrimitive && it.asJsonPrimitive.isBoolean)
+                        it.asBoolean
+                    } ?: true,
+                    json["traexModelTiering"]?.let {
+                        require(it.isJsonPrimitive && it.asJsonPrimitive.isBoolean)
+                        it.asBoolean
+                    } ?: true,
                 )
                 .also { it.validate() }
         } catch (_: Exception) {

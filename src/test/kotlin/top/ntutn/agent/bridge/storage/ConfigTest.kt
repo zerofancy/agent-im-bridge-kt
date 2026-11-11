@@ -62,6 +62,44 @@ class ConfigTest {
     }
 
     @Test
+    fun `traex queue status defaults to enabled and round-trips`() {
+        val store = ConfigStore(directory.resolve("config.json"))
+        store.save(BridgeConfig("cli_test", "secret", "ou_owner", "feishu"))
+        assertTrue(assertNotNull(store.load()).traexQueueStatus, "缺少字段时默认开启")
+
+        store.save(
+            BridgeConfig(
+                "cli_test",
+                "secret",
+                "ou_owner",
+                "feishu",
+                backend = "traex",
+                traexQueueStatus = false,
+            )
+        )
+        assertFalse(assertNotNull(store.load()).traexQueueStatus, "关闭状态应持久化")
+    }
+
+    @Test
+    fun `traex model tiering defaults to enabled and round-trips`() {
+        val store = ConfigStore(directory.resolve("config.json"))
+        store.save(BridgeConfig("cli_test", "secret", "ou_owner", "feishu"))
+        assertTrue(assertNotNull(store.load()).traexModelTiering, "缺少字段时默认开启")
+
+        store.save(
+            BridgeConfig(
+                "cli_test",
+                "secret",
+                "ou_owner",
+                "feishu",
+                backend = "traex",
+                traexModelTiering = false,
+            )
+        )
+        assertFalse(assertNotNull(store.load()).traexModelTiering, "关闭状态应持久化")
+    }
+
+    @Test
     fun `invalid config cannot replace existing credentials`() {
         val store = ConfigStore(directory.resolve("config.json"))
         store.save(BridgeConfig("cli_old", "secret", "ou_owner", "feishu"))

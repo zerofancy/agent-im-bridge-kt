@@ -85,6 +85,9 @@ internal fun BridgeConfig.withBackend(selection: BackendSelection) =
         tenant,
         selection.sandboxMode.cliValue,
         selection.id.configValue,
+        feishuProgressMode,
+        traexQueueStatus,
+        traexModelTiering,
     )
 
 fun registerTelegram(): BridgeConfig {

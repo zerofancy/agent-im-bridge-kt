@@ -10,8 +10,14 @@ Codex、Traex、OpenCode、Doubao 的选择、独立认证与启动参数。
 
 ```json
 "backend": "traex",
-"sandboxMode": "read-only"
+"sandboxMode": "read-only",
+"traexQueueStatus": true,
+"traexModelTiering": true
 ```
+
+`traexQueueStatus` 控制是否展示模型容量排队状态，默认 `true`。`traexModelTiering` 控制是否启用模型档位自动升/降，默认 `true`；关闭后整条档位功能退出（不探测负载、不自动升降，`/better`、`/worse` 也被拒绝）。两者都只对 Traex 生效，其他后端忽略这些字段，修改后重启生效。
+
+`traexQueueStatus` 控制是否展示模型容量排队状态，默认 `true`；它是唯一只对 Traex 生效的展示开关，其他后端忽略该字段，修改后重启生效。
 
 启动设置保存在同一环境的 `runtime.json`，通过 `bridgectl init` 或迁移生成。修改后重启生效，不由聊天命令修改：
 

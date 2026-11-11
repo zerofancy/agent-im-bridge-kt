@@ -4,8 +4,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.slf4j.LoggerFactory
+import top.ntutn.agent.bridge.modelroute.ContextUsageProbe
 import top.ntutn.agent.bridge.storage.SessionInitialization
 import top.ntutn.agent.bridge.storage.SessionKey
+import top.ntutn.agent.bridge.modelroute.ModelRoutingService
 import top.ntutn.agent.bridge.storage.SessionPersistenceException
 import top.ntutn.agent.bridge.storage.SessionStore
 
@@ -19,6 +21,7 @@ internal class ChatTurnExecutor(
     private val senderNames: SenderNameCache?,
     private val documentRoutes: DocumentRouteTracker?,
     private val send: suspend (ReplyRoute, String) -> Unit,
+    private val routing: ModelRoutingService? = null,
 ) {
     private val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
     private val sentMessages = SentMessageLru()
@@ -159,30 +162,64 @@ internal class ChatTurnExecutor(
         val previous = withContext(Dispatchers.IO) { sessions.get(key) }
         val strict = sessions.entry(key)?.strictResume == true
         val uncertain = sessions.entry(key)?.initialization == SessionInitialization.SUBMITTING
-        var result = run(previous)
-        if (
-            !handle.stopRequested &&
-                previous != null &&
-                !strict &&
-                !uncertain &&
-                result is AgentResult.Failure &&
-                result.kind == AgentResult.Kind.SESSION_MISSING
-        ) {
-            send(route, "原会话已不存在，旧上下文不可用，将创建新会话处理本次请求。")
-            withContext(Dispatchers.IO) { sessions.remove(key) }
-            result =
-                run(
-                    null
-                ) // At most one retry, only for the runner's pre-turn missing-session diagnostic.
+        val routedModel = routing?.beginTurn(route.chatId)
+        handle.modelOverride = routedModel
+        try {
+            var result = run(previous)
+            if (
+                !handle.stopRequested &&
+                    previous != null &&
+                    !strict &&
+                    !uncertain &&
+                    result is AgentResult.Failure &&
+                    result.kind == AgentResult.Kind.SESSION_MISSING
+            ) {
+                send(route, "原会话已不存在，旧上下文不可用，将创建新会话处理本次请求。")
+                withContext(Dispatchers.IO) { sessions.remove(key) }
+                result =
+                    run(
+                        null
+                    ) // At most one retry, only for the runner's pre-turn missing-session diagnostic.
+            }
+            if (
+                strict &&
+                    result is AgentResult.Failure &&
+                    result.kind == AgentResult.Kind.SESSION_MISSING
+            ) {
+                send(route, "所选会话已不可用，当前绑定保留，未自动新建。请用 /resume 选择其他会话或 /new 新建后重发。")
+            }
+            return result
+        } finally {
+            // 一轮结束必须收尾档位状态：中断只落空闲锚点，正常结束重新起算空闲。
+            if (routing != null) {
+                try {
+                    if (handle.stopRequested) {
+                        routing.stopTurn(route.chatId, handle.queuedAtStop)
+                    } else {
+                        routing.endTurn(route.chatId, readContextTokens(handle))
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    FatalErrorHandler.rethrowProgrammingError(e)
+                }
+            }
         }
-        if (
-            strict &&
-                result is AgentResult.Failure &&
-                result.kind == AgentResult.Kind.SESSION_MISSING
-        ) {
-            send(route, "所选会话已不可用，当前绑定保留，未自动新建。请用 /resume 选择其他会话或 /new 新建后重发。")
+    }
+
+    /** 读取本轮结束后的上下文占用；拿不到就返回 null，由 router 保守处理。 */
+    private suspend fun readContextTokens(handle: AgentRunHandle): Int? {
+        val probe = runner as? ContextUsageProbe ?: return null
+        if (!handle.threadId.isCompleted) {
+            return null
         }
-        return result
+        return try {
+            probe.contextTokens(handle.threadId.getCompleted())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 
     suspend fun cleanupAttachments() {

@@ -45,6 +45,10 @@ class AgentRunHandle(val requestId: String = UUID.randomUUID().toString()) {
     internal var onNotSubmitted: suspend () -> Unit = {}
     internal var sessionCommitting = false
     @Volatile internal var runMeta: RunMeta? = null
+    /** 本轮模型覆盖；由档位路由在投递前写入，只有 app-server 后端消费。 */
+    @Volatile internal var modelOverride: String? = null
+    /** 中断发生时是否仍在排队，用于排队中 /stop 的降档判定。 */
+    @Volatile internal var queuedAtStop = false
     internal var controlJob: Job? = null
     internal val stop = CompletableDeferred<Unit>()
     internal val threadId = CompletableDeferred<String>()
@@ -105,7 +109,11 @@ interface ManagedAgentRunner : AgentRunner {
     suspend fun healthy(): Boolean
 }
 
-fun createAgentRunner(backend: BackendSpec, sandboxMode: SandboxMode): ManagedAgentRunner =
+fun createAgentRunner(
+    backend: BackendSpec,
+    sandboxMode: SandboxMode,
+    traexQueueStatus: Boolean = true,
+): ManagedAgentRunner =
     when (backend.id) {
         BackendId.OPENCODE -> {
             OpenCodeRunner(backend, sandboxMode)
@@ -114,6 +122,6 @@ fun createAgentRunner(backend: BackendSpec, sandboxMode: SandboxMode): ManagedAg
             DoubaoCliRunner(backend, sandboxMode)
         }
         else -> {
-            AppServerAgentRunner(backend)
+            AppServerAgentRunner(backend, queueStatus = traexQueueStatus)
         }
     }

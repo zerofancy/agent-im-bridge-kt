@@ -122,7 +122,12 @@ fun main(args: Array<String>) {
                 .joinToString("") { "%02x".format(it) }
         val desktopHistory =
             DesktopHistory(environment.directory.resolve("desktop/$desktopNamespace/history.json"))
-        runner = createAgentRunner(backend, SandboxMode.parse(config.sandboxMode))
+        runner =
+            createAgentRunner(
+                backend,
+                SandboxMode.parse(config.sandboxMode),
+                traexQueueStatus = config.traexQueueStatus,
+            )
         runner.checkAvailable()
         val held = System.getenv("BRIDGE_HOLD") == "1"
         var onInboundActivity: (() -> Unit)? = null

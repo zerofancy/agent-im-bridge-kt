@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import top.ntutn.agent.bridge.ChatIncoming as Incoming
 import top.ntutn.agent.bridge.ChatWork as Work
+import top.ntutn.agent.bridge.modelroute.ModelRoutingService
 import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionStore
 import top.ntutn.agent.bridge.storage.chatKey
@@ -33,6 +34,7 @@ class ChatService(
     internal val localReplies: LocalReplies? = null,
     private val outgoingImages: OutgoingImages? = null,
     internal val groupConversations: GroupConversations? = null,
+    internal val modelRouting: ModelRoutingService? = null,
     private val sender: ReplySender,
 ) : AutoCloseable {
     internal val log = LoggerFactory.getLogger("top.ntutn.agent.bridge")
@@ -51,6 +53,7 @@ class ChatService(
             senderNames,
             documentRoutes,
             ::send,
+            modelRouting,
         )
     internal val replyDelivery =
         ReplyDelivery(outgoingImages, runner.displayName, ::send, localReplies)

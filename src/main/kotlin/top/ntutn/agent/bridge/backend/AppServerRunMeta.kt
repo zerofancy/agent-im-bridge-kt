@@ -57,6 +57,36 @@ internal class AppServerRunMeta(private val displayName: String, private val log
         return base.withCatalog(defaultEffort, fixed = levels.size() == 0)
     }
 
+    /**
+     * 本轮显式覆盖模型后，卡片元数据立即以覆盖值为准。
+     *
+     * 切换模型会清掉旧模型的 effort 标签，并尽量从模型目录补展示名和默认 effort；
+     * 目录不可用时退回模型 ID，绝不保留上一个模型的强度文案。
+     */
+    suspend fun resolveOverride(
+        server: AppServerClient,
+        current: RunMeta?,
+        modelId: String?,
+    ): RunMeta? {
+        if (modelId == null) {
+            return current
+        }
+        val base = current ?: RunMeta()
+        val switched = overriddenMeta(base, modelId, null)
+        val entries =
+            try {
+                withTimeoutOrNull(1_500) { catalog(server) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                FatalErrorHandler.rethrowProgrammingError(e)
+                log.debug("${displayName} 覆盖模型目录读取失败 error={}", e.javaClass.simpleName)
+                null
+            } ?: return switched
+        val entry = entries.firstOrNull { it.string("id") == modelId } ?: return switched
+        return overriddenMeta(base, modelId, entry)
+    }
+
     /** `thread/settings/updated` may nest the snapshot under two different keys. */
     fun applySettings(current: RunMeta?, params: JsonObject): RunMeta {
         val settings =
@@ -93,4 +123,24 @@ internal class AppServerRunMeta(private val displayName: String, private val log
             loaded
         }
     }
+}
+
+/** 覆盖模型后的卡片元数据：旧模型的 effort 标签一律清掉，再按目录补展示名与默认强度。 */
+internal fun overriddenMeta(base: RunMeta, modelId: String, entry: JsonObject?): RunMeta {
+    val switched =
+        base.copy(
+            model = modelId,
+            effort = null,
+            effortDefault = false,
+            effortFixed = false,
+            source = RunMetaSource.THREAD,
+        )
+    if (entry == null) {
+        return switched
+    }
+    val display = entry.string("displayName") ?: entry.string("model") ?: modelId
+    val levels = entry.getAsJsonArray("supportedReasoningEfforts") ?: JsonArray()
+    val defaultEffort =
+        entry.string("defaultReasoningEffort") ?: entry.string("defaultReasoningLevel")
+    return switched.copy(model = display).withCatalog(defaultEffort, fixed = levels.size() == 0)
 }

@@ -7,12 +7,18 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.slf4j.LoggerFactory
 import top.ntutn.agent.bridge.*
+import top.ntutn.agent.bridge.modelroute.ContextUsageProbe
+import top.ntutn.agent.bridge.modelroute.ModelHealthProbe
+import top.ntutn.agent.bridge.modelroute.TierHealth
 
-open class AppServerAgentRunner(val backend: BackendSpec) :
-    ManagedAgentRunner, AgentSessionController {
+open class AppServerAgentRunner(val backend: BackendSpec, queueStatus: Boolean = true) :
+    ManagedAgentRunner, AgentSessionController, ModelHealthProbe, ContextUsageProbe {
     init {
         require(backend.id != BackendId.OPENCODE)
     }
+
+    // 排队状态只有 Traex 能上报；开关默认开启，其他后端一律关闭。
+    private val queueStatusEnabled = queueStatus && backend.id == BackendId.TRAEX
     override val displayName: String
         get() = backend.displayName
 
@@ -65,6 +71,13 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
     internal suspend fun processId(): Long? = connectionMutex.withLock { client?.process?.pid() }
 
     override suspend fun healthy(): Boolean = connectionMutex.withLock { client?.healthy() == true }
+
+    /** 读取 `model/list` 的负载与每日额度快照；失败返回 null，由 router 按可用处理。 */
+    override suspend fun modelHealth(modelId: String): TierHealth? =
+        queryModelHealth(backend, ::connection, modelId)
+
+    override suspend fun contextTokens(threadId: String): Int? =
+        queryContextTokens(::connection, threadId)
 
     override fun checkAvailable(): Unit = runBlocking {
         try {
@@ -272,22 +285,10 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                 }
                 // A submitted start must resolve before stop can target its turn. Never cancel this
                 // RPC on /stop.
+                val submission = turnStartParams(id, workspace, policy, prompt, handle.modelOverride)
                 val started =
                     try {
-                        startSessionTurn(
-                            server,
-                            handle,
-                            json(
-                                "threadId" to id,
-                                "cwd" to workspace.toString(),
-                                "approvalPolicy" to "never",
-                                "sandboxPolicy" to policy,
-                                "input" to
-                                    JsonArray().apply {
-                                        add(json("type" to "text", "text" to prompt))
-                                    },
-                            ),
-                        )
+                        startSessionTurn(server, handle, submission)
                     } catch (e: AgentSessionSubmissionFailure) {
                         return@coroutineScope failure(e.kind)
                     } catch (e: RpcFailure) {
@@ -315,15 +316,20 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                     sessions.submitted(id)
                     handle.onSubmitted(id)
                 }
-                val progress = AgentProgressReducer(id, turnId)
+                val progress =
+                    AgentProgressReducer(id, turnId, queueStatusEnabled = queueStatusEnabled)
                 log.info(
                     "${displayName} 轮次开始 requestId={} sessionId={} turnId={}",
                     handle.requestId,
                     id,
                     turnId,
                 )
+                // 卡片元数据以本轮显式覆盖的模型为准，否则会继续显示会话默认模型。
+                handle.runMeta = runMeta.resolveOverride(server, handle.runMeta, handle.modelOverride)
                 interrupt = launch {
                     handle.stop.await()
+                    // 记录停止瞬间是否仍处于排队：只有排队中的中断才允许降档。
+                    handle.queuedAtStop = progress.queueSnapshot() != null
                     log.info(
                         "${displayName} 请求中断 requestId={} sessionId={} turnId={}",
                         handle.requestId,
@@ -345,7 +351,9 @@ open class AppServerAgentRunner(val backend: BackendSpec) :
                 val messages = linkedMapOf<String, Pair<String?, String>>()
                 val images = NativeImages(sandboxMode = sandboxMode)
                 var sawAuthoritativeAgentMessage = false
-                queueRefresh = trackQueueProgress(progress, handle)
+                if (queueStatusEnabled) {
+                    queueRefresh = trackQueueProgress(progress, handle)
+                }
                 val runEvents = NativeRunEvents(id, turnId, handle.onRunEvent)
                 fun finishSuccessOrEmpty(): AgentResult {
                     val final = messages.values.filter { it.first == "final_answer" }

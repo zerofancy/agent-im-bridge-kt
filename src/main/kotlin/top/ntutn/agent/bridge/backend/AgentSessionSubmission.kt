@@ -1,8 +1,10 @@
 package top.ntutn.agent.bridge.backend
 
+import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import java.io.IOException
+import java.nio.file.Path
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -87,4 +89,27 @@ internal suspend fun submitSessionMessage(
         }
         throw error
     }
+}
+
+/** 构造 `turn/start` 参数；模型覆盖只对 Traex 生效，对本轮及后续轮次生效。 */
+internal fun turnStartParams(
+    threadId: String,
+    workspace: Path,
+    policy: JsonObject,
+    prompt: String,
+    modelOverride: String?,
+): JsonObject {
+    val params =
+        json(
+            "threadId" to threadId,
+            "cwd" to workspace.toString(),
+            "approvalPolicy" to "never",
+            "sandboxPolicy" to policy,
+            "input" to
+                JsonArray().apply {
+                    add(json("type" to "text", "text" to prompt))
+                },
+        )
+    modelOverride?.let { params.addProperty("model", it) }
+    return params
 }

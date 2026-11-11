@@ -14,6 +14,8 @@ data class AgentProgress(val process: String = "正在处理…", val answer: St
 internal class AgentProgressReducer(
     private val threadId: String,
     private val turnId: String,
+    /** Traex 容量排队状态开关；关闭时完全忽略 `queue/status`。 */
+    private val queueStatusEnabled: Boolean = true,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private data class Item(val phase: String?, var text: String)
@@ -43,6 +45,9 @@ internal class AgentProgressReducer(
         }
         val method = event.string("method")
         if (method == "queue/status") {
+            if (!queueStatusEnabled) {
+                return null
+            }
             return acceptQueue(p)
         }
         if (method == "turn/started") {
@@ -169,7 +174,12 @@ internal class AgentProgressReducer(
 
     /** Refresh while a queued request is still waiting; null means the queue already cleared. */
     @Synchronized
-    fun queueSnapshot(): AgentProgress? = if (queue != null) snapshot() else null
+    fun queueSnapshot(): AgentProgress? {
+        if (!queueStatusEnabled || queue == null) {
+            return null
+        }
+        return snapshot()
+    }
 
     private fun acceptQueue(p: JsonObject): AgentProgress? {
         if (p.string("turnId") != turnId) {

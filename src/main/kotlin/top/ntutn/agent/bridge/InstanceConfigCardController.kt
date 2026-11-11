@@ -114,6 +114,8 @@ internal class InstanceConfigCardController(
                 sandbox.cliValue,
                 target.configValue,
                 current.feishuProgressMode,
+                current.traexQueueStatus,
+                current.traexModelTiering,
             )
         return if (saveConfig(next)) {
             if (
@@ -153,6 +155,8 @@ internal class InstanceConfigCardController(
                 target.cliValue,
                 current.backend,
                 current.feishuProgressMode,
+                current.traexQueueStatus,
+                current.traexModelTiering,
             )
         return if (saveConfig(next)) {
             "已切换保存访问模式为 ${target.cliValue}。"

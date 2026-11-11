@@ -200,4 +200,14 @@ class AgentProgressTest {
         )
         assertNull(state.queueSnapshot())
     }
+
+    @Test
+    fun `queue status is ignored when the switch is off`() {
+        val disabled = AgentProgressReducer("thread", "turn", queueStatusEnabled = false)
+        assertNull(disabled.accept(queue("queued", position = 3)), "关闭开关后不应展示排队状态")
+        assertNull(disabled.queueSnapshot(), "关闭开关后排队刷新也必须为空")
+
+        val enabled = AgentProgressReducer("thread", "turn")
+        assertNotNull(enabled.accept(queue("queued", position = 3)), "默认开启时排队状态可见")
+    }
 }
