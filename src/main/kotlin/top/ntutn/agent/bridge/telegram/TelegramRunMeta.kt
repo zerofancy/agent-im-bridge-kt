@@ -42,5 +42,12 @@ internal fun telegramMetaFooter(meta: RunMeta?, rich: Boolean = false): String {
         } else {
             text
         }
-    return "\n\n—\n$safe"
+    val projectUrl = "https://github.com/zerofancy/agent-im-bridge-kt"
+    val project =
+        if (rich) {
+            "[agent-im-bridge-kt]($projectUrl)"
+        } else {
+            "agent-im-bridge-kt：$projectUrl"
+        }
+    return "\n\n—\n$safe　｜　$project"
 }
