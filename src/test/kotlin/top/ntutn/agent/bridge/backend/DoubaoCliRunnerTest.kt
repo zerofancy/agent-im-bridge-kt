@@ -214,6 +214,10 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason = "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `create session spends one bootstrap turn and registry survives runner restart`(): Unit =
         runBlocking {
             val registryRoot = temp.resolve("global-registry")
@@ -259,6 +263,10 @@ class DoubaoCliRunnerTest {
         }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason = "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `bootstrap streams progress and returns its answer through callbacks`(): Unit = runBlocking {
         runner().use { runner ->
             val progress = mutableListOf<AgentProgress>()
@@ -280,6 +288,10 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason = "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `cancelled bootstrap stops the cli and leaves the binding unchanged`(): Unit = runBlocking {
         runner().use { runner ->
             val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -312,6 +324,10 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason = "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `prune removes registry entries whose workspace directory disappeared`(): Unit =
         runBlocking {
             val removable = Files.createDirectory(temp.resolve("removable")).toRealPath()
@@ -328,6 +344,10 @@ class DoubaoCliRunnerTest {
         }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason = "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `scheduled maintenance prunes stale workspaces without another request`(): Unit =
         runBlocking {
             val removable =
@@ -354,6 +374,10 @@ class DoubaoCliRunnerTest {
         }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason = "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `resuming an unknown cli session is classified as session missing`(): Unit = runBlocking {
         runner().use { runner ->
             val result =
@@ -367,6 +391,10 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason = "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `unknown and unregistered external sessions are rejected`(): Unit = runBlocking {
         runner().use { local ->
             val created = local.createSession(temp, mode)
@@ -387,6 +415,10 @@ class DoubaoCliRunnerTest {
     }
 
     @Test
+    @DisabledOnOs(
+        OS.LINUX,
+        disabledReason = "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+    )
     fun `new command through ChatService runs the initial prompt as the single bootstrap turn`():
         Unit = runBlocking {
             val runner = runner()

@@ -12,6 +12,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.junit.jupiter.api.condition.DisabledOnOs
+import org.junit.jupiter.api.condition.OS
 import org.junit.jupiter.api.io.TempDir
 import top.ntutn.agent.bridge.AgentProgress
 import top.ntutn.agent.bridge.BackendId
@@ -27,6 +29,10 @@ import top.ntutn.agent.bridge.storage.SessionKey
 import top.ntutn.agent.bridge.storage.SessionStore
 
 /** ChatService-level /new delivery order tests, split from the runner-level DoubaoCliRunnerTest. */
+@DisabledOnOs(
+    OS.LINUX,
+    disabledReason = "Doubao PTY integration uses BSD script; Linux CLI support is not validated",
+)
 class DoubaoSessionControlTest {
     @TempDir lateinit var temp: Path
     private val mode = SandboxMode.FULL_ACCESS
