@@ -1,0 +1,19 @@
+# Configuration-only Web surface for the exact local Bridge provider/model.
+# The provider's public authorization flow owns all credential writes.
+- id: llm-pi-ai
+  config:
+    providers: !!js "process.env.BRIDGE_DEEPSEEK_PROVIDER === 'openai-codex' ? { 'openai-codex': {} } : {}"
+
+- id: agent-default-model
+  config:
+    provider: !!js process.env.BRIDGE_DEEPSEEK_PROVIDER
+    model: !!js process.env.BRIDGE_DEEPSEEK_MODEL
+
+- id: tool-plugin-manager
+  disabled: true
+- id: plugin-manager
+  disabled: true
+- id: hmr
+  disabled: true
+- id: session-title-llm
+  disabled: true

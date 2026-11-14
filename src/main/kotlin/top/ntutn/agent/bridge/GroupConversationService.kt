@@ -155,12 +155,7 @@ private suspend fun ChatService.createGroupConversation(
                     } else {
                         null
                     }
-                controller.createSession(
-                    directory,
-                    sandboxMode,
-                    null,
-                    isCancelled = cancelled,
-                )
+                controller.createSession(directory, sandboxMode, null, isCancelled = cancelled)
             } else {
                 withTimeout(controller.sessionControlTimeoutMs!!) {
                     controller.createSession(directory, sandboxMode)
@@ -172,17 +167,7 @@ private suspend fun ChatService.createGroupConversation(
             !sameDirectory ||
                 descriptor.active != false ||
                 descriptor.archived ||
-                !(when (key.backendId) {
-                    BackendId.OPENCODE.configValue -> {
-                        openCodeId(descriptor.id, "ses")
-                    }
-                    BackendId.DOUBAO.configValue -> {
-                        validDoubaoSessionId(descriptor.id)
-                    }
-                    else -> {
-                        validSessionId(descriptor.id)
-                    }
-                })
+                !validBackendSessionId(BackendId.parse(key.backendId), descriptor.id)
         ) {
             throw GroupConversationException("后端返回的会话不适用于新群，未提交模型任务。")
         }
@@ -192,11 +177,7 @@ private suspend fun ChatService.createGroupConversation(
             // The backend's creation turn already executed the basic initial prompt; keep the
             // session COMPLETE so the group's first real question is a normal continuation.
             withContext(NonCancellable) {
-                sessions.markInitialization(
-                    key,
-                    descriptor.id,
-                    SessionInitialization.COMPLETE,
-                )
+                sessions.markInitialization(key, descriptor.id, SessionInitialization.COMPLETE)
             }
         }
         entry = requireNotNull(entry).copy(sessionId = descriptor.id)

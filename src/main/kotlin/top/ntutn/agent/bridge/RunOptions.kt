@@ -11,6 +11,7 @@ data class RunOptions(
     val traexBinary: String = "traex",
     val opencodeBinary: String = "opencode",
     val doubaoBinary: String = "doubao",
+    val deepseekBinary: String = "dsh",
 ) {
     companion object {
         fun parse(args: Array<String>): RunOptions {
@@ -22,6 +23,7 @@ data class RunOptions(
             var maxConcurrentRuns = 10
             var i = 0
             var doubaoBinary = "doubao"
+            var deepseekBinary = "dsh"
             fun value(): String {
                 require(i + 1 < args.size) { "启动参数缺少值，请查看 --help。" }
                 return args[++i]
@@ -41,6 +43,10 @@ data class RunOptions(
                     "--doubao-bin" -> {
                         doubaoBinary =
                             value().also { require(it.isNotBlank()) { "Doubao 命令不能为空。" } }
+                    }
+                    "--deepseek-bin" -> {
+                        deepseekBinary =
+                            value().also { require(it.isNotBlank()) { "DeepSeek Harness 命令不能为空。" } }
                     }
                     "--traex-bin" -> {
                         traexBinary = value().also { require(it.isNotBlank()) { "Traex 命令不能为空。" } }
@@ -78,6 +84,9 @@ data class RunOptions(
             if (doubaoBinary.contains('/')) {
                 doubaoBinary = Path.of(doubaoBinary).toAbsolutePath().normalize().toString()
             }
+            if (deepseekBinary.contains('/')) {
+                deepseekBinary = Path.of(deepseekBinary).toAbsolutePath().normalize().toString()
+            }
             return RunOptions(
                 workspace.toRealPath(),
                 binary,
@@ -86,6 +95,7 @@ data class RunOptions(
                 traexBinary,
                 opencodeBinary,
                 doubaoBinary,
+                deepseekBinary,
             )
         }
     }

@@ -116,6 +116,8 @@ internal class InstanceConfigCardController(
                 current.feishuProgressMode,
                 current.traexQueueStatus,
                 current.traexModelTiering,
+                current.deepseekProvider,
+                current.deepseekModel,
             )
         return if (saveConfig(next)) {
             if (
@@ -157,6 +159,8 @@ internal class InstanceConfigCardController(
                 current.feishuProgressMode,
                 current.traexQueueStatus,
                 current.traexModelTiering,
+                current.deepseekProvider,
+                current.deepseekModel,
             )
         return if (saveConfig(next)) {
             "已切换保存访问模式为 ${target.cliValue}。"
@@ -227,6 +231,12 @@ internal class InstanceConfigCardController(
                                     savedBackend == BackendId.DOUBAO,
                                     "backend",
                                     "doubao",
+                                ),
+                                button(
+                                    "DeepSeek",
+                                    savedBackend == BackendId.DEEPSEEK,
+                                    "backend",
+                                    "deepseek",
                                 ),
                             ),
                             buttonRow(
@@ -317,6 +327,7 @@ internal class InstanceConfigCardController(
                 "${ACTION_NAME}_backend_traex",
                 "${ACTION_NAME}_backend_opencode",
                 "${ACTION_NAME}_backend_doubao",
+                "${ACTION_NAME}_backend_deepseek",
                 "${ACTION_NAME}_sandbox_read-only",
                 "${ACTION_NAME}_sandbox_workspace-write",
                 "${ACTION_NAME}_sandbox_danger-full-access",

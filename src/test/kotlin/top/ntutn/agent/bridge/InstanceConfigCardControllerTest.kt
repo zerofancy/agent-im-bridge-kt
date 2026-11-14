@@ -66,8 +66,8 @@ class InstanceConfigCardControllerTest {
                     value.getAsJsonArray("elements").single().asJsonObject
                 }
             }
-        assertEquals(8, buttons.size)
-        assertEquals(8, buttons.map { it["name"].asString }.toSet().size)
+        assertEquals(9, buttons.size)
+        assertEquals(9, buttons.map { it["name"].asString }.toSet().size)
         for (button in buttons) {
             assertEquals("button", button["tag"].asString)
             assertTrue(
@@ -80,8 +80,8 @@ class InstanceConfigCardControllerTest {
             assertTrue(callback.has("value"))
         }
         assertEquals(
-            listOf("codex", "traex", "opencode", "doubao"),
-            buttons.take(4).map {
+            listOf("codex", "traex", "opencode", "doubao", "deepseek"),
+            buttons.take(5).map {
                 it.getAsJsonArray("behaviors")
                     .single()
                     .asJsonObject

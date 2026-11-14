@@ -1,4 +1,8 @@
 {
+  "deployment/deepseek/package-lock.json": {
+    "max_lines": 11000,
+    "reason": "npm 生成的第三方 DeepSeek Harness 0.2.2-rc.1 完整依赖锁；保留标准格式和完整 integrity 信息，供不可变运行时可复现安装。"
+  },
   "deployment/bridgectl.py": {
     "max_lines": 1099,
     "reason": "存量跨平台部署 CLI，包含发布事务和守护管理；后续按部署职责拆分，期间不增加行数。"

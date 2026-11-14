@@ -7,12 +7,15 @@ enum class BackendId(val configValue: String, val displayName: String) {
     CODEX("codex", "Codex"),
     TRAEX("traex", "Traex"),
     OPENCODE("opencode", "OpenCode"),
-    DOUBAO("doubao", "Doubao");
+    DOUBAO("doubao", "Doubao"),
+    DEEPSEEK("deepseek", "DeepSeek Harness");
 
     companion object {
         fun parse(value: String): BackendId =
             entries.firstOrNull { it.configValue == value }
-                ?: throw IllegalArgumentException("backend 必须为 codex、traex、opencode 或 doubao。")
+                ?: throw IllegalArgumentException(
+                    "backend 必须为 codex、traex、opencode、doubao 或 deepseek。"
+                )
     }
 }
 
@@ -26,6 +29,8 @@ data class BackendSpec(
     // from both chat workspaces and the CLI's own model state directory.
     val sessionRegistryRoot: Path? = null,
     internal val binaryArguments: List<String> = emptyList(),
+    val deepseekNode: String? = null,
+    val deepseekLaunchDirectory: Path? = null,
 ) {
     val displayName: String
         get() = id.displayName
@@ -52,6 +57,13 @@ data class BackendSpec(
                 }
                 BackendId.DOUBAO -> {
                     mapOf("DOUBAO_CLI_NO_UPDATE_CHECK" to "1")
+                }
+                BackendId.DEEPSEEK -> {
+                    mapOf(
+                        "DSH_HOME" to runtimeRoot.toString(),
+                        "DSH_AGENTS_HOME" to runtimeRoot.resolve("agents").toString(),
+                        "DSH_TELEMETRY_DISABLED" to "1",
+                    ) + (deepseekNode?.let { mapOf("BRIDGE_DEEPSEEK_NODE" to it) } ?: emptyMap())
                 }
             }) +
                 (temporaryRoot?.let {
@@ -115,6 +127,16 @@ data class BackendSpec(
                         root(
                             "BRIDGE_DOUBAO_HOME",
                             userHome.resolve(".agent-im-bridge-kt/backend/doubao"),
+                        ),
+                    )
+                }
+                BackendId.DEEPSEEK -> {
+                    BackendSpec(
+                        id,
+                        options.deepseekBinary,
+                        root(
+                            "BRIDGE_DEEPSEEK_HOME",
+                            userHome.resolve(".agent-im-bridge-kt/backend/deepseek"),
                         ),
                     )
                 }

@@ -1,0 +1,67 @@
+# Final immutable overlay. ACP cannot activate without the policy service.
+- id: acp
+  inject: [acpAppStartup, bridgeDeepSeekPolicy]
+  config:
+    provider: !!js process.env.BRIDGE_DEEPSEEK_PROVIDER
+    model: !!js process.env.BRIDGE_DEEPSEEK_MODEL
+
+- id: sandbox-policy
+  config:
+    mode: !!js process.env.BRIDGE_DEEPSEEK_SANDBOX_MODE
+    workspaceRoot: !!js process.cwd()
+    additionalWritableRoots: []
+
+- id: approval
+  config:
+    policy: never
+
+- id: llm-pi-ai
+  config:
+    providers: !!js "process.env.BRIDGE_DEEPSEEK_PROVIDER === 'openai-codex' ? { 'openai-codex': {} } : {}"
+
+- id: agent-loop
+  config:
+    agents: []
+
+- id: hmr
+  disabled: true
+- id: permission
+  disabled: true
+- id: config-editor
+  disabled: true
+- id: settings
+  disabled: true
+- id: plugin-manager
+  disabled: true
+- id: tool-plugin-manager
+  disabled: true
+- id: session-title-llm
+  disabled: true
+- id: jobs
+  disabled: true
+- id: tool-jobs
+  disabled: true
+- id: goal
+  disabled: true
+- id: goal-round-driver
+  disabled: true
+- id: command-goal
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: ptc-runtime
+  disabled: true
+- id: workflow-ptc
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: plan-mode
+  disabled: true
+- id: tool-working-directory
+  disabled: true
+- id: tool-executor-ptc
+  disabled: true
+
+- insert:
+    - id: bridge-deepseek-policy
+      name: './bridge-policy.mjs'

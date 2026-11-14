@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DeepSeek Harness 接入 Spec · Agent IM Bridge</title>
+<style>
+:root{color-scheme:light;--ink:#17243a;--muted:#61718a;--line:#dce4ef;--accent:#315dcc;--bg:#f3f6fb;--paper:#fff;--soft:#edf3ff}
+*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:24px}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.8 system-ui,-apple-system,"Noto Sans CJK SC",sans-serif}
+.layout{display:grid;grid-template-columns:210px minmax(0,1050px);gap:28px;max-width:1330px;margin:32px auto;padding:0 24px}nav{position:sticky;top:28px;align-self:start;font-size:14px}nav a{display:block;padding:5px 0;text-decoration:none}nav strong{display:block;margin-bottom:12px}
+main{min-width:0;background:var(--paper);padding:40px 44px;border:1px solid var(--line);border-radius:16px}h1{font-size:32px;line-height:1.4;margin:14px 0}h2{font-size:23px;margin:42px 0 16px;padding-bottom:8px;border-bottom:1px solid var(--line)}h3{font-size:18px;margin:24px 0 10px}p{margin:12px 0}a{color:var(--accent)}li{margin:7px 0}
+.eyebrow,.meta{color:var(--muted);font-size:14px}.eyebrow{letter-spacing:.08em;font-weight:700}.badge{display:inline-block;background:var(--soft);color:var(--accent);padding:2px 10px;border-radius:20px;font-size:13px}.note{padding:16px 20px;border-left:4px solid var(--accent);background:var(--soft);border-radius:4px}.warn{background:#fff5df;border-color:#b97a0a}.ok{background:#edf8f3;border-color:#218560}
+code,pre{font:13px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace}code{overflow-wrap:anywhere}pre{overflow:auto;white-space:pre-wrap;background:#f1f4f9;padding:16px 18px;border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px;margin:14px 0}th,td{padding:10px 12px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#f5f7fc}td:first-child{font-weight:550}.table-wrap{overflow-x:auto}
+.flow{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0}.flow span{padding:10px 12px;background:var(--soft);border:1px solid var(--line);border-radius:8px;font-size:14px}.flow b{align-self:center;color:var(--muted)}.small{font-size:14px;color:var(--muted)}details{margin:14px 0}summary{cursor:pointer;font-weight:650}footer{margin-top:36px;border-top:1px solid var(--line);padding-top:16px;color:var(--muted);font-size:14px}
+@media(max-width:1000px){.layout{display:block;max-width:1000px}nav{position:static;display:flex;flex-wrap:wrap;gap:6px 18px;margin-bottom:20px}nav strong{width:100%;margin:0}nav a{padding:0}}@media(max-width:650px){.layout{margin:0;padding:0}nav{padding:18px}main{padding:24px 20px;border-radius:0}h1{font-size:27px}table{min-width:620px}.flow b{display:none}}
+@media print{body{background:#fff}.layout{display:block;margin:0;padding:0}nav{display:none}main{border:0;padding:0}h2,h3{break-after:avoid}tr,.note{break-inside:avoid}a{color:inherit}.table-wrap{overflow:visible}details{display:block}}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav aria-label="目录">
+<strong>DeepSeek Harness 接入</strong>
+<a href="#decision">01 · 结论与边界</a><a href="#evidence">02 · 本机调研</a><a href="#selection">03 · 协议选型</a>
+<a href="#architecture">04 · 架构与生命周期</a><a href="#configuration">05 · 配置与环境</a><a href="#permissions">06 · 权限强制</a>
+<a href="#sessions">07 · 会话与提交</a><a href="#output">08 · 输出与展示</a><a href="#stop">09 · 停止与故障</a>
+<a href="#changes">10 · 改动清单</a><a href="#verification">11 · 验收</a><a href="#delivery">12 · 实施顺序</a><a href="#sources">13 · 来源</a>
+</nav>
+<main>
+<div class="eyebrow">AGENT IM BRIDGE / BACKEND SPEC</div>
+<h1>接入 DeepSeek Harness</h1>
+<p><span class="badge">已按 spec 适配 · 验证记录见末节</span></p>
+<p class="meta">调研日期：2026-11-14（Asia/Shanghai） · 项目基线：<code>9beb2f2</code><br>
+Harness 基线：<code>dsh-v0.2.2-rc.1</code> / <code>66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db</code></p>
+
+<section id="decision">
+<h2>01 · 结论与范围</h2>
+<div class="note"><strong>建议：</strong>新增 <code>deepseek</code> 后端，Kotlin 直接连接独立 <code>dsh --profile acp</code> 子进程的 ACP JSON-RPC。复用 Bridge 的调度、会话、鉴权及消息展示；配套一个小型 Cordis 策略插件，保证本机权限配置在创建及恢复后始终生效。</div>
+<p>ACP 已具备持久化空会话、多会话并发、原生取消和单会话关闭，能够适配现有控制命令。它输出已提交消息的语义块，<strong>不提供 Web UI 的实时 token 增量</strong>；界面应展示阶段、工具状态和逐条完成的正文。</p>
+<ul>
+<li>V1 包含：文本往返、跨轮续聊、重启恢复、<code>/new</code>、<code>/resume</code>、<code>/cd</code>、<code>/stop</code>、新群初始化、FIFO、跨聊天/话题并发、工具进度、DEV/PROD 独立配置及部署。</li>
+<li>默认仍为 <code>read-only</code>；目标支持三种现有 sandboxMode。受限模式须通过对应平台的实际拒绝写入测试后才可声明支持，缺少沙箱或策略插件时拒绝启动，不能放宽成 full access。</li>
+<li>V1 复用现有附件路径/链接与文件定位；原生图片输入输出、语音、Harness Web 展示卡、计划审批、原生问答 UI、MCP 配置管理及外部桌面会话导入另行适配。</li>
+<li>保持 Codex、Traex、OpenCode、Doubao 行为；不替换模型服务 API、不实现新的调度器、不连接或停止用户正在运行的 Harness 桌面服务。</li>
+</ul>
+<p class="small">本文保留设计契约与调研证据；适配代码及后续验证记录见第 12 节，实际验证范围以该节为准。</p>
+</section>
+
+<section id="evidence">
+<h2>02 · 本机安装与证据</h2>
+<div class="table-wrap"><table>
+<tr><th>发现</th><th>依据与适配影响</th></tr>
+<tr><td>桌面安装产物</td><td><code>/home/zero/Application/deepseek-harness-0.2.2-rc.1-linux-x86_64-unsigned.AppImage</code> 存在；文件名标示版本，不据此断言其打包内容和本次探测进程完全一致。</td></tr>
+<tr><td>可执行的本地源码构建</td><td><code>/home/zero/Project/dsh-desktop-linux/upstream/apps/cli/lib/bin.js</code>；实际 <code>--version</code> 返回 <code>0.2.2-rc.1</code>。源码 HEAD 对应上方固定 commit；Linux 移植目录还含桌面补丁。</td></tr>
+<tr><td>Node</td><td>当前 shell 为 <code>v25.9.0</code>；该基线 CLI 要求 Node <code>&gt;=24.9.0</code>。正式部署固定绝对解释器与 CLI 路径，不能依赖交互式 shell 的 PATH。</td></tr>
+<tr><td>旧 npm 安装缓存</td><td><code>~/.npm/_npx/1e7f6d9597241db0/…</code> 与 <code>~/.dsh/profiles/node_modules/@deepseek-ai/dsh</code> 的 package.json 均为 <code>0.1.1-rc.2</code>；本次 shell 的 PATH 无 <code>dsh</code>。不能直接以旧 npx 缓存上线。</td></tr>
+<tr><td>用户状态目录</td><td><code>~/.dsh</code> 已存在。仅检查目录和软件包信息，未读取用户会话正文、settings 或凭证；它不作为 Bridge 新环境默认状态目录。</td></tr>
+<tr><td>上游发布状态</td><td>官方 README 标明 developer preview、可能破坏兼容。本 spec 针对固定基线设计，不宣称它是调研日最新版本。<a href="https://github.com/deepseek-ai/deepseek-harness#developer-preview">官方说明</a></td></tr>
+</table></div>
+<h3>已完成的隔离实验</h3>
+<p>使用上述已构建 CLI、临时 <code>DSH_HOME</code>、临时进程 cwd、清理供应商凭据后的子进程环境；关闭遥测。未发送 <code>session/prompt</code>，未使用模型账号或产生模型请求，临时目录退出后删除。</p>
+<pre>initialize → protocolVersion=1; name=deepseek-harness-acp; version=0.0.1
+capabilities → session.list / resume / close; MCP HTTP; authMethods=[]
+session/new → UUID + configOptions（可创建持久化空会话）
+session/list → 成功
+session/close → 成功
+session/resume（同 cwd）→ 成功
+session/close → 成功
+session/resume（另一 cwd）→ -32602，拒绝
+关闭 stdin → exit 0；本次 stderr 0 行；模型请求 0 次</pre>
+<p>握手中的 <code>agentInfo.version=0.0.1</code> 是协议实现标识，不能用作发行版本校验；<code>authMethods=[]</code> 也不能证明模型认证、余额或真实网络可用。原生取消和模型输出的补充无账号实验记录在验收节。</p>
+</section>
+
+<section id="selection">
+<h2>03 · 为什么采用 ACP</h2>
+<div class="table-wrap"><table>
+<tr><th>路径</th><th>能力与限制</th><th>决定</th></tr>
+<tr><td>ACP stdio</td><td><code>session/new</code>、<code>resume</code>、<code>prompt</code>、<code>cancel</code>、<code>close</code>、<code>list</code>；同连接多会话；语义消息和工具事件。</td><td>V1 主路径。</td></tr>
+<tr><td>SDK stdio / TS / Python</td><td>有持久化、原生事件和 prompt/query，但当前协议没有 cancel 或 session-close；放弃运行需要关闭整个 runtime。</td><td>不能满足共享服务下的聊天级停止。换 SDK 语言不能补足协议缺口。</td></tr>
+<tr><td>Headless 单次 CLI</td><td>面向一次性任务，需自行弥合空会话、控制和结构化生命周期差异。</td><td>不作为 ACP 失败时的降级路径。</td></tr>
+<tr><td>桌面/Web 私有接口</td><td>桌面服务承载用户活动和个人状态；引入端口、鉴权、内部 RPC 与升级耦合。</td><td>不连接现存服务；模型认证准备可使用独立状态域中的官方 Web UI。</td></tr>
+</table></div>
+<p>ACP 的恢复调用是 <strong><code>session/resume</code></strong>，不是 <code>session/load</code>；该实现明确不支持 load、历史回放、额外目录、客户端文件系统和终端协议。依据：<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/acp/acp/README.md#protocol-contract">ACP 契约</a>、<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/sdk/protocol/README.md#known-limitations-and-deferred-work">SDK 限制</a>。</p>
+</section>
+
+<section id="architecture">
+<h2>04 · 架构与进程生命周期</h2>
+<div class="flow" aria-label="调用链"><span>飞书 / Telegram / 本地入口</span><b>→</b><span>ChatService FIFO 与槽位</span><b>→</b><span>DeepSeekHarnessRunner</span><b>→</b><span>ACP Client</span><b>→</b><span>独立 dsh + Bridge Policy</span></div>
+<ul>
+<li><code>DeepSeekHarnessRunner</code> 实现 <code>ManagedAgentRunner</code> 和 <code>AgentSessionController</code>。工厂显式分支到该后端，不能落入 app-server 的默认分支。</li>
+<li>每个 Bridge 实例持有一个独立 ACP 进程。公共 stdout/stderr 读取器归 Runner 生命周期，单聊天停止不取消公共读取器；RPC 按 id 匹配，update 按 sessionId 路由。</li>
+<li>NDJSON 双向读写；单个写入队列保证帧不交错。使用结构化协程、Mutex/Channel 与 Dispatchers.IO；不阻塞协程等待 Future，不在调度锁内做外部 I/O。</li>
+<li>初始化校验 ACP v1、agent 名称及 list/resume/close 能力；启动时另校验 CLI 发行版本、安装清单及受控 profile。<code>healthy()</code> 用有界的无模型控制请求和进程状态检查，不创建模型轮次。</li>
+<li>每个会话最多一个 prompt 在途。全局并发配额仍由 Bridge 管；Harness 既有内部工具并行不等同于新增聊天槽位。</li>
+</ul>
+<h3>每轮关闭运行作用域，保留持久会话</h3>
+<div class="note warn"><strong>必须纳入设计：</strong>ACP 的 prompt 结束或取消后，晚到子 Agent 消息仍可能触发自主工作。因此不能仅等 prompt 返回就把会话长驻并释放 Bridge 槽位。</div>
+<ol>
+<li>获得 Bridge 槽位后创建或 resume；完成策略约束与绑定落盘后才提交 prompt。</li>
+<li>等待原 prompt 的终态并完成本轮输出归约。</li>
+<li>无论成功、失败或停止，对本轮持有的 session 执行一次 <code>session/close</code>，等待根 Agent、后代、输出链、持久化和作用域清理。</li>
+<li>close 确认后才结束 Runner 调用，后续按现有发送/清理流程释放槽位。下一轮恢复同一 ID；close 不删除历史、不清除 Bridge 绑定。</li>
+</ol>
+<p>空会话控制命令同样在返回前 close，避免不占模型槽位的控制阶段留下活动 Agent。清理由运行身份绑定，旧轮 finally 不能关闭下一轮的新句柄。V1 受控 profile 禁用自主 goal、job、workflow 入口及其驱动，关闭仍作为后代清理屏障。</p>
+</section>
+
+<section id="configuration">
+<h2>05 · 配置、安装与环境隔离</h2>
+<h3>配置字段</h3>
+<pre>// environments/&lt;env&gt;/config.json 的相关字段
+{
+  "backend": "deepseek",
+  "sandboxMode": "read-only",
+  "deepseekProvider": "deepseek-official",
+  "deepseekModel": "deepseek-v4-flash"
+}
+
+// environments/&lt;env&gt;/runtime.json 的相关字段
+{
+  "deepseekHome": "/absolute/path/to/environments/dev/backend/deepseek"
+}</pre>
+<p><code>BackendId.DEEPSEEK</code> 的配置值固定为 <code>deepseek</code>，展示名 <code>DeepSeek Harness</code>。缺省 backend 的旧配置继续使用 Codex。新增对应内部 RunOptions/解析支持，沿用现有“后端配置决定选型、指定 binary 不切后端”的规则。</p>
+<ul>
+<li><code>deepseekProvider/Model</code> 是新会话的初始默认值；恢复会话保留其持久化模型选择。修改默认模型后重启，再 <code>/new</code> 使用新模型。V1 无聊天内模型切换或 Traex 档位策略；缺少精确 route 就明确失败，不静默换模型。</li>
+<li>正式环境默认从当前真实 <code>releaseDirectory/libexec/deepseek/</code> 解析 wrapper、CLI、profile 与策略插件，runtime.json 无需写 binary。wrapper 用绝对 Node 路径启动固定 CLI；向导将解释器路径记为 <code>deepseekNode</code>。<code>deepseekBinary</code> 仅供 DEV/兼容性测试覆盖，必须是与当前 release 一致、带完整性清单的受控 wrapper，普通 CLI 不能绕过策略。禁止守护进程运行 npx 自动下载、引用临时 AppImage 挂载路径、current 链接或可变构建目录。</li>
+<li>首次支持版本固定为 <code>0.2.2-rc.1</code>；依赖安装使用锁文件/安装清单。Gradle distribution 明确包含 CLI 及其运行依赖、wrapper、profile 和策略插件，publish manifest 覆盖这些文件。回滚解析目标 release 的完整组合，不能继续引用新版 wrapper。后续版本通过同一协议契约测试后再加入支持范围。</li>
+<li><code>deepseekHome</code> 默认本环境 <code>backend/deepseek</code>，设置为子进程 <code>DSH_HOME</code>。会话、凭证、settings、profile、锁及附件与其他环境和桌面 <code>~/.dsh</code> 隔离；目录重叠检查覆盖真实祖先和符号链接。</li>
+<li>进程 cwd 固定为本环境专用 <code>backend/deepseek-launch</code> 目录，不是聊天 cwd，也不是 JVM 隐式 cwd；每次 new/resume 另传聊天绝对 cwd。相对 patch、CLI、状态路径均按明确基准解析，传给子进程前转为绝对路径。</li>
+<li>子进程采用业务需要的环境白名单；去除外部 DSH_* 配置、供应商 Key/endpoint 和 Node 注入变量，再显式设置本环境 DSH_HOME、临时目录及 <code>DSH_TELEMETRY_DISABLED=1</code>。固定进程 cwd 避免 Harness 从聊天项目 <code>.env</code> 意外获取认证；专用 launch 目录不能含隐式 <code>.env</code>。</li>
+</ul>
+<h3>认证与首次向导</h3>
+<p><code>bridgectl dev/init</code> 在前台选择 DeepSeek，检测固定 CLI 与 Node，创建独立目录。DeepSeek API Key 使用回环地址上的独立 Harness Web 配置入口；ChatGPT OAuth 通过官方 authorization flow 直接打开浏览器并写入本环境 credential store。向导自动准备路径，用户不需要手写配置或把 Key 贴进飞书。</p>
+<p>支持本环境的 DeepSeek API Key，以及 <code>openai-codex</code> 的 ChatGPT OAuth 授权；后者已用 <code>gpt-6.1-sol</code> 完成 ACP 真实调用验证。认证状态通过官方 credential store 的描述接口检查，不读取授权 payload。不得复制桌面或 DEV 的凭证到 PROD；守护重启只检查已有配置，不交互、不覆盖损坏配置。ACP authenticate 成功不等于模型登录成功。</p>
+<p>本环境凭证由 Harness credential store 管理，Bridge 只检查是否配置、来源和可写性，不记录值。Harness 本地凭证文件与模型工具属于同一 OS 用户，这种目录隔离不提供凭证对 Agent 的保密边界。<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/credentials/credentials-local/README.md#where-keys-come-from">凭证优先级</a></p>
+</section>
+
+<section id="permissions">
+<h2>06 · 权限强制是 V1 的实现门槛</h2>
+<p>Harness base 当前默认 <code>workspace-write + ask</code>。权限会写进 session log，resume 保留旧值；仅配置 <code>DSH_PERMISSION_MODE</code> 或修改默认 patch，无法保证旧 full-access 会话随 Bridge 配置降成只读。ACP 未公开权限设置 RPC。</p>
+<div class="table-wrap"><table>
+<tr><th>Bridge 本机配置</th><th>实际策略</th><th>审批</th></tr>
+<tr><td>read-only（默认）</td><td>文件写入受限；不能把工具请求拒绝列表当成完整沙箱。</td><td>never，任何升级请求拒绝。</td></tr>
+<tr><td>workspace-write</td><td>只允许 Harness 沙箱定义的项目写入及平台必要临时区；不自动附加其他目录或共享 Git 根。</td><td>never，边界外请求拒绝。</td></tr>
+<tr><td>danger-full-access</td><td>显式选择无文件写入限制。</td><td>never，不出现交互审批。</td></tr>
+</table></div>
+<h3>Bridge 自有策略插件</h3>
+<ul>
+<li>通过受控 profile/最后一层 patch 加载发布快照内的版本匹配 Cordis 插件，使用公开的 <code>setSandboxMode(session, mode)</code> 与 <code>setApprovalPolicy(session, "never")</code>，不修改上游或增加私有 ACP 方法。</li>
+<li>在 fresh/resumed Agent 发布前重申本机权限，覆盖历史 override；在 <code>agent/pre-step</code> 进入前核验并重申，子 Agent 同样受约束。模型任务开始前必须完成策略生效与必要持久化屏障。</li>
+<li>将 ACP 服务依赖于策略插件 readiness；插件缺失、加载失败、服务不匹配、无法确认策略时拒绝启动/提交。不能只凭握手成功推断插件已经生效。</li>
+<li>由发布快照提供完整受控 profile，校验可加载的 bundle/plugin 清单；禁用模型侧插件管理、配置修改、权限切换、goal/job/workflow 入口及未审计的外部执行插件。保留沙箱化文件/搜索/shell、项目说明、skills、普通子 Agent 与压缩能力；V1 的 <code>mcpServers</code> 固定为空。</li>
+<li>权限表和 preset defaults 也固定成本机选择，防止 permission-presets 的新会话初始化覆盖策略；必须验证插件激活、恢复、permission pinning 与 pre-step 的先后顺序。不能通过盲加 prepend 猜测监听器顺序。</li>
+<li>收到 <code>session/request_permission</code> 始终拒绝，只返回该请求广告选项中的 reject_once；不构造 allow 结果。原生 ask_user/计划审批不挂交互应答器，返回明确不支持或取消，不模拟用户答案。</li>
+</ul>
+<p>Linux/macOS/Windows 的实际沙箱后端、full/partial enforcement 和拒绝行为分别验证。受限模式的 runner 不可用或只能提供未达标的 partial enforcement 时明确失败；V1 不声称限制网络，也不声称能约束任意用户自装插件。策略插件已实现，每次运行时用实际写入探针核实所选沙箱边界；各平台覆盖仍以验证记录为准。<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/sandbox/sandbox-policy/README.md">策略优先级</a> · <a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/interaction/permission-presets/README.md#session-defaults">恢复的权限</a></p>
+</section>
+
+<section id="sessions">
+<h2>07 · 会话、控制命令与提交边界</h2>
+<h3>新会话与持久化顺序</h3>
+<ol>
+<li>按现有上下文切换屏障或运行槽位进入；传入规范化绝对 cwd 与 <code>mcpServers:[]</code> 调用 <code>session/new</code>。</li>
+<li>检查 UUID，记录本进程会话句柄和目录；上游 new 在返回前 flush 空会话。普通自动新建：<code>new → onSession 挂起落盘 → onSubmitting → prompt</code>；绑定落盘失败则 close、不提交。</li>
+<li><code>/new</code>：<code>new → close → 返回 descriptor → SessionControlService.activate 原子写入 PENDING → 放行唯一初始化队列 → resume → onSubmitting → prompt</code>。<code>createSession</code> 无 onSession 回调，不得提前修改聊天绑定；close 或绑定落盘失败保留旧绑定。<code>sessionBootstrapExecutesTurn=false</code>。</li>
+<li>新会话初始化沿用 <code>InitialSessionPrompt</code> 和现有 PENDING/SUBMITTING/COMPLETE 记录，不另加一轮测试提示或生成标题请求。</li>
+</ol>
+<p>元数据操作超时或被取消后仍由公共 reader 跟踪相关 RPC；若晚到 new 响应产生了空会话，按原 operationId close 它，不提交 prompt、不激活绑定、不重试创建。无法确认创建/清理状态时保留待清理记录，不能将晚到响应交给新操作。</p>
+<h3>提交是否已发生</h3>
+<p>ACP prompt 的最终响应是执行完成响应，不提供与 SDK messageId receipt 相同的独立入队确认。不能把“写入 stdin”当成服务端已接受。</p>
+<ul>
+<li>发帧前调用 <code>onSubmitting</code> 并持久化 SUBMITTING。明确未写出帧或服务端在 admission 前拒绝时才可调用 <code>onNotSubmitted</code>；一般 RPC 错误不能推断没执行。</li>
+<li>当前 session 运行窗口中出现可关联的已提交助手消息/工具事件，或获得可证明已入队执行的正常 prompt 完成结果时，才调用 <code>onSubmitted</code>。thought、usage、配置变化或 cancel 通知不能单独作为依据。</li>
+<li>传输中断、进程退出或取消发生在 admission 边界且无法证明是否入队时，保留未知提交状态；不自动重放首轮或普通 prompt。已有 SUBMITTING 的重启保护继续生效。</li>
+</ul>
+<h3>恢复与目录</h3>
+<p>SessionKey 继续包含 appId、chatId、topicId、规范化 workspace、runtimeRoot、backendId；当前 SessionStore v5 无需新 schema。UUID 规则通过 <code>validBackendSessionId</code> 统一接入存储、控制服务及新群初始化。</p>
+<p><code>inspectSession(id)</code> 没有 workspace 参数，V1 不新增 registry：在本环境独占状态目录内调用<strong>不带 cwd 过滤</strong>的 <code>session/list</code>，正确分页，精确匹配 ID，仅返回目标的 id/cwd；不展示其他会话、不读取历史正文。归属仍由 SessionControlService/SessionStore 检查。活动状态来自本 Runner 精确句柄及独占环境锁，不能宣称验证了外部进程；未登记 ID 始终不允许导入。<code>prepareResume</code> 用 <code>session/resume {sessionId,cwd,mcpServers:[]}</code> 让上游核实真实目录和占用。控制阶段完成后 close，正式 prompt 再恢复，若期间状态变化则失败，不自动新建替代。</p>
+<p>V1 仅恢复当前隔离域内 Bridge 已登记历史。ACP list 不公开可靠 origin/全机活动证明，因此外部 ID 的 descriptor 保持 <code>externalActivityVerified=false</code>；不得将“同目录”当作私人桌面会话的导入授权。已知缺失、占用、cwd 不符及结果未知均保留旧绑定。</p>
+<p>Harness 自身的 inbox 也会持久化。为了保持“Bridge 队列仅在内存、未知提交不自动重放”的契约，策略插件在 <code>agent/created</code> 的 <code>source=resume</code> 屏障清除旧 pending inbox，再重申策略并 flush；不会清除已进入会话历史的消息，也不会清除 fresh 子 Agent 的初始化输入。</p>
+<p><code>/cd</code> 保留忙碌拒绝、目录选择持久化、切回新上下文的规则；<code>/status</code> 显示 DeepSeek、Session ID、当前阶段、队列及停止待确认。未知斜杠命令仍作为用户文本交给模型，不另走 Harness 的命令执行接口。</p>
+</section>
+
+<section id="output">
+<h2>08 · 正文、进度与结果归约</h2>
+<div class="table-wrap"><table>
+<tr><th>ACP update</th><th>Bridge 行为</th></tr>
+<tr><td>agent_message_chunk</td><td>只收当前 session、当前 prompt 窗口；按 messageId 聚合公开文本块，更新预览。每条消息提交后才出现，不能宣传为逐 token 流式。</td></tr>
+<tr><td>agent_thought_chunk</td><td>不进入正文、最终答案或持久化进度文本；不向 IM 转发推理内容。</td></tr>
+<tr><td>tool_call / tool_call_update</td><td>映射为工具开始/完成/失败。允许按现有边界展示名称及有界调用参数；忽略工具返回正文，防止混入答案或日志。</td></tr>
+<tr><td>usage_update / config_option_update</td><td>更新可支持的状态元数据；不视为正文或任务结束。未知可忽略字段保持兼容，破坏路由/终态的变化明确失败。</td></tr>
+<tr><td>图片或其他非文本块</td><td>V1 不拼接 base64；不把二进制写日志。按现有 delivery issue 机制提示未支持内容，只有非文本时不能宣告成功发送了答案。</td></tr>
+</table></div>
+<p>ACP 不提供 Codex 的 final phase。V1 明确定义：在原 <code>session/prompt</code> 正常返回 <code>end_turn</code> 且本轮 close 成功后，选本轮最后一条有公开文本的已提交助手 message 组作为最终答案；相同 messageId 的多块按序组合，先前消息只作过程。若末尾工具活动后没有新助手正文，不能拿此前工具前正文充当最终结果，返回 EMPTY/EXECUTION。缺失或冲突的 messageId 不猜测消息边界，按协议失败处理。</p>
+<p><code>cancelled</code> → STOPPED；<code>max_tokens</code> 或其他非正常 stopReason → 明确非完整结果，已有正文仅保留为过程；RPC 错误 → 分类失败。迟到更新在 close 期间只排空，不混入已选定结果；close 后旧句柄失效，不能污染下一轮。</p>
+<p>通过既有 <code>AgentProgress</code>/<code>AgentRunEvent</code> 和统一文字发送入口输出，复用飞书配置化 CardKit/COT 与 Telegram 现有展示；不加入 Doubao 强制单卡特例。不得把原始 ACP 载荷、推理、工具输出、完整外部错误正文或凭证写入日志。</p>
+</section>
+
+<section id="stop">
+<h2>09 · 停止、故障与整体退出</h2>
+<ol>
+<li><code>/stop</code> 仍清理命令接收时已有队列，独立 handle 记录停止意图。prompt 在途时发送 <code>session/cancel {sessionId}</code> 通知；创建/恢复期间先阻止后续 prompt，并关闭本操作持有的 Agent。</li>
+<li>cancel 通知没有“停止完成”响应；持续读取原 prompt，等待终态，再 close 本会话。若停止与正常结束竞态，尊重实际终态，不伪造 cancelled；按既有控制语义收束。</li>
+<li>30 秒未完成停止/必要清理时告警并持续占槽。重复 stop 复用同一过程，停止期间新到请求仍等待；不能 kill 共享 ACP 进程或取消公共 reader。</li>
+<li>连接断开但进程仍活着时，所有结果不明运行保留占槽/待确认，不重发、不自动重启后重跑。ACP 没有可承诺的断线重连/快照补齐，展示明确未知状态；由运维重启或整个实例退出解决。</li>
+<li>进程已确认退出时结束相关请求，失败分类保留提交未知；托管进程异常显式接入 FatalErrorHandler/守护恢复，不在不明状态中释放后重跑。建立可恢复外部失败白名单（明确缺失、占用、cwd/参数拒绝、可识别认证/额度/网络失败）；无法分类的故障保留脱敏诊断后调用 <code>FatalErrorHandler.unexpected</code>。不能只抛普通 Exception，现有 ChatTurnExecutor 可能将它转换为 EXECUTION。内部编程异常和 JVM Error 不用宽泛 catch 转成普通业务失败。</li>
+</ol>
+<p>Bridge 整体关闭：先停接收与调度，向所有拥有的活动会话请求 cancel/close，关闭 stdin 让 Harness 正常排空退出；整个清理最多等待 5 秒，再终止本实例拥有的 ACP 进程树并等待回收。每项清理以独立 try/finally 保障执行，NonCancellable 只做必要清理，不能继续队列任务。</p>
+<p>连接、启动和元数据控制可保留技术超时；<strong>prompt 无自动运行/无进展超时</strong>。close 超时代表清理结果未知，不能当成功释放槽位。stderr 持续排空但只输出允许的诊断分类、错误码、退出码、运行 ID 及长度统计，不原样转储上游文本；遥测关闭。</p>
+</section>
+
+<section id="changes">
+<h2>10 · 预计改动清单</h2>
+<div class="table-wrap"><table>
+<tr><th>位置（仓库相对路径）</th><th>改动</th></tr>
+<tr><td>BackendSpec.kt / RunOptions.kt / RuntimeEnvironment.kt</td><td>后端枚举、binary/home 路径、受控环境、runtime 字段、目录重叠验证、临时目录与明确 cwd。</td></tr>
+<tr><td>AgentRunner.kt / backend/</td><td>工厂分支；新增 Runner、ACP Client、Session adapter、提交状态帮助函数、事件归约与独立清理。复用现有接口，不修改其他协议实现。</td></tr>
+<tr><td>storage/ConfigStore.kt / DevRegistration.kt / InstanceConfigCardController.kt</td><td>合法配置、默认模型、三种权限支持门槛、前台选择与配置卡后端选项；重启生效。</td></tr>
+<tr><td>storage/SessionStore.kt / SessionControlService.kt / GroupConversationService.kt</td><td>统一 UUID 规则及恢复能力；显式禁止无法核实的外部导入；保持现有原子绑定与新群语义。</td></tr>
+<tr><td>deployment/bridgectl.py / deployment/launcher.py</td><td>CLI 与 Node 检测、版本清单、前台独立认证、目录管理、环境过滤、守护启动及发布快照依赖；新增部署测试。</td></tr>
+<tr><td>拟新增 deployment/deepseek/</td><td>受控 profile/patch、Bridge policy 插件及锁定依赖、构建/打包与契约测试。运行策略配置由环境生成，代码来自不可变发布快照。</td></tr>
+<tr><td>build.gradle.kts / 发布清单</td><td>明确组装并安装 CLI 运行依赖、profile、wrapper 与策略插件到 distribution/libexec/deepseek；当前仅复制 Python 文件的规则必须扩展。publish manifest 覆盖所有新增文件，启动与 rollback 按真实 releaseDirectory 解析。</td></tr>
+<tr><td>测试与文档</td><td>新后端 Runner/Session/Event/Policy 测试，扩展后端/会话/配置/部署覆盖，更新 backend-configuration、testing-guide 与 README。</td></tr>
+</table></div>
+<p class="small">Kotlin 路径前缀均为 <code>src/main/kotlin/top/ntutn/agent/bridge/</code>。Android/桌面主要展示后端文本，当前未发现需要新增后端枚举的客户端选择器；实施时仍检查状态及错误文案。</p>
+</section>
+
+<section id="verification">
+<h2>11 · 验收矩阵</h2>
+<div class="table-wrap"><table>
+<tr><th>层级</th><th>必须验证的行为</th></tr>
+<tr><td>离线假 ACP</td><td>分帧/大帧边界、乱序 RPC、多会话隔离、同会话单 prompt、未知字段、server permission 请求、更新先于响应、EOF/非零退出、stderr 不泄露原文。</td></tr>
+<tr><td>会话与提交</td><td>绑定持久化先于 prompt；存储失败不提交；new 只初始化一次；restart/resume、cwd 不符、ID 缺失与占用；SUBMITTING 未知不重放；外部 ID 拒绝；新群创建与 topicId 隔离。</td></tr>
+<tr><td>调度与停止</td><td>同聊天/话题 FIFO、跨聊天/话题并发、maxConcurrentRuns；失败后出队；等待回复发送时取消；停止清旧队列并保留新请求；重复 stop；30 秒不确认继续占槽；close 前不释放；关闭后不启动排队任务。</td></tr>
+<tr><td>自主工作与清理</td><td>取消终态之后晚到子 Agent 消息、正常终态之后后台活动、close/flush 失败、运行身份竞争；必须确认 close 隔离后代且不会关闭其他聊天，整体退出 5 秒兜底清理只触及自己的进程树。</td></tr>
+<tr><td>权限（阻断上线）</td><td>fresh 与 resumed full→read-only、read-only→workspace-write；文件工具与 shell/子进程分别做项目内/外写入、symlink 和共享 Git 目录测试；恶意升级请求拒绝；子 Agent 继承；插件缺失和沙箱失效均拒绝；默认配置不被历史 preset 覆盖。</td></tr>
+<tr><td>正文与展示</td><td>多助手消息、多个文本块、工具前文字、只有工具/推理/图片、max_tokens、取消、迟到块和 messageId 异常；最终回复不含推理/工具结果，飞书和 Telegram 停止状态一致。</td></tr>
+<tr><td>部署与隔离</td><td>DEV/PROD 路径及锁不重叠、清理继承 Key 和 DSH/Node 注入、显式 cwd、独立认证流程、守护无交互、固定依赖制品与版本拒绝、publish/deploy/rollback 后 CLI 与策略插件仍匹配。</td></tr>
+<tr><td>真实 CLI、模拟模型</td><td>临时 DSH_HOME + upstream keyless fixture/本地假供应商验证 ACP prompt、cancel、close、跨进程恢复与输出顺序；不读取账号或访问收费模型，纳入兼容性门禁。</td></tr>
+<tr><td>真实模型与通道</td><td>仅显式 <code>DEEPSEEK_LIVE_TEST=1</code>，使用独立 DEV 认证和临时项目做至少两轮续聊、重启恢复、工具调用、原生停止；飞书私聊/群 @、Telegram 回归。额度失败需有脱敏分类；不在 PROD 注入故障。</td></tr>
+</table></div>
+<p>实现完成必须运行 <code>./gradlew test installDist</code>、策略插件的离线检查及 <code>python3 scripts/check_file_lines.py</code>。运行旧式 build/install 实例时先停止；快照实例构建可并行，升级仅用 <code>bridgectl publish/deploy</code>。本次执行构建与隔离验证，不切换正在运行的 DEV/PROD 服务。</p>
+<details><summary>本次调研的验证记录与未覆盖项</summary>
+<ul>
+<li>已完成：本地 CLI 版本/help；真实 ACP 进程无模型 initialize/new/list/close/resume/目录拒绝/EOF 退出；官方固定 commit 文档与源码比对。</li>
+<li id="keyless-result">补充 keyless control-surface 实验已通过：真实 CLI 进程 + 上游确定性本地模型，1 文件 / 1 用例，exit 0，耗时 3.12 秒；覆盖模型/effort 选择、MCP 工具、messageId 与语义输出、close、跨进程重启后 list/resume，以及工具完成后 cancel → 原 prompt 返回 cancelled。临时状态清理，无账号或收费请求；这不代表 Bridge 适配已经通过。</li>
+<li>此处为适配前调研记录；适配后的构建、权限和生命周期测试记录见第 12 节。用户真实模型认证、收费调用、IM 通道及 macOS/Windows 实机验证没有纳入本次无账号测试。</li>
+</ul>
+<pre>执行目录：/home/zero/Project/dsh-desktop-linux/upstream
+DSH_EXAMPLE_MODE=lib DSH_E2E_MAX_WORKERS=1 DSH_TELEMETRY_DISABLED=1 CI=true \
+node node_modules/vitest/vitest.mjs run --config vitest.e2e.config.ts \
+  apps/cli/tests/profiles/acp/tests/control-surface.e2e.ts --retry=0
+测试启动器使用隔离的临时用户/状态环境，不继承用户凭据；复用已有构建，不安装依赖。</pre>
+</details>
+</section>
+
+<section id="delivery">
+<h2>12 · 实施顺序与完成定义</h2>
+<ol>
+<li><strong>协议与策略原型：</strong>锁定 CLI 制品；完成 ACP Client、会话控制和最小 policy 插件，在临时环境打通 keyless prompt/cancel/close；验证恢复后权限降级和清理屏障。若该门槛失败，保持后端不可启用，不先交付权限不明的实现。</li>
+<li><strong>接入 Bridge：</strong>完成 Runner、初始化提交状态、事件归约、会话/新群命令与队列回归，不改变现有调度策略。</li>
+<li><strong>初始化与发布：</strong>完成独立认证向导、版本制品、环境过滤、路径验证和守护部署测试，补齐用户文档。</li>
+<li><strong>DEV 真实验收：</strong>显式启用真实模型测试并验证 IM 回复、重启恢复和停止；三种权限按平台逐一放行。评审通过后再安排正式部署。</li>
+</ol>
+<p>完成定义：V1 验收矩阵通过；模型任务不重复、停止不影响其他聊天、空闲不残留自主运行作用域、旧会话权限服从本机配置、认证和状态不跨环境。只握手成功或单轮回复成功不足以完成适配。</p>
+<p class="note">评审重点：采用 ACP；每轮 close/resume 的生命周期；小型策略插件作为必需依赖；V1 限 Bridge 已登记会话与文本；默认模型只影响新会话。以上均为本文给定的推荐设计，后续实现按此推进。</p>
+<h3>适配后的验证记录 · 2026-11-14</h3>
+<p id="implementation-validation">适配代码、策略插件、配置及部署链路已实现。本轮默认离线 <code>./gradlew test installDist</code> 已通过：JVM 670 项通过、26 项账号/平台测试跳过（含桌面模块）；Python 125 项通过、11 项平台测试跳过；Node 策略与认证 15 项通过。文件规模及 <code>git diff --check</code> 检查通过。真实模型的两轮及重启续聊记录见下文，默认测试不会调用收费模型。</p>
+<p>Linux 已对<strong>安装后的真实 CLI/wrapper</strong>完成无账号集成验证：三种模式的实际沙箱预检；fresh/close/resume、full 降只读、pre-step 恶意权限漂移修正、原生子 Agent 继承、cancel 等待终态；真实 write/bash 内外写入和 symlink escape；空凭证状态与自定义 profile 拒绝。测试只在临时发布副本替换模型适配器，不请求网络模型或使用用户凭证。</p>
+<p>额外覆盖了持久 pending → SIGKILL → resume → 新 prompt 的崩溃恢复路径，旧输入未进入模型；临时副本禁用清理的负对照能稳定复现重放。临时 root 的 publish/verify 验证了完整快照与 0 符号链接，运行后仍通过完整性检查。新增产物进入 Gradle distribution，安装后自动校验实际复制树，回滚使用相应 release 的 CLI/策略组合。</p>
+<p>初版验证未使用真实账户/额度，也未覆盖实际 IM 收发及 macOS/Windows 实机沙箱。随后按 DEV 配置需求加入固定 <code>openai-codex</code> 路由与 ChatGPT OAuth 引导，支持 <code>gpt-6.1-sol</code>；认证只从本环境取得，不复用桌面 profile 或 PROD 状态。其他 provider 的通用认证不在本版范围。</p>
+<p>19:58 的 DEV 故障确认是模型服务拒绝 OAuth 凭据，上游通过 <code>-32603 / turn failed</code> 报告，旧适配层漏分类而触发 FatalErrorHandler。修复仅将明确的外部认证、额度、限流和网络失败转换为当前任务失败；策略、编程及未知内部错误仍按原策略退出。错误日志只保留 RPC 方法、编号、数值错误码和固定分类；明确结束的失败轮次完成提交记录，并等待 close 确认后释放槽位。已补充脱敏、同 ID 后续请求及 close 屏障回归。原故障会话依据持久化 turn/end 修复初始化状态并备份，没有重放原请求。</p>
+<p>用户在 Firefox 完成本环境独立的 ChatGPT OAuth 授权后，显式开启 <code>DEEPSEEK_LIVE_TEST=1</code> 的真实 JVM Runner 测试通过：<code>openai-codex/gpt-6.1-sol</code> 两轮正文、Runner 重启后恢复同一 Session ID、会话落盘早于提交、无工具调用及自有进程清理。授权直接通过官方 flow 写入 Harness credential store；UI 未提供 OAuth 按钮时不再引导用户进入空配置页。</p>
+<p>回复卡片的模型元数据来自本轮 <code>session/new</code> 或 <code>session/resume</code> 的 <code>configOptions</code>，并按当前会话的 <code>config_option_update</code> 完整快照更新，写入统一 <code>RunMeta</code>。展示实际模型 ID，恢复会话不使用新会话默认值冒充；未知或畸形数据省略对应字段，配置事件本身不作为 prompt 已提交的证据。飞书与 Telegram 的成功、失败及停止终卡沿用统一元数据链路。</p>
+<p>后续审查的两项 P2 已分别验证：取消恢复后晚到的目录拒绝会遗留本地占用；无桌面 API Key 向导丢弃了完整登录网址。前者通过确定性失败回归复现，现由显式晚到失败回调结算：明确拒绝只释放本地占用，成功等待 close，传输未知保留到进程退出，清理异常不再被吞掉。后者改为只在交互终端显示官方回环就绪网址与 SSH 转发提示，过滤其他输出；真实无账号 Web 探针验证新解析器及带启动认证的 HTML 访问成功，进程树与临时目录完整清理。</p>
+</section>
+
+<section id="sources">
+<h2>13 · 可追溯来源</h2>
+<p>协议事实以固定 commit 为准；本机源码位于 <code>/home/zero/Project/dsh-desktop-linux/upstream/</code>。下列链接便于审查，升级时应重新验证：</p>
+<ol>
+<li><a href="https://github.com/deepseek-ai/deepseek-harness">官方项目 / developer preview</a>；<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/apps/cli/package.json">CLI 包与运行要求</a>。</li>
+<li><a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/acp/acp/README.md">ACP 协议矩阵、取消和输出限制</a>；<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/bundle/acp-app/README.md">ACP 应用启动与默认模型</a>。</li>
+<li><a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/acp/acp/src/index.ts#L199-L290">new flush、resume 与 cwd 校验</a>；<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/acp/acp/src/session.ts#L410-L521">close 与 prompt 终态</a>。</li>
+<li><a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/acp/acp/src/updates.ts">messageId、正文/推理/工具更新</a>；<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/acp/acp/src/codec.ts">stopReason 映射</a>。</li>
+<li><a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/sdk/protocol/README.md">SDK 方法与无 cancel/close 的限制</a>。</li>
+<li><a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/bundle/base/cordis.patch.yml#L237-L276">base 默认权限与 preset</a>；<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/interaction/permission-presets/src/index.ts#L425-L455">恢复权限保留</a>。</li>
+<li><a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/sandbox/sandbox-policy/README.md">Sandbox policy</a>；<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/sandbox/sandbox-local/README.md">各平台沙箱及 full/partial enforcement</a>；<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/interaction/user-approval/README.md">never 审批语义</a>。</li>
+<li><a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/packages/credentials/credentials-local/README.md">凭证来源及边界</a>；<a href="https://github.com/deepseek-ai/deepseek-harness/blob/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db/apps/cli/tests/profiles/acp/tests/control-surface.e2e.ts">无账号控制面测试</a>。</li>
+<li>本项目：<a href="../AGENTS.md">AGENTS.md</a>、<a href="backend-configuration.md">后端现状</a>、<a href="session-new-resume-spec.html">既有会话控制 spec</a>，以及第 10 节列出的当前源码。</li>
+</ol>
+</section>
+<footer>2026-11-14：DEV 使用 DeepSeek Harness、danger-full-access、openai-codex/gpt-6.1-sol。认证异常分类、提交状态、卡片模型元数据、取消恢复的晚到拒绝清理及 SSH 配置网址均已修复。真实 JVM 两轮及重启续聊记录、专项与全量测试通过；无账号 Web 启动与完整认证网址探针通过。快照 r-383564f94224f3310958 已部署且机器人重新连接。原 DEV 配置和故障会话状态已备份；PROD 未改动。</footer>
+</main>
+</div>
+</body>
+</html>

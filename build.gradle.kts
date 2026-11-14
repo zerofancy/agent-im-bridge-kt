@@ -50,6 +50,23 @@ tasks.register<JavaExec>("desktopSmokeServer") {
 
 // Runtime snapshots are published outside build/. The generated distribution is never a live
 // classpath.
+val deepSeekRuntimeDirectory = layout.buildDirectory.dir("deepseek-runtime")
+val prepareDeepSeekRuntime by
+    tasks.registering(Exec::class) {
+        group = "distribution"
+        description =
+            "Stage the pinned DeepSeek CLI and production dependencies for an immutable release"
+        inputs.files(fileTree("deployment/deepseek") { exclude("__pycache__/**", "tests/**") })
+        outputs.dir(deepSeekRuntimeDirectory)
+        workingDir(projectDir)
+        commandLine(
+            "python3",
+            "deployment/deepseek/prepare_runtime.py",
+            "--output",
+            deepSeekRuntimeDirectory.get().asFile.absolutePath,
+        )
+    }
+
 distributions {
     main {
         contents {
@@ -61,9 +78,34 @@ distributions {
                     "deployment/process_tree.py",
                     "deployment/remote_access.py",
                     "deployment/state_files.py",
+                    "deployment/model_setup.py",
+                    "deployment/deepseek_setup.py",
                 )
             ) {
                 into("libexec")
+            }
+            from("deployment/deepseek") {
+                include(
+                    "dsh",
+                    "launcher.py",
+                    "bridge.patch.yml",
+                    "bridge-policy.mjs",
+                    "policy-core.mjs",
+                    "auth-status.mjs",
+                    "auth-core.mjs",
+                    "auth.patch.yml",
+                    "oauth-login.mjs",
+                )
+                into("libexec/deepseek")
+                eachFile {
+                    if (name == "dsh") {
+                        permissions { unix("755") }
+                    }
+                }
+            }
+            from(prepareDeepSeekRuntime) {
+                include("runtime/**")
+                into("libexec/deepseek")
             }
             from("deployment/bridgectl") {
                 into("bin")
@@ -82,6 +124,48 @@ val deploymentTest by
 
 tasks.test { dependsOn(deploymentTest) }
 
+val deepSeekPolicyTest by
+    tasks.registering(Exec::class) {
+        group = "verification"
+        description =
+            "Verify the DeepSeek permission policy and release launcher without model access"
+        inputs.dir("deployment/deepseek")
+        workingDir(projectDir)
+        doFirst {
+            val sources =
+                fileTree("deployment/deepseek/tests") { include("*.test.mjs") }
+                    .files
+                    .sortedBy { it.path }
+            require(sources.isNotEmpty()) { "DeepSeek policy tests are missing" }
+            commandLine(listOf("node", "--test") + sources.map { it.absolutePath })
+        }
+    }
+
+tasks.test { dependsOn(deepSeekPolicyTest) }
+
+val deepSeekLauncherTest by
+    tasks.registering(Exec::class) {
+        group = "verification"
+        description = "Verify the controlled DeepSeek launcher and credential metadata boundary"
+        inputs.files(
+            "deployment/deepseek/launcher.py",
+            "deployment/deepseek/tests/test_launcher.py",
+        )
+        workingDir(projectDir)
+        commandLine(
+            "python3",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "deployment/deepseek/tests",
+            "-p",
+            "test_*.py",
+        )
+    }
+
+tasks.test { dependsOn(deepSeekLauncherTest) }
+
 tasks.named<Sync>("installDist") {
     doFirst {
         require(
@@ -99,6 +183,21 @@ tasks.named<Sync>("installDist") {
                 require(lock != null) { "旧版 Bridge 仍在运行；先停止旧实例，禁止覆盖运行中的安装目录" }
                 lock.release()
             }
+        }
+    }
+    doLast {
+        val verification =
+            providers.exec {
+                workingDir(projectDir)
+                commandLine(
+                    "python3",
+                    "deployment/verify_deepseek_distribution.py",
+                    destinationDir.absolutePath,
+                )
+                isIgnoreExitValue = true
+            }
+        require(verification.result.get().exitValue == 0) {
+            "DeepSeek distribution verification failed; rebuild the pinned runtime"
         }
     }
 }

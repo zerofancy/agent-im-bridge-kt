@@ -193,10 +193,7 @@ internal class SessionControlService(
         cancelled: Boolean,
         usingBasic: Boolean,
     ) {
-        send(
-            route,
-            confirmationText(chatId, route.topicId, previous, fresh, cancelled, usingBasic)
-        )
+        send(route, confirmationText(chatId, route.topicId, previous, fresh, cancelled, usingBasic))
     }
 
     suspend fun status(chatId: String, topicId: String? = null): String {
@@ -292,24 +289,16 @@ internal class SessionControlService(
     }
 
     private fun validateId(key: SessionKey, id: String) {
-        val valid =
-            when (key.backendId) {
-                BackendId.OPENCODE.configValue -> {
-                    openCodeId(id, "ses")
-                }
-                BackendId.DOUBAO.configValue -> {
-                    validDoubaoSessionId(id)
-                }
-                else -> {
-                    validSessionId(id)
-                }
-            }
+        val valid = validBackendSessionId(BackendId.parse(key.backendId), id)
         if (!valid) {
             throw SessionControlException("Session ID 格式无效，请提供当前后端的完整 ID；当前会话未变。")
         }
     }
 
-    private suspend fun backendCall(controller: AgentSessionController, action: suspend () -> SessionDescriptor): SessionDescriptor =
+    private suspend fun backendCall(
+        controller: AgentSessionController,
+        action: suspend () -> SessionDescriptor,
+    ): SessionDescriptor =
         try {
             // Reuse the controller resolved by the caller instead of re-casting the runner.
             val timeout = controller.sessionControlTimeoutMs

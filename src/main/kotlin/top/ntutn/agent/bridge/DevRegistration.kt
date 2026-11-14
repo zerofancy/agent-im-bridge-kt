@@ -23,7 +23,9 @@ object DevRegistration {
                     it.isNotBlank()
                 } ?: "feishu"
             val backend =
-                parseBackendSelection(console?.readLine("选择后端 (codex/traex/opencode/doubao，默认 codex): "))
+                parseBackendSelection(
+                    console?.readLine("选择后端 (codex/traex/opencode/doubao/deepseek，默认 codex): ")
+                )
             if (backend.id == BackendId.OPENCODE || backend.id == BackendId.DOUBAO) {
                 println("${backend.id.displayName} 仅支持 danger-full-access，已为该环境设置完整访问权限。")
             }
@@ -68,6 +70,9 @@ internal fun parseBackendSelection(input: String?): BackendSelection {
         BackendId.TRAEX -> {
             BackendSelection(BackendId.TRAEX, SandboxMode.READ_ONLY)
         }
+        BackendId.DEEPSEEK -> {
+            BackendSelection(BackendId.DEEPSEEK, SandboxMode.READ_ONLY)
+        }
         BackendId.OPENCODE -> {
             BackendSelection(BackendId.OPENCODE, SandboxMode.FULL_ACCESS)
         }
@@ -88,6 +93,8 @@ internal fun BridgeConfig.withBackend(selection: BackendSelection) =
         feishuProgressMode,
         traexQueueStatus,
         traexModelTiering,
+        deepseekProvider,
+        deepseekModel,
     )
 
 fun registerTelegram(): BridgeConfig {

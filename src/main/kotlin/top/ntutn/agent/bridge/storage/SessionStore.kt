@@ -104,8 +104,7 @@ class SessionStore(private val path: Path) {
                             if (version >= 5) {
                                 item["updatedAt"]
                                     ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }
-                                    ?.asLong
-                                    ?: 0L
+                                    ?.asLong ?: 0L
                             } else {
                                 0L
                             }
@@ -331,7 +330,11 @@ class SessionStore(private val path: Path) {
                     // subsequently created topics inherit.
                     put(
                         base.chatKey(),
-                        WorkspaceEntry(base.chatKey(), target.toString(), System.currentTimeMillis()),
+                        WorkspaceEntry(
+                            base.chatKey(),
+                            target.toString(),
+                            System.currentTimeMillis(),
+                        ),
                     )
                 }
             val current = resolveWorkspace(directories, base).toString()
@@ -422,19 +425,7 @@ class SessionStore(private val path: Path) {
         require(
             Path.of(entry.key.workspace).isAbsolute && Path.of(entry.key.runtimeRoot).isAbsolute
         )
-        val validId =
-            when (backend) {
-                BackendId.OPENCODE -> {
-                    openCodeId(entry.sessionId, "ses")
-                }
-                BackendId.CODEX,
-                BackendId.TRAEX -> {
-                    validSessionId(entry.sessionId)
-                }
-                BackendId.DOUBAO -> {
-                    validDoubaoSessionId(entry.sessionId)
-                }
-            }
+        val validId = validBackendSessionId(backend, entry.sessionId)
         require(validId && entry.updatedAt > 0)
     }
 

@@ -1,10 +1,10 @@
-# 飞书 Agent 持续对话 · Kotlin（Codex / Traex / OpenCode）
+# 飞书 Agent 持续对话 · Kotlin（Codex / Traex / OpenCode / DeepSeek）
 
 <p align="center">
   <img src="assets/branding/agent-bridge-app-icon.png" alt="Agent Bridge Logo：连接 Agent 与聊天的桥梁" width="160" height="160">
 </p>
 
-本机运行的飞书机器人：通过官方链接绑定机器人，将授权用户的私聊及群聊 @ 文本交给本地 Codex、Traex 或 OpenCode CLI，返回最终答案。按后端及聊天保存并续接会话，默认只读分析。
+本机运行的飞书机器人：通过官方链接绑定机器人，将授权用户的私聊及群聊 @ 文本交给本地 Codex、Traex、OpenCode、Doubao 或 DeepSeek Harness，返回最终答案。按后端及聊天保存并续接会话，默认只读分析。
 
 ## 快速开始
 
@@ -46,7 +46,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [部署与运行](docs/deployment-guide.md) | 初始化 DEV / PROD、平台守护、升级回滚与运行诊断。 |
-| [后端配置](docs/backend-configuration.md) | Codex、Traex、OpenCode 的选择、独立认证与启动参数。 |
+| [后端配置](docs/backend-configuration.md) | Codex、Traex、OpenCode、Doubao、DeepSeek 的选择、独立认证与启动参数。 |
 | [聊天命令与会话](docs/chat-sessions.md) | 控制命令、工作目录、编辑权限、FIFO 排队与会话持久化。 |
 | [飞书接入与消息](docs/feishu-messages.md) | 应用权限、收发排障、表情回复、引用上下文与附件下载。 |
 | [卡片与本地文件链接](docs/cards-and-file-links.md) | 流式卡片、停止状态、答案快照及编辑器文件定位。 |

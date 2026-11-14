@@ -5,6 +5,7 @@ import java.util.UUID
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
 import top.ntutn.agent.bridge.backend.AppServerAgentRunner
+import top.ntutn.agent.bridge.backend.DeepSeekHarnessRunner
 import top.ntutn.agent.bridge.backend.DoubaoCliRunner
 import top.ntutn.agent.bridge.backend.OpenCodeRunner
 
@@ -113,6 +114,8 @@ fun createAgentRunner(
     backend: BackendSpec,
     sandboxMode: SandboxMode,
     traexQueueStatus: Boolean = true,
+    deepseekProvider: String = "deepseek-official",
+    deepseekModel: String = "deepseek-v4-flash",
 ): ManagedAgentRunner =
     when (backend.id) {
         BackendId.OPENCODE -> {
@@ -120,6 +123,9 @@ fun createAgentRunner(
         }
         BackendId.DOUBAO -> {
             DoubaoCliRunner(backend, sandboxMode)
+        }
+        BackendId.DEEPSEEK -> {
+            DeepSeekHarnessRunner(backend, sandboxMode, deepseekProvider, deepseekModel)
         }
         else -> {
             AppServerAgentRunner(backend, queueStatus = traexQueueStatus)

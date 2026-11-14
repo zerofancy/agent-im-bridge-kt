@@ -21,6 +21,8 @@ class BridgeConfig(
     val traexQueueStatus: Boolean = true,
     /** 是否启用模型档位自动升/降。默认开启，只在 Traex 后端生效；关闭即整条功能退出。 */
     val traexModelTiering: Boolean = true,
+    val deepseekProvider: String = "deepseek-official",
+    val deepseekModel: String = "deepseek-v4-flash",
 ) {
     val platform: String
         get() =
@@ -40,6 +42,16 @@ class BridgeConfig(
     fun validate() {
         SandboxMode.parse(sandboxMode)
         val backendId = BackendId.parse(backend)
+        require(deepseekProvider.isNotBlank() && deepseekModel.isNotBlank()) {
+            "DeepSeek provider 和 model 不能为空。"
+        }
+        require(
+            listOf(deepseekProvider, deepseekModel).all {
+                it.length <= 256 && it.none(Char::isISOControl)
+            }
+        ) {
+            "DeepSeek provider 或 model 格式无效。"
+        }
         if (backendId in setOf(BackendId.OPENCODE, BackendId.DOUBAO)) {
             require(sandboxMode == SandboxMode.FULL_ACCESS.cliValue) {
                 "${backendId.displayName} 仅支持 danger-full-access。"
@@ -110,6 +122,14 @@ class ConfigStore(val path: Path) {
                         require(it.isJsonPrimitive && it.asJsonPrimitive.isBoolean)
                         it.asBoolean
                     } ?: true,
+                    json["deepseekProvider"]?.let {
+                        require(it.isJsonPrimitive && it.asJsonPrimitive.isString)
+                        it.asString
+                    } ?: "deepseek-official",
+                    json["deepseekModel"]?.let {
+                        require(it.isJsonPrimitive && it.asJsonPrimitive.isString)
+                        it.asString
+                    } ?: "deepseek-v4-flash",
                 )
                 .also { it.validate() }
         } catch (_: Exception) {

@@ -116,9 +116,17 @@ class TelegramCardRepliesTest {
                             }
                         assertTrue(delivered.size >= 2)
                         val payloads = delivered.map { it.second.toString() }
+                        val modelText =
+                            if (unsupported) {
+                                "模型 model-test"
+                            } else {
+                                "模型 model\\\\-test"
+                            }
                         assertTrue(payloads.last().contains("后端 Codex"))
+                        assertTrue(payloads.last().contains(modelText))
                         assertTrue(payloads.last().contains("强度 high（默认）"))
                         assertTrue(payloads.dropLast(1).none { it.contains("后端 Codex") })
+                        assertTrue(payloads.dropLast(1).none { it.contains(modelText) })
                         val projectUrl = "https://github.com/zerofancy/agent-im-bridge-kt"
                         assertTrue(payloads.last().contains(projectUrl))
                         assertTrue(payloads.dropLast(1).none { it.contains(projectUrl) })
@@ -148,7 +156,9 @@ class TelegramCardRepliesTest {
         assertTrue(rich.contains("强度 high（固定）"))
         assertFalse(rich.contains("<b>"))
         assertFalse(rich.contains("[model]("))
-        assertTrue(rich.contains("[agent-im-bridge-kt](https://github.com/zerofancy/agent-im-bridge-kt)"))
+        assertTrue(
+            rich.contains("[agent-im-bridge-kt](https://github.com/zerofancy/agent-im-bridge-kt)")
+        )
         assertFalse(
             TelegramRichReply.render("answer", "", "进行中", true, meta)
                 .toString()

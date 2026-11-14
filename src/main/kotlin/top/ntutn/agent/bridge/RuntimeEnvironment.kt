@@ -39,6 +39,12 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
             s.string("traexBinary") ?: "traex",
             s.string("opencodeBinary") ?: "opencode",
             s.string("doubaoBinary") ?: "doubao",
+            if (name == "dev") {
+                s.string("deepseekBinary")
+                    ?: releaseDirectory.resolve("libexec/deepseek/dsh").toString()
+            } else {
+                releaseDirectory.resolve("libexec/deepseek/dsh").toString()
+            },
         )
     }
 
@@ -69,6 +75,29 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
                     sessionRegistryRoot = directory.resolve("session-registry"),
                 )
             }
+            BackendId.DEEPSEEK -> {
+                if (s.string("deepseekBinary") != null) {
+                    val candidate = Path.of(options.deepseekBinary).toRealPath()
+                    val installed = releaseDirectory.resolve("libexec/deepseek/dsh")
+                    require(
+                        candidate.fileName.toString() == "dsh" &&
+                            Files.isRegularFile(
+                                candidate.parent.resolve("runtime/runtime-manifest.json")
+                            ) &&
+                            Files.isRegularFile(installed) &&
+                            Files.mismatch(candidate, installed) == -1L
+                    ) {
+                        "DeepSeek DEV 覆盖必须使用与当前发布版本相同的受控 wrapper，不能直接运行系统 CLI"
+                    }
+                }
+                BackendSpec(
+                    id,
+                    options.deepseekBinary,
+                    path("deepseekHome", "backend/deepseek"),
+                    deepseekNode = s.string("deepseekNode"),
+                    deepseekLaunchDirectory = directory.resolve("backend/deepseek-launch"),
+                )
+            }
         }.copy(temporaryRoot = temporary)
     }
 
@@ -78,6 +107,21 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
         fun overlap(a: Path, b: Path) = a.startsWith(b) || b.startsWith(a)
         require(!overlap(real(directory), real(other))) { "环境状态目录重叠" }
         val own = settings
+        for (key in listOf("deepseekHome", "deepseekNode", "deepseekBinary")) {
+            if (own.has(key)) {
+                val value = own[key]
+                require(
+                    value.isJsonPrimitive &&
+                        value.asJsonPrimitive.isString &&
+                        Path.of(value.asString).isAbsolute
+                ) {
+                    "$key 必须使用绝对路径"
+                }
+            }
+        }
+        require(name != "prod" || own.string("deepseekBinary") == null) {
+            "正式环境 DeepSeek 必须使用当前发布快照的 CLI，不能覆盖 deepseekBinary"
+        }
         val theirs = JsonFiles.read(other.resolve("runtime.json"))
         val otherConfig = JsonFiles.read(other.resolve("config.json"))
         require(otherConfig?.string("appId") != config.appId) { "调试和正式环境不能使用相同机器人" }
@@ -86,6 +130,10 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
                     Path.of(s["workspace"].asString),
                     Path.of(s.string("codexHome") ?: base.resolve("backend/codex").toString()),
                     Path.of(s.string("doubaoHome") ?: base.resolve("backend/doubao").toString()),
+                    Path.of(
+                        s.string("deepseekHome") ?: base.resolve("backend/deepseek").toString()
+                    ),
+                    base.resolve("backend/deepseek-launch"),
                     Path.of(s.string("traeHome") ?: base.resolve("backend/trae").toString()),
                     Path.of(
                         s.string("opencodeHome") ?: base.resolve("backend/opencode").toString()
@@ -101,6 +149,55 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
             }
         }
         val ownRoots = roots(own, directory)
+        if (config.backend == BackendId.DEEPSEEK.configValue) {
+            val deepseek =
+                real(
+                    Path.of(
+                        own.string("deepseekHome")
+                            ?: directory.resolve("backend/deepseek").toString()
+                    )
+                )
+            val launch = real(directory.resolve("backend/deepseek-launch"))
+            val otherRoots =
+                listOf(
+                    real(Path.of(own["workspace"].asString)),
+                    real(
+                        Path.of(
+                            own.string("codexHome") ?: directory.resolve("backend/codex").toString()
+                        )
+                    ),
+                    real(
+                        Path.of(
+                            own.string("doubaoHome")
+                                ?: directory.resolve("backend/doubao").toString()
+                        )
+                    ),
+                    real(
+                        Path.of(
+                            own.string("traeHome") ?: directory.resolve("backend/trae").toString()
+                        )
+                    ),
+                    real(
+                        Path.of(
+                            own.string("traeCliHome")
+                                ?: directory.resolve("backend/trae/cli").toString()
+                        )
+                    ),
+                    real(
+                        Path.of(
+                            own.string("opencodeHome")
+                                ?: directory.resolve("backend/opencode").toString()
+                        )
+                    ),
+                    real(Path.of(System.getProperty("user.home"), ".dsh")),
+                )
+            require(
+                !overlap(deepseek, launch) &&
+                    otherRoots.none { overlap(deepseek, it) || overlap(launch, it) }
+            ) {
+                "DeepSeek 状态和启动目录必须独立于工作目录、其他后端及桌面 ~/.dsh"
+            }
+        }
         require(
             ownRoots.none {
                 overlap(it, real(other)) || overlap(it, real(root.resolve("releases")))

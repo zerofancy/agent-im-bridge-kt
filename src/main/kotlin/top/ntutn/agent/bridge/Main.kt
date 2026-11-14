@@ -127,6 +127,8 @@ fun main(args: Array<String>) {
                 backend,
                 SandboxMode.parse(config.sandboxMode),
                 traexQueueStatus = config.traexQueueStatus,
+                deepseekProvider = config.deepseekProvider,
+                deepseekModel = config.deepseekModel,
             )
         runner.checkAvailable()
         val held = System.getenv("BRIDGE_HOLD") == "1"
@@ -268,10 +270,7 @@ fun main(args: Array<String>) {
             // Runtime reconnects are not startup failures; stop cross-thread writes to the
             // startup-only diagnostic state.
             channel.phaseChanged = {}
-            log.info(
-                "飞书连接已建立 elapsedMs={}",
-                (System.nanoTime() - startupStartedAt) / 1_000_000,
-            )
+            log.info("飞书连接已建立 elapsedMs={}", (System.nanoTime() - startupStartedAt) / 1_000_000)
         } else {
             log.info(
                 "正在连接 Telegram…… environment={} release={}",

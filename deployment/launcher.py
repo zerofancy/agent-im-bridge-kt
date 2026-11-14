@@ -37,6 +37,14 @@ def run_launcher(manager, release, held):
             'CLASSPATH',
         )
     }
+    if read(manager.directory / 'config.json', {}).get('backend') == 'deepseek':
+        from deepseek_setup import safe_environment
+        env = safe_environment(
+            env,
+            runtime.get('deepseekHome', manager.directory / 'backend/deepseek'),
+            manager.directory / 'tmp',
+            runtime.get('deepseekNode', ''),
+        )
     default_path = (
         '/usr/local/bin:/usr/bin:/bin'
         if sys.platform == 'linux'
