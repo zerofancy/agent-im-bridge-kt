@@ -180,7 +180,10 @@ internal class FeishuSocket(
 
     private suspend fun consume() {
         val assembler = FrameAssembler(now)
+        var sequence = 0L
         for (bytes in frames) {
+            sequence += 1
+            LoopHealth.feishuFrame(sequence)
             val frame =
                 try {
                     Pbbp2.Frame.parseFrom(bytes)
@@ -191,6 +194,7 @@ internal class FeishuSocket(
             val headers = frame.headersList.associate { it.key to it.value }
             if (frame.method == 0 && headers["type"] == "pong") {
                 health.received()
+                LoopHealth.feishuPong()
                 if (frame.hasPayload() && !frame.payload.isEmpty) {
                     val interval =
                         try {
@@ -217,6 +221,7 @@ internal class FeishuSocket(
             val start = now()
             var response = json("code" to 200)
             try {
+                LoopHealth.feishuDispatchStart()
                 runInterruptible { dispatch(payload) }
                     ?.let {
                         response.addProperty(

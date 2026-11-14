@@ -56,6 +56,9 @@ distributions {
             from(
                 listOf(
                     "deployment/bridgectl.py",
+                    "deployment/launcher.py",
+                    "deployment/launcher_watchdog.py",
+                    "deployment/process_tree.py",
                     "deployment/remote_access.py",
                     "deployment/state_files.py",
                 )

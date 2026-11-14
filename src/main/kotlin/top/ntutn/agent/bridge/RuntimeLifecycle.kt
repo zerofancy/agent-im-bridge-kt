@@ -54,6 +54,10 @@ class RuntimeLifecycle(val environment: RuntimeEnvironment) {
                             }
                         }
                     }
+                    // The launcher watchdog kills behind the JVM's back; the reason must stay readable.
+                    observation.string("hangReason")?.takeIf { it.isNotBlank() }?.let {
+                        old.addProperty("reason", "看门狗判定卡死（$it）")
+                    }
                 }
                 JsonFiles.write(environment.directory.resolve("lifecycle/previous.json"), old)
                 val id =
@@ -133,6 +137,7 @@ object FatalErrorHandler {
         Thread(
                 {
                     while (true) {
+                        LoopHealth.beat()
                         val start = fatalStarted.get()
                         if (start != 0L && System.nanoTime() - start > 1_000_000_000L) {
                             Runtime.getRuntime().halt(70)

@@ -67,10 +67,14 @@ class TelegramClient(private val botToken: String, apiRoot: String = "https://ap
                 while (isActive) {
                     try {
                         val identity = bot ?: getMe().also { bot = it }
+                        LoopHealth.telegramPollStart()
                         val updates = getUpdates()
+                        LoopHealth.telegramPollReturn()
                         for (update in updates) {
                             ensureActive()
+                            LoopHealth.telegramHandlerStart(update.updateId)
                             onUpdate(update, identity)
+                            LoopHealth.telegramHandlerEnd()
                         }
                     } catch (e: CancellationException) {
                         throw e

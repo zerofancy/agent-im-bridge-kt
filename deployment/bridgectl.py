@@ -29,6 +29,8 @@ import uuid
 if __name__ == '__main__':
     sys.dont_write_bytecode = True  # Published libexec directories are immutable.
 from state_files import atomic, read
+from launcher import run_launcher
+from process_tree import kill_tree
 
 if sys.platform == 'darwin':
     import plistlib
@@ -618,11 +620,16 @@ class Manager:
         with contextlib.suppress(Exception): self.rpc('reason/' + reason)
         old = read(self.directory / 'lifecycle/current.json')
         self.service.unload(self.label)
-        until = time.monotonic() + 20
+        deadline = time.monotonic() + 20
+        forced = False
         while old and alive(old['pid']):
             current = read(self.directory / 'lifecycle/current.json')
             if current and current['bootId'] != old['bootId']: raise RuntimeError('停止期间出现新实例')
-            if time.monotonic() > until: raise RuntimeError('旧实例未确认退出')
+            # A JVM that ignores SIGTERM must not keep the deployment waiting for its own timeout.
+            if not forced and time.monotonic() > deadline - 15:
+                forced = True
+                kill_tree(old['pid'])
+            if time.monotonic() > deadline: raise RuntimeError('旧实例未确认退出')
             time.sleep(.2)
 
     def wait_ready(self, release, timeout=120, stable=10):
@@ -738,66 +745,15 @@ class Manager:
         return self.deploydir / 'jobs' / (job_id + '.json')
 
     def launch(self, release, held):
-        p = self.verify(release); settings = self.validate()
-        for d in ('tmp', 'attachments', 'logs', 'control', 'lifecycle'): (self.directory / d).mkdir(parents=True, exist_ok=True, mode=0o700)
-        env = {k: v for k, v in os.environ.items() if k not in ('CODEX_HOME', 'TRAE_HOME', 'TRAECLI_HOME', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH')}
-        default_path = '/usr/local/bin:/usr/bin:/bin' if sys.platform == 'linux' else '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
-        env.update(BRIDGE_ROOT=str(self.root), BRIDGE_ENV=self.env, BRIDGE_RELEASE=release,
-                   TMPDIR=str(self.directory / 'tmp'),
-                   PATH=settings.get('path', default_path))
-        classpath = os.pathsep.join(str(f) for f in sorted((p / 'lib').glob('*.jar')))
-        argv = [settings['java'], '-Djava.io.tmpdir=' + str(self.directory / 'tmp'), '-cp', classpath, 'top.ntutn.agent.bridge.MainKt']
+        return run_launcher(self, release, held)
 
-        stopping = {'value': False}
-        current = {'child': None}
-
-        def terminate(signum, frame):
-            stopping['value'] = True
-            child = current['child']
-            if child is not None and child.poll() is None: child.send_signal(signum)
-        signal.signal(signal.SIGTERM, terminate); signal.signal(signal.SIGINT, terminate)
-
-        boot = self.system_boot()
-        breaker_path = self.directory / 'lifecycle/restart-breaker.json'
-        breaker = read(breaker_path, {})
-        if not breaker or breaker.get('boot') != boot or self.reachable():
-            attempts = 0
-        else:
-            attempts = int(breaker.get('attempts', 0))
-
-        while True:
-            activated = read(self.deploydir / 'activated', {})
-            env['BRIDGE_HOLD'] = '1' if held and activated.get('release') != release else '0'
-            child = subprocess.Popen(argv, env=env, cwd=settings['workspace'], stdin=subprocess.DEVNULL)
-            current['child'] = child
-            started = time.monotonic()
-            while child.poll() is None:
-                if stopping['value']:
-                    with contextlib.suppress(OSError, subprocess.TimeoutExpired): child.wait(timeout=20)
-                    return 0
-                time.sleep(2)
-                if attempts and time.monotonic() - started >= self.HEALTHY_DURATION:
-                    attempts = 0
-            code = child.returncode
-            current['child'] = None
-            life = read(self.directory / 'lifecycle/current.json', {})
-            if life.get('pid') == child.pid:
-                observed = {k: life[k] for k in ('pid', 'startedAt', 'bootId')}
-                if code < 0: observed['signal'] = -code
-                else: observed['exitCode'] = code
-                atomic(self.directory / 'lifecycle/observed-exit.json', observed)
-            mapped = code if code >= 0 else 128 - code
-            if stopping['value']: return 0
-            # A deployment owns stop/start while draining and activating; never respawn behind its back.
-            try:
-                with locked(self.deploydir / 'deploy.lock'): pass
-            except BlockingIOError:
-                return mapped
-            delay = self.backoff_delay(attempts)
-            woken = self.wait_with_edge_wake(delay, stopping)
-            if not woken:
-                attempts += 1
-                atomic(breaker_path, {'attempts': attempts, 'boot': boot, 'lastCode': mapped, 'since': time.time()})
+    def deploy_busy(self):
+        """A deployment executor owns stop/start while it holds the lock or has a live job."""
+        try:
+            with locked(self.deploydir / 'deploy.lock'): pass
+        except BlockingIOError:
+            return True
+        return self.active_job() is not None
 
     BACKOFF_BASE = 5
     BACKOFF_CAP = 1_800

@@ -203,3 +203,21 @@ python deployment/bridgectl.py deploy-status <部署编号>
 每次进程启动、通道首次连接成功后，主动向配置的 `allowedUserId` 对应机器人私聊发送“应用启动于x时x分”和“上次退出原因”。不等待首条用户消息，不引用旧消息、不发到群聊或文档评论。整个进程仅尝试一次；重连不重复发送，超时或发送状态未知不重试。通知在受服务生命周期管理的独立协程中发送，不阻塞正常回复。首次启动显示“无上次退出记录”，异常退出且无可靠记录时如实显示原因未知。`/status` 继续显示环境、版本、启动时间、上次退出时间/原因/退出码和部署状态。
 
 日志、管理令牌、生命周期和配置分别位于 `environments/<环境>/{logs,control,lifecycle}` 及该环境根目录。管理接口仅绑定 `127.0.0.1`，令牌文件权限为 600；`bridgectl status` 不显示令牌。不要上传环境配置、令牌或完整模型状态。
+
+## 卡死检测（启动器 watchdog）
+
+服务管理器（launchd / systemd / WinSW）守护的是 `_launch` 启动器进程，JVM 是启动器的子进程。启动器每 5 秒探一次 `127.0.0.1` 控制面的 `/status`，用 JVM 心跳与消息循环进度判断子进程是否还在工作；命中后自行重启 JVM，不依赖系统守护的退出重启。判定全程在 JVM 之外，协程死锁、IO 池饿死或长时间 STW 都能被发现。
+
+| 判据 | 默认阈值 | 处置 |
+|---|---|---|
+| 启动宽限 | 120 秒 | 只记录，不判定 |
+| `/status` 连续不可达 | 3 次（约 15 秒） | 重启 |
+| `heartbeatAgeMs` | 30 秒 | 重启 |
+| 入站积压不推进 | `incoming > 0` 且循环 90 秒未取新消息 | 重启 |
+| Telegram 长轮询滞留 | 90 秒告警，120 秒重启 | 重启 |
+
+处置顺序：写 `lifecycle/hang.json`（原因、pid、心跳年龄、循环快照、队列计数）→ SIGTERM → 10 秒 → SIGKILL 进程树（含 app-server 与 CLI 子进程）→ 按启动器退避策略重拉。部署事务持锁期间一律不处置；同一启动代次最多重启 5 次、间隔不短于 300 秒。Windows 没有 SIGTERM 语义，直接 `TerminateProcess` 并用 `taskkill /T /F` 清理子树。
+
+阈值可在 `environments/<环境>/runtime.json` 的 `watchdog` 段覆盖，改完重启实例生效；临时排查可设 `{"watchdog": {"enabled": false}}`。旧版本发布没有 `heartbeatAgeMs` 字段时 watchdog 自动停用，只记一条日志，保证回滚安全。
+
+诊断位置：`logs/watchdog.log`（判定与处置记录，不含消息正文）、`lifecycle/hang.json`（最近一次卡死快照）、`deployment/<环境>/watchdog-state.json`（最近判定与重启次数）。启动提示的“上次退出原因”会显示“看门狗判定卡死（原因）”。停止或升级时若 JVM 不响应 SIGTERM，`bridgectl` 会在等待 5 秒后强杀进程树，再按 20 秒总上限确认退出。

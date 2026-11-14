@@ -69,6 +69,7 @@ internal fun ChatService.startIncoming() {
         val seen = linkedSetOf<String>()
         try {
             for (item in incoming) {
+                LoopHealth.inboundDequeued(item.sequence)
                 try {
                     if (item.id != null && !seen.add(item.id)) {
                         item.completed.complete(Unit)
@@ -89,7 +90,10 @@ internal fun ChatService.startIncoming() {
                         item.completed.complete(Unit)
                         continue
                     }
-                    admit(message.route, message.prompt, message.input, item.sequence)
+                    val submitted =
+                        admit(message.route, message.prompt, message.input, item.sequence)
+                    LoopHealth.inboundAdmitted(item.sequence)
+                    submitted
                         .whenComplete { _, error ->
                             if (error != null) {
                                 item.completed.completeExceptionally(error)

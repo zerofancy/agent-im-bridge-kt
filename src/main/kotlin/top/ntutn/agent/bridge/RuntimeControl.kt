@@ -103,6 +103,8 @@ class RuntimeControl(
                                 addProperty("environment", lifecycle.environment.name)
                                 addProperty("connected", connected.get() && backendHealthy())
                                 addProperty("diagnostics", lifecycle.status())
+                                addProperty("heartbeatAgeMs", LoopHealth.heartbeatAgeMs())
+                                add("loops", LoopHealth.snapshot())
                             }
                             .toString()
                             .toByteArray()
