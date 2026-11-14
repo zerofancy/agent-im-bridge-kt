@@ -107,7 +107,7 @@ def run_launcher(manager, release, held):
                 if manager.deploy_busy():
                     log(manager, 'watchdog skip %s: deployment active' % reason)
                 elif watchdog.allow_kill(now):
-                    detail = hang_record(manager, reason, result, child.pid)
+                    detail = hang_record(manager, reason, result, child.pid, release)
                     log(
                         manager,
                         'watchdog kill %s pid=%s heartbeatAgeMs=%s loops=%s'

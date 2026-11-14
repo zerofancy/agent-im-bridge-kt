@@ -146,23 +146,37 @@ def log(manager, message):
         pass
 
 
-def _current_release(manager):
-    """Identity fallback for records written while the control endpoint is unreachable."""
+def _identity(manager, child_pid):
+    """Identity of the current child only; stale on-disk generations are never borrowed."""
+    identity = {}
+    if child_pid is None:
+        return identity
     try:
-        return (manager.deploydir / 'current').read_text(encoding='utf-8').strip() or None
-    except OSError:
-        return None
-
-
-def hang_record(manager, reason, result, child_pid=None):
-    status = result.get('status') or {}
+        pid = int(child_pid)
+    except (TypeError, ValueError):
+        return identity
+    endpoint = read(manager.directory / 'control/endpoint.json', {}) or {}
     lifecycle = read(manager.directory / 'lifecycle/current.json', {}) or {}
+    for source in (endpoint, lifecycle):
+        try:
+            matches = int(source.get('pid', -1) or -1) == pid
+        except (TypeError, ValueError):
+            matches = False
+        if matches and source.get('bootId'):
+            identity['bootId'] = source['bootId']
+            break
+    return identity
+
+
+def hang_record(manager, reason, result, child_pid=None, release=None):
+    status = result.get('status') or {}
+    identity = _identity(manager, child_pid)
     payload = {
         'at': time.time(),
         'reason': reason,
-        'pid': status.get('pid') or lifecycle.get('pid') or child_pid,
-        'bootId': status.get('bootId') or lifecycle.get('bootId'),
-        'release': status.get('release') or _current_release(manager),
+        'pid': status.get('pid') or child_pid or identity.get('pid'),
+        'bootId': status.get('bootId') or identity.get('bootId'),
+        'release': status.get('release') or release,
         'environment': status.get('environment') or manager.env,
         'heartbeatAgeMs': status.get('heartbeatAgeMs'),
         'loops': status.get('loops'),

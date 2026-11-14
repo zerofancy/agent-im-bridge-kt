@@ -286,11 +286,24 @@ class RecordTests(unittest.TestCase):
             self.manager.directory / 'lifecycle/current.json',
             {'pid': 4321, 'bootId': 'boot-a', 'startedAt': 't'},
         )
-        (self.manager.deploydir / 'current').write_text('r-test', encoding='utf-8')
-        payload = w.hang_record(self.manager, 'status_unreachable', {'state': 'unreachable'}, 4321)
+        payload = w.hang_record(
+            self.manager, 'status_unreachable', {'state': 'unreachable'}, 4321, 'r-test'
+        )
         self.assertEqual(4321, payload['pid'])
         self.assertEqual('boot-a', payload['bootId'])
         self.assertEqual('r-test', payload['release'])
+        self.assertEqual('prod', payload['environment'])
+
+    def test_hang_record_never_borrows_the_previous_generation(self):
+        w.atomic(
+            self.manager.directory / 'lifecycle/current.json',
+            {'pid': 111, 'bootId': 'boot-old', 'startedAt': 't'},
+        )
+        (self.manager.deploydir / 'current').write_text('r-new', encoding='utf-8')
+        payload = w.hang_record(self.manager, 'startup_timeout', {'state': 'starting'}, 222, 'r-new')
+        self.assertEqual(222, payload['pid'])
+        self.assertIsNone(payload['bootId'])
+        self.assertEqual('r-new', payload['release'])
         self.assertEqual('prod', payload['environment'])
 
     def test_state_file_records_decision(self):
