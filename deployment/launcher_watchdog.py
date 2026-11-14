@@ -53,7 +53,7 @@ def probe(manager, child_pid, timeout_seconds):
     if endpoint.get('bootId') != lifecycle.get('bootId'):
         return {'state': 'starting'}
     request = urllib.request.Request(
-        'http://127.0.0.1:%d/status' % int(endpoint['port']),
+        'http://127.0.0.1:%d/health' % int(endpoint['port']),
         headers={'Authorization': 'Bearer ' + endpoint['token']},
         method='GET',
     )
@@ -90,6 +90,11 @@ class Watchdog:
         if now - self.child_started_at < self.config['startupGraceSeconds']:
             return ('none', None)
         if result['state'] == 'starting':
+            # The endpoint never appearing means the JVM died before it could serve anything;
+            # after the startup grace this has to count as a failure, not as "still loading".
+            self.failures += 1
+            if self.failures >= self.config['probeFailures']:
+                return ('kill', 'startup_timeout')
             return ('none', None)
         if result['state'] == 'unreachable':
             self.failures += 1
@@ -141,15 +146,24 @@ def log(manager, message):
         pass
 
 
-def hang_record(manager, reason, result):
+def _current_release(manager):
+    """Identity fallback for records written while the control endpoint is unreachable."""
+    try:
+        return (manager.deploydir / 'current').read_text(encoding='utf-8').strip() or None
+    except OSError:
+        return None
+
+
+def hang_record(manager, reason, result, child_pid=None):
     status = result.get('status') or {}
+    lifecycle = read(manager.directory / 'lifecycle/current.json', {}) or {}
     payload = {
         'at': time.time(),
         'reason': reason,
-        'pid': status.get('pid'),
-        'bootId': status.get('bootId'),
-        'release': status.get('release'),
-        'environment': status.get('environment'),
+        'pid': status.get('pid') or lifecycle.get('pid') or child_pid,
+        'bootId': status.get('bootId') or lifecycle.get('bootId'),
+        'release': status.get('release') or _current_release(manager),
+        'environment': status.get('environment') or manager.env,
         'heartbeatAgeMs': status.get('heartbeatAgeMs'),
         'loops': status.get('loops'),
         'counts': {
@@ -182,10 +196,14 @@ def record_state(manager, watchdog, decision):
 def terminate(child, grace_seconds):
     """Stop the child gracefully, then kill the whole tree. Returns True when force was needed."""
     if os.name == 'nt':
-        child.terminate()
-    else:
-        with contextlib.suppress(OSError):
-            child.send_signal(signal.SIGTERM)
+        # TerminateProcess would kill the root first and leave detached descendants behind;
+        # taskkill /T /F has to run while the root still exists.
+        kill_tree(child.pid)
+        with contextlib.suppress(Exception):
+            child.wait(timeout=5)
+        return True
+    with contextlib.suppress(OSError):
+        child.send_signal(signal.SIGTERM)
     try:
         child.wait(timeout=grace_seconds)
         return False

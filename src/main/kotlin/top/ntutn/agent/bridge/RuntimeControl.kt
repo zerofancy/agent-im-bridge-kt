@@ -55,6 +55,29 @@ class RuntimeControl(
                         }
                         return@launch
                     }
+                    if (action == "/health") {
+                        // Watchdog probe: no backend check, no chat mutex, so a slow external
+                        // probe can never look like a hung process.
+                        if (exchange.requestMethod != "GET") {
+                            exchange.sendResponseHeaders(405, -1)
+                            return@launch
+                        }
+                        val health =
+                            json(
+                                "bootId" to lifecycle.bootId,
+                                "pid" to ProcessHandle.current().pid(),
+                                "release" to lifecycle.environment.release,
+                                "environment" to lifecycle.environment.name,
+                                "connected" to connected.get(),
+                                "heartbeatAgeMs" to LoopHealth.heartbeatAgeMs(),
+                                "loops" to LoopHealth.snapshot(),
+                                "incoming" to service.incomingCount.get(),
+                            ).toString().toByteArray()
+                        exchange.responseHeaders.set("Content-Type", "application/json")
+                        exchange.sendResponseHeaders(200, health.size.toLong())
+                        exchange.responseBody.write(health)
+                        return@launch
+                    }
                     if (
                         (action == "/status" && exchange.requestMethod != "GET") ||
                             (action != "/status" && exchange.requestMethod != "POST")

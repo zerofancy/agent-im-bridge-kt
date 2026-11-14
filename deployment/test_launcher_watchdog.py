@@ -1,11 +1,13 @@
 """Watchdog decisions must not depend on anything but the status snapshot and its own budget."""
 
 import json
+import signal
 import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import launcher_watchdog as w
 
@@ -15,7 +17,9 @@ class FakeManager:
         self.root = Path(root)
         self.directory = self.root / 'environments/prod'
         self.deploydir = self.root / 'deployment/prod'
+        self.env = 'prod'
         (self.directory / 'control').mkdir(parents=True, exist_ok=True)
+        self.deploydir.mkdir(parents=True, exist_ok=True)
 
     def write_generation(self, pid, boot, port, token, lifecycle_pid=None):
         w.atomic(
@@ -212,6 +216,20 @@ class DecisionTests(unittest.TestCase):
         self.assertTrue(dog.disabled)
         self.assertEqual(('none', None), dog.evaluate({'state': 'ok', 'status': status}, 2000.0))
 
+    def test_starting_becomes_a_failure_after_the_grace(self):
+        dog = w.Watchdog(config(startupGraceSeconds=120, probeFailures=3))
+        dog.new_child(0.0)
+        self.assertEqual(('none', None), dog.evaluate({'state': 'starting'}, 130.0))
+        self.assertEqual(('none', None), dog.evaluate({'state': 'starting'}, 135.0))
+        self.assertEqual(('kill', 'startup_timeout'), dog.evaluate({'state': 'starting'}, 140.0))
+
+    def test_starting_within_grace_is_never_a_failure(self):
+        dog = w.Watchdog(config(startupGraceSeconds=120, probeFailures=3))
+        dog.new_child(0.0)
+        for tick in (5.0, 30.0, 60.0, 100.0):
+            self.assertEqual(('none', None), dog.evaluate({'state': 'starting'}, tick))
+        self.assertEqual(0, dog.failures)
+
     def test_consecutive_probe_failures_are_required(self):
         dog = w.Watchdog(config(startupGraceSeconds=0, probeFailures=3))
         dog.new_child(0.0)
@@ -263,6 +281,18 @@ class RecordTests(unittest.TestCase):
         history = sorted((self.manager.directory / 'lifecycle').glob('hang-*.json'))
         self.assertEqual(4, len(history))
 
+    def test_hang_record_keeps_identity_when_status_is_unreachable(self):
+        w.atomic(
+            self.manager.directory / 'lifecycle/current.json',
+            {'pid': 4321, 'bootId': 'boot-a', 'startedAt': 't'},
+        )
+        (self.manager.deploydir / 'current').write_text('r-test', encoding='utf-8')
+        payload = w.hang_record(self.manager, 'status_unreachable', {'state': 'unreachable'}, 4321)
+        self.assertEqual(4321, payload['pid'])
+        self.assertEqual('boot-a', payload['bootId'])
+        self.assertEqual('r-test', payload['release'])
+        self.assertEqual('prod', payload['environment'])
+
     def test_state_file_records_decision(self):
         dog = w.Watchdog(config())
         dog.new_child(0.0)
@@ -271,6 +301,24 @@ class RecordTests(unittest.TestCase):
         state = w.read(self.manager.deploydir / 'watchdog-state.json', {})
         self.assertEqual('inbound_stalled', state['decision'])
         self.assertEqual(1, state['kills'])
+
+
+class TerminateTests(unittest.TestCase):
+    def test_posix_graceful_stop_does_not_kill_the_tree(self):
+        child = Mock()
+        child.pid = 4242
+        with patch.object(w, 'kill_tree') as kill:
+            self.assertFalse(w.terminate(child, 10))
+        child.send_signal.assert_called_once_with(signal.SIGTERM)
+        kill.assert_not_called()
+
+    def test_windows_kills_the_tree_before_the_root_is_reaped(self):
+        child = Mock()
+        child.pid = 4243
+        with patch.object(w.os, 'name', 'nt'), patch.object(w, 'kill_tree') as kill:
+            self.assertTrue(w.terminate(child, 10))
+        kill.assert_called_once_with(4243)
+        child.wait.assert_called_once()
 
 
 if __name__ == '__main__':
