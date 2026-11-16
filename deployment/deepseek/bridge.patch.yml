@@ -1,6 +1,6 @@
 # Final immutable overlay. ACP cannot activate without the policy service.
 - id: acp
-  inject: [acpAppStartup, bridgeDeepSeekPolicy]
+  inject: [acpAppStartup, bridgeDeepSeekPolicy, bridgeDeepSeekCodex]
   config:
     provider: !!js process.env.BRIDGE_DEEPSEEK_PROVIDER
     model: !!js process.env.BRIDGE_DEEPSEEK_MODEL
@@ -65,3 +65,19 @@
 - insert:
     - id: bridge-deepseek-policy
       name: './bridge-policy.mjs'
+    - id: bridge-codex
+      name: './bridge-codex.mjs'
+      inject: [bridgeDeepSeekPolicy]
+      config:
+        enabled: !!js "process.env.BRIDGE_DEEPSEEK_CODEX_ENABLED === '1'"
+        mode: !!js process.env.BRIDGE_DEEPSEEK_SANDBOX_MODE
+        codexHome: !!js process.env.BRIDGE_DEEPSEEK_CODEX_HOME
+        model: !!js process.env.BRIDGE_DEEPSEEK_CODEX_MODEL
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      inject: [bridgeDeepSeekCodex]
+      disabled: !!js "process.env.BRIDGE_DEEPSEEK_CODEX_ENABLED !== '1'"
+      config:
+        provider: codex
+        toolName: subagent_codex
+        maxDepth: provider-managed

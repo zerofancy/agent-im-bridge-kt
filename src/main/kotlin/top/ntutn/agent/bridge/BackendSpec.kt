@@ -31,6 +31,7 @@ data class BackendSpec(
     internal val binaryArguments: List<String> = emptyList(),
     val deepseekNode: String? = null,
     val deepseekLaunchDirectory: Path? = null,
+    val deepseekCodexHome: Path? = null,
 ) {
     val displayName: String
         get() = id.displayName
@@ -63,7 +64,11 @@ data class BackendSpec(
                         "DSH_HOME" to runtimeRoot.toString(),
                         "DSH_AGENTS_HOME" to runtimeRoot.resolve("agents").toString(),
                         "DSH_TELEMETRY_DISABLED" to "1",
-                    ) + (deepseekNode?.let { mapOf("BRIDGE_DEEPSEEK_NODE" to it) } ?: emptyMap())
+                    ) +
+                        (deepseekNode?.let { mapOf("BRIDGE_DEEPSEEK_NODE" to it) } ?: emptyMap()) +
+                        (deepseekCodexHome?.let {
+                            mapOf("BRIDGE_DEEPSEEK_CODEX_HOME" to it.toString())
+                        } ?: emptyMap())
                 }
             }) +
                 (temporaryRoot?.let {

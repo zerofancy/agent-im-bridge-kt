@@ -28,6 +28,8 @@ class DeepSeekConfigurationTest {
                 backend = "deepseek",
                 deepseekProvider = "my-provider",
                 deepseekModel = "my-model",
+                deepseekCodexEnabled = true,
+                deepseekCodexModel = "my-child-model",
             )
         )
         val selection = parseBackendSelection("deepseek")
@@ -35,6 +37,8 @@ class DeepSeekConfigurationTest {
         assertEquals(SandboxMode.READ_ONLY, selection.sandboxMode)
         val selected = requireNotNull(store.load()).withBackend(selection)
         assertEquals("my-provider", selected.deepseekProvider)
+        assertTrue(selected.deepseekCodexEnabled)
+        assertEquals("my-child-model", selected.deepseekCodexModel)
         val controller =
             InstanceConfigCardController(
                 RuntimeEnvironment(temp, "dev", "r-test"),
@@ -56,6 +60,8 @@ class DeepSeekConfigurationTest {
             )
             assertEquals("my-provider", store.load()?.deepseekProvider)
             assertEquals("my-model", store.load()?.deepseekModel)
+            assertEquals(true, store.load()?.deepseekCodexEnabled)
+            assertEquals("my-child-model", store.load()?.deepseekCodexModel)
         }
         assertEquals("deepseek", store.load()?.backend)
         assertEquals("workspace-write", store.load()?.sandboxMode)

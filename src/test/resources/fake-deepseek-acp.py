@@ -22,6 +22,12 @@ workers = {}
 (root / 'launch.json').write_text(json.dumps({
     'cwd': os.getcwd(), 'home': str(home),
     'mode': os.environ.get('BRIDGE_DEEPSEEK_SANDBOX_MODE'),
+    'parentProvider': os.environ.get('BRIDGE_DEEPSEEK_PROVIDER'),
+    'parentModel': os.environ.get('BRIDGE_DEEPSEEK_MODEL'),
+    'codexEnabled': os.environ.get('BRIDGE_DEEPSEEK_CODEX_ENABLED'),
+    'codexModel': os.environ.get('BRIDGE_DEEPSEEK_CODEX_MODEL'),
+    'codexHome': os.environ.get('BRIDGE_DEEPSEEK_CODEX_HOME'),
+    'ambientCodexHome': os.environ.get('CODEX_HOME'),
     'inheritedSecret': 'DEEPSEEK_API_KEY' in os.environ,
 }))
 

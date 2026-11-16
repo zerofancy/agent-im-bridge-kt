@@ -77,11 +77,15 @@ internal class DeepSeekAcpClient private constructor(val process: Process) {
             mode: SandboxMode,
             provider: String,
             model: String,
+            codexEnabled: Boolean = false,
+            codexModel: String = "gpt-6-astra",
             onStarted: (DeepSeekAcpClient) -> Unit = {},
         ): DeepSeekAcpClient {
             var started: DeepSeekAcpClient? = null
             try {
                 return withContext(Dispatchers.IO) {
+                    val codexEnvironment =
+                        deepSeekCodexEnvironment(backend, mode, codexEnabled, codexModel)
                     Files.createDirectories(backend.runtimeRoot)
                     val directory =
                         backend.deepseekLaunchDirectory ?: backend.runtimeRoot.resolve("launch")
@@ -99,6 +103,7 @@ internal class DeepSeekAcpClient private constructor(val process: Process) {
                             .apply {
                                 environment().keys.retainAll(environmentKeys)
                                 environment().putAll(backend.environment)
+                                environment().putAll(codexEnvironment)
                                 environment()["DSH_HOME"] = backend.runtimeRoot.toString()
                                 environment()["DSH_TELEMETRY_DISABLED"] = "1"
                                 environment()["BRIDGE_DEEPSEEK_SANDBOX_MODE"] = mode.cliValue

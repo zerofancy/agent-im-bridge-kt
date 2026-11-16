@@ -129,6 +129,8 @@ fun main(args: Array<String>) {
                 traexQueueStatus = config.traexQueueStatus,
                 deepseekProvider = config.deepseekProvider,
                 deepseekModel = config.deepseekModel,
+                deepseekCodexEnabled = config.deepseekCodexEnabled,
+                deepseekCodexModel = config.deepseekCodexModel,
             )
         runner.checkAvailable()
         val held = System.getenv("BRIDGE_HOLD") == "1"

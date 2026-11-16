@@ -80,6 +80,19 @@ ACP 输出已提交的助手消息和工具状态，不是 Web 界面的逐 toke
 
 飞书和 Telegram 的回复卡片显示 ACP 会话实际报告的模型 ID；恢复旧会话时保留该会话的模型，不以新会话默认配置替代。模型配置更新会同步到最终卡片，只有后端明确报告的推理强度才会展示；元数据缺失时省略对应字段。
 
+DSH 内可启用原生 Codex 子智能体；父会话与主模型仍由 DSH 执行，`subagent_codex` 把独立任务交给固定版本的原生 Codex app-server，再将答案交回父会话。配置：
+
+```json
+"deepseekCodexEnabled": true,
+"deepseekCodexModel": "gpt-5.6-sol"
+```
+
+默认关闭，修改后重启生效。原生模型的源码缺省值为 `gpt-6-astra`；上述示例选择 `gpt-5.6-sol`。当前仅 `danger-full-access` 提供该工具；只读、工作区写模式不注册原生提供方，运行前的策略守卫也会拒绝调用。原生模型单独配置，不随 DSH 主模型切换；固定原生版本当前不支持 DSH 主模型的 `gpt-6.1-sol` ID。可以向 DSH 发送“用 Codex 审查当前项目，并汇总发现的问题”。每次委派使用全新临时 Codex 线程，不续接子任务上下文；父会话保留任务结果。
+
+Codex 使用同一环境的 `codexHome`（默认 `backend/codex`）原生登录，独立于 DSH 的 ChatGPT OAuth grant。将 `CODEX_HOME` 显式设置为该目录后运行 `codex login` / `codex login status`；也可使用发布快照内 `runtime/node_modules/@openai/codex/bin/codex.js` 的固定 CLI。不会复制桌面或其他环境凭据；启用时拒绝与桌面 `~/.codex`、工作目录、DSH 状态或其他后端目录重叠。
+
+发行包固定官方子智能体插件 `0.2.2-rc.1` 与 Codex `0.153.4`，包含当前平台 native 可执行文件并校验完整性，不回退系统 PATH。Bridge 生命周期适配会先发原生中断，等待对应轮次终态后才关闭输入并回收空闲子进程；连接失效且仍存活时保持占用。整体 Bridge 退出仍按 5 秒期限清理自有进程树。原生 Codex 的推理与工具过程不透传为父会话正文。
+
 ### Doubao
 
 Doubao CLI 当前按本机交互式 CLI 后端接入，不接飞书 COT，也不读取结构化工具事件。配置片段：

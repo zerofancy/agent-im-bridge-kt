@@ -19,7 +19,8 @@ SYSTEM_ENV = {
     "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR",
 }
 SUPPORT_FILES = ("dsh", "launcher.py", "bridge.patch.yml", "bridge-policy.mjs", "policy-core.mjs",
-                 "auth-status.mjs", "auth-core.mjs", "auth.patch.yml", "oauth-login.mjs")
+                 "auth-status.mjs", "auth-core.mjs", "auth.patch.yml", "oauth-login.mjs",
+                 "bridge-codex.mjs", "codex-lifecycle.mjs")
 
 
 class LaunchError(Exception):
@@ -143,6 +144,25 @@ def controlled_environment(original: dict) -> dict:
         if not value or len(value) > 256 or any(ord(character) < 32 for character in value):
             raise LaunchError("BRIDGE_DEEPSEEK_INVALID_MODEL_ROUTE")
         env[key] = value
+    codex_enabled = original.get("BRIDGE_DEEPSEEK_CODEX_ENABLED", "0")
+    if codex_enabled not in {"0", "1"}:
+        raise LaunchError("BRIDGE_DEEPSEEK_CODEX_CONFIGURATION_INVALID")
+    codex_model = original.get("BRIDGE_DEEPSEEK_CODEX_MODEL", "gpt-6-astra")
+    if not codex_model or len(codex_model) > 256 or any(ord(character) < 32 for character in codex_model):
+        raise LaunchError("BRIDGE_DEEPSEEK_CODEX_CONFIGURATION_INVALID")
+    enabled = codex_enabled == "1" and mode == "danger-full-access"
+    env["BRIDGE_DEEPSEEK_CODEX_ENABLED"] = "1" if enabled else "0"
+    env["BRIDGE_DEEPSEEK_CODEX_MODEL"] = codex_model
+    if enabled:
+        raw = original.get("BRIDGE_DEEPSEEK_CODEX_HOME", "")
+        if not raw or not Path(raw).is_absolute():
+            raise LaunchError("BRIDGE_DEEPSEEK_CODEX_CONFIGURATION_INVALID")
+        codex_home = Path(raw).resolve()
+        peers = [Path(env["DSH_HOME"]), Path(env["DSH_AGENTS_HOME"]), Path.cwd().resolve(),
+                 (Path.home() / ".codex").resolve()]
+        if any(codex_home == peer or codex_home in peer.parents or peer in codex_home.parents for peer in peers):
+            raise LaunchError("BRIDGE_DEEPSEEK_CODEX_CONFIGURATION_INVALID")
+        env["BRIDGE_DEEPSEEK_CODEX_HOME"] = str(codex_home)
     env["DSH_PERMISSION_MODE"] = mode
     env["DSH_TELEMETRY_DISABLED"] = "1"
     return env

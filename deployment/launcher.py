@@ -37,13 +37,18 @@ def run_launcher(manager, release, held):
             'CLASSPATH',
         )
     }
-    if read(manager.directory / 'config.json', {}).get('backend') == 'deepseek':
+    config = read(manager.directory / 'config.json', {})
+    if config.get('backend') == 'deepseek':
         from deepseek_setup import safe_environment
         env = safe_environment(
             env,
             runtime.get('deepseekHome', manager.directory / 'backend/deepseek'),
             manager.directory / 'tmp',
             runtime.get('deepseekNode', ''),
+            codex_home=runtime.get('codexHome', manager.directory / 'backend/codex'),
+            codex_enabled=config.get('deepseekCodexEnabled', False),
+            codex_model=config.get('deepseekCodexModel', 'gpt-6-astra'),
+            sandbox_mode=config.get('sandboxMode', 'read-only'),
         )
     default_path = (
         '/usr/local/bin:/usr/bin:/bin'

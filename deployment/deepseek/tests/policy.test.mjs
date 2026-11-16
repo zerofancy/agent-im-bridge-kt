@@ -119,6 +119,26 @@ test('storage failure blocks new Agent publication', async () => {
     await assert.rejects(f.listeners.get('agent/created')({ agent: f.agent }), /storage failed/);
 });
 
+test('native Codex requires explicit full-access opt-in even after resume', async () => {
+    for (const mode of ['read-only', 'workspace-write', 'danger-full-access']) {
+        for (const enabled of ['0', '1']) {
+            const policy = configuredPolicy({ BRIDGE_DEEPSEEK_SANDBOX_MODE: mode,
+                BRIDGE_DEEPSEEK_CODEX_ENABLED: enabled });
+            const f = fixture('danger-full-access');
+            installPolicy(f.ctx, policy, f.setters);
+            await f.listeners.get('agent/created')({ agent: f.agent, source: 'resume' });
+            const permitted = mode === 'danger-full-access' && enabled === '1';
+            assert.equal(policy.codexEnabled, permitted);
+            const decision = f.guard({ agent: f.agent, name: 'subagent_codex' });
+            if (permitted) {
+                assert.equal(decision, undefined);
+            } else {
+                assert.match(decision, /disabled/);
+            }
+        }
+    }
+});
+
 test('sandbox preflight rejects unavailable, partial and ineffective enforcement', async () => {
     await assert.rejects(probeSandbox({ async confine() { throw new Error('unavailable'); } }, { mode: 'read-only' }), /unavailable/);
     await assert.rejects(probeSandbox({ async confine() { return { enforcement: 'partial' }; } }, { mode: 'workspace-write' }), /PARTIAL_SANDBOX/);

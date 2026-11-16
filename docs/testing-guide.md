@@ -51,6 +51,15 @@ python3 deployment/deepseek/tests/runtime_smoke.py \
 
 取消恢复回归通过延迟 RPC 响应验证：已发出的恢复请求被取消后，晚到的明确拒绝释放本地占用且不发送 close；晚到成功须等待 close 确认；传输结果不明仍保持占用直到进程退出。API Key 向导回归检查完整回环登录网址与 SSH 提示可见、无关输出被过滤、非交互拒绝及临时进程清理。
 
+原生 Codex 子智能体离线回归检查本机配置开关、独立 home/model、受限模式禁用、固定 native payload，以及取消时的终态屏障。尚无匹配终态时不得转发 EOF/terminate；晚到轮次 ID 必须补发中断；跨子任务隔离、断流但仍存活、明确拒绝与未知失败、进程死亡后的范围清理均需验证。只使用临时状态与本地 Responses 服务的真实 Codex smoke 不要求账号或模型网络访问；使用本机真实账号另需显式 `CODEX_LIVE_TEST=1`，不得纳入默认测试。
+
+无账号的原生集成测试使用安装产物中的固定 Codex，验证真实工具写入和中断终态顺序：
+
+```bash
+node deployment/deepseek/tests/native-codex-smoke.mjs \
+  --runtime build/install/agent-im-bridge-kt/libexec/deepseek/runtime
+```
+
 真实 JVM Runner 的两轮与重启续聊测试需显式提供受控发行包、独立状态和工作目录；测试不会读取或复制凭据：
 
 ```bash

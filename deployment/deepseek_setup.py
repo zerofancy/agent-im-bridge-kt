@@ -25,13 +25,26 @@ SAFE_ENVIRONMENT = frozenset((
 ))
 
 
-def safe_environment(inherited, home, temporary, node):
+def safe_environment(inherited, home, temporary, node, *, codex_home=None,
+                     codex_enabled=False, codex_model="gpt-6-astra", sandbox_mode="read-only"):
+    if type(codex_enabled) is not bool or not isinstance(codex_model, str) or not codex_model.strip() \
+            or len(codex_model) > 256 or any(ord(character) < 32 or ord(character) == 127 for character in codex_model):
+        raise ValueError("DeepSeek Codex 子智能体配置无效")
+    available = codex_enabled and sandbox_mode == "danger-full-access"
+    if available and (codex_home is None or not Path(codex_home).is_absolute()):
+        raise ValueError("DeepSeek Codex 子智能体需要显式的本环境 Codex 状态目录")
     result = {key: value for key, value in inherited.items() if key in SAFE_ENVIRONMENT}
     result.update(
         DSH_HOME=str(home), DSH_AGENTS_HOME=str(Path(home) / "agents"),
         DSH_TELEMETRY_DISABLED="1", BRIDGE_DEEPSEEK_NODE=str(node),
         TMPDIR=str(temporary), TMP=str(temporary), TEMP=str(temporary),
     )
+    result.update(BRIDGE_DEEPSEEK_CODEX_ENABLED="1" if available else "0",
+                  BRIDGE_DEEPSEEK_CODEX_MODEL=codex_model)
+    if codex_home is not None:
+        if not Path(codex_home).is_absolute():
+            raise ValueError("DeepSeek Codex 子智能体 codexHome 必须使用绝对路径")
+        result["BRIDGE_DEEPSEEK_CODEX_HOME"] = str(Path(codex_home).resolve())
     return result
 
 
@@ -61,6 +74,23 @@ def validate_configuration(manager, settings, config):
         return left == right or left in right.parents or right in left.parents
     if overlap(home, launch) or any(overlap(own, peer) for own in (home, launch) for peer in peers):
         raise ValueError("DeepSeek 模型与启动目录不能与工作目录、其他后端或桌面 .dsh 目录重叠")
+    enabled = config.get("deepseekCodexEnabled", False)
+    native_model = config.get("deepseekCodexModel", "gpt-6-astra")
+    if type(enabled) is not bool or not isinstance(native_model, str) or not native_model.strip() \
+            or len(native_model) > 256 or any(ord(character) < 32 or ord(character) == 127 for character in native_model):
+        raise ValueError("DeepSeek Codex 子智能体配置无效")
+    if enabled:
+        codex = Path(settings.get("codexHome", manager.directory / "backend/codex"))
+        if not codex.is_absolute():
+            raise ValueError("DeepSeek Codex 子智能体 codexHome 必须使用绝对路径")
+        codex = codex.resolve()
+        native_peers = [home, launch, Path(settings["workspace"]).resolve(),
+                        (Path.home() / ".codex").resolve(), (Path.home() / ".dsh").resolve()] + [
+            Path(settings.get(key, manager.directory / fallback)).resolve()
+            for key, fallback in MODEL_DIRECTORIES if key not in ("codexHome", "deepseekHome")
+        ]
+        if any(overlap(codex, peer) for peer in native_peers):
+            raise ValueError("DeepSeek Codex 子智能体状态不能与工作目录、其他后端或桌面 .codex 目录重叠")
     if settings.get("deepseekBinary"):
         binary = Path(settings["deepseekBinary"])
         manifest = binary.parent / "runtime/runtime-manifest.json"
@@ -177,7 +207,13 @@ def login(manager, settings, release=None):
         raise ValueError("DeepSeek 专用启动目录不能含 .env，请移走后重试")
     launch.mkdir(parents=True, exist_ok=True, mode=0o700)
     node = settings.get("deepseekNode") or node_path()
-    environment = safe_environment(os.environ, home, manager.directory / "tmp", node)
+    environment = safe_environment(
+        os.environ, home, manager.directory / "tmp", node,
+        codex_home=settings.get("codexHome", manager.directory / "backend/codex"),
+        codex_enabled=config.get("deepseekCodexEnabled", False),
+        codex_model=config.get("deepseekCodexModel", "gpt-6-astra"),
+        sandbox_mode=config.get("sandboxMode", "read-only"),
+    )
     provider = config.get("deepseekProvider", "deepseek-official")
     model = config.get("deepseekModel", "deepseek-v4-flash")
     if not all(isinstance(value, str) and value.strip() and len(value) <= 256

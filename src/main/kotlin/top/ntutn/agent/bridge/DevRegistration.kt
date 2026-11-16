@@ -95,6 +95,8 @@ internal fun BridgeConfig.withBackend(selection: BackendSelection) =
         traexModelTiering,
         deepseekProvider,
         deepseekModel,
+        deepseekCodexEnabled,
+        deepseekCodexModel,
     )
 
 fun registerTelegram(): BridgeConfig {

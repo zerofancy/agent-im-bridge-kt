@@ -118,6 +118,8 @@ internal class InstanceConfigCardController(
                 current.traexModelTiering,
                 current.deepseekProvider,
                 current.deepseekModel,
+                current.deepseekCodexEnabled,
+                current.deepseekCodexModel,
             )
         return if (saveConfig(next)) {
             if (
@@ -161,6 +163,8 @@ internal class InstanceConfigCardController(
                 current.traexModelTiering,
                 current.deepseekProvider,
                 current.deepseekModel,
+                current.deepseekCodexEnabled,
+                current.deepseekCodexModel,
             )
         return if (saveConfig(next)) {
             "已切换保存访问模式为 ${target.cliValue}。"

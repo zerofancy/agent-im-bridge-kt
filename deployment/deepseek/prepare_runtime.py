@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 
 from launcher import SUPPORT_FILES, VERSION, digest, runtime_files
+from codex_payload import verify_codex_payload
 
 VCS_FILES = {".gitignore", ".gitattributes", ".gitmodules", ".cvsignore", ".DS_Store",
              ".hgignore", ".hgtags", ".bzrignore", ".bzrtags"}
@@ -56,6 +57,7 @@ def stage(source: Path, output: Path) -> None:
                 and manifest.get("files") == runtime_files(destination):
             materialize_links(destination)
             remove_vcs_metadata(destination)
+            manifest["codexPayload"] = verify_codex_payload(destination)
             manifest["files"] = runtime_files(destination)
             manifest["supportFiles"] = {name: digest(source / name) for name in SUPPORT_FILES}
             manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -75,7 +77,7 @@ def stage(source: Path, output: Path) -> None:
                        if key in {"PATH", "HOME", "LANG", "SYSTEMROOT", "WINDIR", "TEMP", "TMP",
                                   "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
                                   "http_proxy", "https_proxy", "all_proxy", "no_proxy"}}
-        subprocess.run([npm, "ci", "--ignore-scripts", "--omit=dev", "--no-audit", "--no-fund",
+        subprocess.run([npm, "ci", "--ignore-scripts", "--omit=dev", "--include=optional", "--no-audit", "--no-fund",
                         "--userconfig", str(config)], cwd=staged, env=environment, check=True)
         materialize_links(staged)
         remove_vcs_metadata(staged)
@@ -83,6 +85,7 @@ def stage(source: Path, output: Path) -> None:
         if json.loads(cli_package.read_text(encoding="utf-8")).get("version") != VERSION:
             raise RuntimeError("the installed DeepSeek version does not match the release lock")
         manifest = {"schema": 1, "version": VERSION, "lockSha256": digest(lock),
+                    "codexPayload": verify_codex_payload(staged),
                     "files": runtime_files(staged),
                     "supportFiles": {name: digest(source / name) for name in SUPPORT_FILES}}
         (staged / "runtime-manifest.json").write_text(

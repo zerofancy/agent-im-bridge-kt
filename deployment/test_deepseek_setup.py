@@ -337,6 +337,10 @@ class DeepSeekSetupTests(unittest.TestCase):
             setup.validate_configuration(self.manager, {"deepseekHome": "relative"}, {"backend": "deepseek"})
 
     def test_launcher_drops_provider_and_node_injection_before_starting_jvm(self):
+        atomic(self.manager.directory / "config.json", {
+            "appId": "dev-bot", "backend": "deepseek", "sandboxMode": "danger-full-access",
+            "deepseekCodexEnabled": True, "deepseekCodexModel": "child-model",
+        })
         child = SimpleNamespace(pid=7654, returncode=0, poll=lambda: 0)
         with (
             patch.object(self.manager, "verify", return_value=self.release),
@@ -354,6 +358,9 @@ class DeepSeekSetupTests(unittest.TestCase):
         self.assertNotIn("NODE_OPTIONS", environment)
         self.assertEqual(str(self.manager.directory / "backend/deepseek"), environment["DSH_HOME"])
         self.assertEqual("r-pinned", environment["BRIDGE_RELEASE"])
+        self.assertEqual("1", environment["BRIDGE_DEEPSEEK_CODEX_ENABLED"])
+        self.assertEqual("child-model", environment["BRIDGE_DEEPSEEK_CODEX_MODEL"])
+        self.assertEqual(str(self.manager.directory / "backend/codex"), environment["BRIDGE_DEEPSEEK_CODEX_HOME"])
         self.assertEqual(self.settings["workspace"], popen.call_args.kwargs["cwd"])
 
     def test_authentication_uses_requested_rollback_snapshot_instead_of_current(self):

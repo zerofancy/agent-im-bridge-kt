@@ -16,6 +16,8 @@ class DeepSeekHarnessRunner(
     private val mode: SandboxMode,
     private val provider: String = "deepseek-official",
     private val model: String = "deepseek-v4-flash",
+    private val codexEnabled: Boolean = false,
+    private val codexModel: String = "gpt-6-astra",
 ) : ManagedAgentRunner, AgentSessionController {
     init {
         require(backend.id.configValue == "deepseek")
@@ -43,7 +45,10 @@ class DeepSeekHarnessRunner(
                 }
                 return@withLock previous
             }
-            val next = DeepSeekAcpClient.start(backend, mode, provider, model) { client = it }
+            val next =
+                DeepSeekAcpClient.start(backend, mode, provider, model, codexEnabled, codexModel) {
+                    client = it
+                }
             try {
                 next.initialize()
                 client = next

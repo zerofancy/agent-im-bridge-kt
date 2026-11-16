@@ -21,14 +21,14 @@ code,pre{font:13px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace}code{overf
 <nav aria-label="目录">
 <strong>DeepSeek Harness 接入</strong>
 <a href="#decision">01 · 结论与边界</a><a href="#evidence">02 · 本机调研</a><a href="#selection">03 · 协议选型</a>
-<a href="#architecture">04 · 架构与生命周期</a><a href="#configuration">05 · 配置与环境</a><a href="#permissions">06 · 权限强制</a>
+<a href="#architecture">04 · 架构与生命周期</a><a href="#configuration">05 · 配置与环境</a><a href="#native-codex">原生 Codex 子智能体</a><a href="#permissions">06 · 权限强制</a>
 <a href="#sessions">07 · 会话与提交</a><a href="#output">08 · 输出与展示</a><a href="#stop">09 · 停止与故障</a>
 <a href="#changes">10 · 改动清单</a><a href="#verification">11 · 验收</a><a href="#delivery">12 · 实施顺序</a><a href="#sources">13 · 来源</a>
 </nav>
 <main>
 <div class="eyebrow">AGENT IM BRIDGE / BACKEND SPEC</div>
 <h1>接入 DeepSeek Harness</h1>
-<p><span class="badge">已按 spec 适配 · 验证记录见末节</span></p>
+<p><span class="badge">基础 ACP 已适配 · 原生父子链路已验证 · DEV 已部署</span></p>
 <p class="meta">调研日期：2026-11-14（Asia/Shanghai） · 项目基线：<code>9beb2f2</code><br>
 Harness 基线：<code>dsh-v0.2.2-rc.1</code> / <code>66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db</code></p>
 
@@ -40,6 +40,7 @@ Harness 基线：<code>dsh-v0.2.2-rc.1</code> / <code>66491b05e3f05ad35bcdd4f6cd
 <li>V1 包含：文本往返、跨轮续聊、重启恢复、<code>/new</code>、<code>/resume</code>、<code>/cd</code>、<code>/stop</code>、新群初始化、FIFO、跨聊天/话题并发、工具进度、DEV/PROD 独立配置及部署。</li>
 <li>默认仍为 <code>read-only</code>；目标支持三种现有 sandboxMode。受限模式须通过对应平台的实际拒绝写入测试后才可声明支持，缺少沙箱或策略插件时拒绝启动，不能放宽成 full access。</li>
 <li>V1 复用现有附件路径/链接与文件定位；原生图片输入输出、语音、Harness Web 展示卡、计划审批、原生问答 UI、MCP 配置管理及外部桌面会话导入另行适配。</li>
+<li>已增加可选原生 Codex 子智能体：DSH 父会话通过 <code>subagent_codex</code> 一次性委派任务；默认关闭，仅 <code>danger-full-access</code> 可用。实现、离线、无账号 native smoke 与真实父子调用链路均已验证，DEV 已部署。</li>
 <li>保持 Codex、Traex、OpenCode、Doubao 行为；不替换模型服务 API、不实现新的调度器、不连接或停止用户正在运行的 Harness 桌面服务。</li>
 </ul>
 <p class="small">本文保留设计契约与调研证据；适配代码及后续验证记录见第 12 节，实际验证范围以该节为准。</p>
@@ -111,12 +112,15 @@ session/resume（另一 cwd）→ -32602，拒绝
   "backend": "deepseek",
   "sandboxMode": "read-only",
   "deepseekProvider": "deepseek-official",
-  "deepseekModel": "deepseek-v4-flash"
+  "deepseekModel": "deepseek-v4-flash",
+  "deepseekCodexEnabled": false,
+  "deepseekCodexModel": "gpt-6-astra"
 }
 
 // environments/&lt;env&gt;/runtime.json 的相关字段
 {
-  "deepseekHome": "/absolute/path/to/environments/dev/backend/deepseek"
+  "deepseekHome": "/absolute/path/to/environments/dev/backend/deepseek",
+  "codexHome": "/absolute/path/to/environments/dev/backend/codex"
 }</pre>
 <p><code>BackendId.DEEPSEEK</code> 的配置值固定为 <code>deepseek</code>，展示名 <code>DeepSeek Harness</code>。缺省 backend 的旧配置继续使用 Codex。新增对应内部 RunOptions/解析支持，沿用现有“后端配置决定选型、指定 binary 不切后端”的规则。</p>
 <ul>
@@ -127,6 +131,26 @@ session/resume（另一 cwd）→ -32602，拒绝
 <li>进程 cwd 固定为本环境专用 <code>backend/deepseek-launch</code> 目录，不是聊天 cwd，也不是 JVM 隐式 cwd；每次 new/resume 另传聊天绝对 cwd。相对 patch、CLI、状态路径均按明确基准解析，传给子进程前转为绝对路径。</li>
 <li>子进程采用业务需要的环境白名单；去除外部 DSH_* 配置、供应商 Key/endpoint 和 Node 注入变量，再显式设置本环境 DSH_HOME、临时目录及 <code>DSH_TELEMETRY_DISABLED=1</code>。固定进程 cwd 避免 Harness 从聊天项目 <code>.env</code> 意外获取认证；专用 launch 目录不能含隐式 <code>.env</code>。</li>
 </ul>
+<h3 id="native-codex">原生 Codex 子智能体</h3>
+<p>DSH 仍负责父会话、主模型和既有聊天 Session ID。启用后增加 <code>subagent_codex</code> 工具，由官方 <code>@deepseek-ai/dsh-subagent-codex</code> provider 创建独立原生 Codex app-server 完成一次子任务，再将结果交回父会话；该工具不新建 Bridge 聊天绑定，也不把原生推理或工具输出直接当作父会话最终答案。</p>
+<div class="table-wrap"><table>
+<tr><th>本机字段</th><th>默认值与行为</th></tr>
+<tr><td><code>deepseekCodexEnabled</code></td><td><code>false</code>。只有显式配置为 true 且本机 <code>sandboxMode=danger-full-access</code> 时开放原生工具；read-only 和 workspace-write 始终关闭，避免绕过父会话权限。</td></tr>
+<tr><td><code>deepseekCodexModel</code></td><td><code>gpt-6-astra</code>。独立指定原生子任务模型，不修改或自动复制父会话的 <code>deepseekModel</code>。必须是原生 Codex 实际支持的模型。</td></tr>
+<tr><td><code>runtime.json: codexHome</code></td><td>复用当前环境独立的 <code>backend/codex</code> 默认路径，可显式配置独立绝对目录。启用时拒绝与桌面 <code>~/.codex</code>、workspace、DSH home/启动目录、其他后端、另一个环境及 releases 的重叠，包含祖先、后代和符号链接。</td></tr>
+</table></div>
+<p>环境由 Bridge 显式传递 <code>BRIDGE_DEEPSEEK_CODEX_HOME/MODEL/ENABLED</code>，受控 wrapper 再次核验权限与路径。原生 provider 只将本环境目录作为 <code>CODEX_HOME</code>，不继承调用者的桌面或 PROD 状态。原生 Codex 登录独立于父模型的 Harness OAuth grant：使用本环境 <code>CODEX_HOME</code> 和发布快照内固定 CLI，在前台完成 login/status；不复制授权材料，守护启动不触发交互登录。</p>
+<p>发布依赖固定为 DSH/provider <code>0.2.2-rc.1</code> 与原生 Codex <code>0.153.4</code>，平台 native 可执行文件包含在不可变快照和完整性清单中，不回退系统 PATH。当前用户 DEV 选择的原生模型是 <code>gpt-5.6-sol</code>，父模型保持 <code>openai-codex/gpt-6.1-sol</code>；这是 DEV 的本机覆盖，源码默认仍为 <code>gpt-6-astra</code>。固定原生版本的 ChatGPT 模型列表与 DSH 父路由不同，不能因父模型可用便假设同名原生模型也可用。</p>
+<pre>// 当前 DEV 的相关本机选择；不含凭据
+{
+  "backend": "deepseek",
+  "sandboxMode": "danger-full-access",
+  "deepseekProvider": "openai-codex",
+  "deepseekModel": "gpt-6.1-sol",
+  "deepseekCodexEnabled": true,
+  "deepseekCodexModel": "gpt-5.6-sol"
+}</pre>
+<p class="note">真实 DSH 委派已验证：父模型 <code>gpt-6.1-sol</code> 恰好调用一次 <code>subagent_codex</code>，原生 <code>gpt-5.6-sol</code> 返回结果，父会话输出精确预期标记并以 <code>end_turn</code> 完成，stderr 为 0。DEV 已成功发布 <code>r-4aab244b216f943c539e</code>，连接正常且未处于 draining；最终 RuntimeSmoke 已通过安装后的真实 wrapper 权限与恢复回归。</p>
 <h3>认证与首次向导</h3>
 <p><code>bridgectl dev/init</code> 在前台选择 DeepSeek，检测固定 CLI 与 Node，创建独立目录。DeepSeek API Key 使用回环地址上的独立 Harness Web 配置入口；ChatGPT OAuth 通过官方 authorization flow 直接打开浏览器并写入本环境 credential store。向导自动准备路径，用户不需要手写配置或把 Key 贴进飞书。</p>
 <p>支持本环境的 DeepSeek API Key，以及 <code>openai-codex</code> 的 ChatGPT OAuth 授权；后者已用 <code>gpt-6.1-sol</code> 完成 ACP 真实调用验证。认证状态通过官方 credential store 的描述接口检查，不读取授权 payload。不得复制桌面或 DEV 的凭证到 PROD；守护重启只检查已有配置，不交互、不覆盖损坏配置。ACP authenticate 成功不等于模型登录成功。</p>
@@ -204,6 +228,7 @@ session/resume（另一 cwd）→ -32602，拒绝
 <li>进程已确认退出时结束相关请求，失败分类保留提交未知；托管进程异常显式接入 FatalErrorHandler/守护恢复，不在不明状态中释放后重跑。建立可恢复外部失败白名单（明确缺失、占用、cwd/参数拒绝、可识别认证/额度/网络失败）；无法分类的故障保留脱敏诊断后调用 <code>FatalErrorHandler.unexpected</code>。不能只抛普通 Exception，现有 ChatTurnExecutor 可能将它转换为 EXECUTION。内部编程异常和 JVM Error 不用宽泛 catch 转成普通业务失败。</li>
 </ol>
 <p>Bridge 整体关闭：先停接收与调度，向所有拥有的活动会话请求 cancel/close，关闭 stdin 让 Harness 正常排空退出；整个清理最多等待 5 秒，再终止本实例拥有的 ACP 进程树并等待回收。每项清理以独立 try/finally 保障执行，NonCancellable 只做必要清理，不能继续队列任务。</p>
+<p>原生 Codex 子任务使用独立生命周期 guard：停止先记录意图并提交原生 <code>turn/interrupt</code>，等匹配 thread/turn 的终态（或明确未提交拒绝、自有进程已退出）后，才关闭输入、清理已空闲的子进程。中断 RPC 的接受响应不能替代终态；连接失效、帧异常或结果不明时保持清理屏障，不因 SDK 提前 dispose 而杀死活动轮次。停止某个原生子任务不影响并发兄弟任务；整个 Bridge 关闭仍使用上述统一 5 秒兜底期限。</p>
 <p>连接、启动和元数据控制可保留技术超时；<strong>prompt 无自动运行/无进展超时</strong>。close 超时代表清理结果未知，不能当成功释放槽位。stderr 持续排空但只输出允许的诊断分类、错误码、退出码、运行 ID 及长度统计，不原样转储上游文本；遥测关闭。</p>
 </section>
 
@@ -235,9 +260,10 @@ session/resume（另一 cwd）→ -32602，拒绝
 <tr><td>正文与展示</td><td>多助手消息、多个文本块、工具前文字、只有工具/推理/图片、max_tokens、取消、迟到块和 messageId 异常；最终回复不含推理/工具结果，飞书和 Telegram 停止状态一致。</td></tr>
 <tr><td>部署与隔离</td><td>DEV/PROD 路径及锁不重叠、清理继承 Key 和 DSH/Node 注入、显式 cwd、独立认证流程、守护无交互、固定依赖制品与版本拒绝、publish/deploy/rollback 后 CLI 与策略插件仍匹配。</td></tr>
 <tr><td>真实 CLI、模拟模型</td><td>临时 DSH_HOME + upstream keyless fixture/本地假供应商验证 ACP prompt、cancel、close、跨进程恢复与输出顺序；不读取账号或访问收费模型，纳入兼容性门禁。</td></tr>
+<tr><td>原生 Codex 子智能体</td><td>默认关闭、独立子模型与 CODEX_HOME；只有 full-access 开放工具；受限模式关闭且不放宽权限；固定 provider/native 版本及制品校验；一次性子任务真实写文件；原生 interrupt → 匹配终态 → 清理的顺序；并发兄弟任务不受影响。父模型→subagent_codex→原生任务→父回复的真实链路需独立验收。</td></tr>
 <tr><td>真实模型与通道</td><td>仅显式 <code>DEEPSEEK_LIVE_TEST=1</code>，使用独立 DEV 认证和临时项目做至少两轮续聊、重启恢复、工具调用、原生停止；飞书私聊/群 @、Telegram 回归。额度失败需有脱敏分类；不在 PROD 注入故障。</td></tr>
 </table></div>
-<p>实现完成必须运行 <code>./gradlew test installDist</code>、策略插件的离线检查及 <code>python3 scripts/check_file_lines.py</code>。运行旧式 build/install 实例时先停止；快照实例构建可并行，升级仅用 <code>bridgectl publish/deploy</code>。本次执行构建与隔离验证，不切换正在运行的 DEV/PROD 服务。</p>
+<p>实现完成必须运行 <code>./gradlew test installDist</code>、策略插件的离线检查及 <code>python3 scripts/check_file_lines.py</code>。运行旧式 build/install 实例时先停止；快照实例构建可并行，升级仅用 <code>bridgectl publish/deploy</code>。DEV 的发布与部署验证结果见第 12 节。</p>
 <details><summary>本次调研的验证记录与未覆盖项</summary>
 <ul>
 <li>已完成：本地 CLI 版本/help；真实 ACP 进程无模型 initialize/new/list/close/resume/目录拒绝/EOF 退出；官方固定 commit 文档与源码比对。</li>
@@ -263,7 +289,7 @@ node node_modules/vitest/vitest.mjs run --config vitest.e2e.config.ts \
 <p>完成定义：V1 验收矩阵通过；模型任务不重复、停止不影响其他聊天、空闲不残留自主运行作用域、旧会话权限服从本机配置、认证和状态不跨环境。只握手成功或单轮回复成功不足以完成适配。</p>
 <p class="note">评审重点：采用 ACP；每轮 close/resume 的生命周期；小型策略插件作为必需依赖；V1 限 Bridge 已登记会话与文本；默认模型只影响新会话。以上均为本文给定的推荐设计，后续实现按此推进。</p>
 <h3>适配后的验证记录 · 2026-11-14</h3>
-<p id="implementation-validation">适配代码、策略插件、配置及部署链路已实现。本轮默认离线 <code>./gradlew test installDist</code> 已通过：JVM 670 项通过、26 项账号/平台测试跳过（含桌面模块）；Python 125 项通过、11 项平台测试跳过；Node 策略与认证 15 项通过。文件规模及 <code>git diff --check</code> 检查通过。真实模型的两轮及重启续聊记录见下文，默认测试不会调用收费模型。</p>
+<p id="implementation-validation">基础接入阶段的适配代码、策略插件、配置及部署链路已实现。该阶段默认离线 <code>./gradlew test installDist</code> 已通过：JVM 670 项通过、26 项账号/平台测试跳过（含桌面模块）；Python 125 项通过、11 项平台测试跳过；Node 策略与认证 15 项通过。文件规模及 <code>git diff --check</code> 检查通过。真实模型的两轮及重启续聊记录见下文，默认测试不会调用收费模型。</p>
 <p>Linux 已对<strong>安装后的真实 CLI/wrapper</strong>完成无账号集成验证：三种模式的实际沙箱预检；fresh/close/resume、full 降只读、pre-step 恶意权限漂移修正、原生子 Agent 继承、cancel 等待终态；真实 write/bash 内外写入和 symlink escape；空凭证状态与自定义 profile 拒绝。测试只在临时发布副本替换模型适配器，不请求网络模型或使用用户凭证。</p>
 <p>额外覆盖了持久 pending → SIGKILL → resume → 新 prompt 的崩溃恢复路径，旧输入未进入模型；临时副本禁用清理的负对照能稳定复现重放。临时 root 的 publish/verify 验证了完整快照与 0 符号链接，运行后仍通过完整性检查。新增产物进入 Gradle distribution，安装后自动校验实际复制树，回滚使用相应 release 的 CLI/策略组合。</p>
 <p>初版验证未使用真实账户/额度，也未覆盖实际 IM 收发及 macOS/Windows 实机沙箱。随后按 DEV 配置需求加入固定 <code>openai-codex</code> 路由与 ChatGPT OAuth 引导，支持 <code>gpt-6.1-sol</code>；认证只从本环境取得，不复用桌面 profile 或 PROD 状态。其他 provider 的通用认证不在本版范围。</p>
@@ -271,6 +297,14 @@ node node_modules/vitest/vitest.mjs run --config vitest.e2e.config.ts \
 <p>用户在 Firefox 完成本环境独立的 ChatGPT OAuth 授权后，显式开启 <code>DEEPSEEK_LIVE_TEST=1</code> 的真实 JVM Runner 测试通过：<code>openai-codex/gpt-6.1-sol</code> 两轮正文、Runner 重启后恢复同一 Session ID、会话落盘早于提交、无工具调用及自有进程清理。授权直接通过官方 flow 写入 Harness credential store；UI 未提供 OAuth 按钮时不再引导用户进入空配置页。</p>
 <p>回复卡片的模型元数据来自本轮 <code>session/new</code> 或 <code>session/resume</code> 的 <code>configOptions</code>，并按当前会话的 <code>config_option_update</code> 完整快照更新，写入统一 <code>RunMeta</code>。展示实际模型 ID，恢复会话不使用新会话默认值冒充；未知或畸形数据省略对应字段，配置事件本身不作为 prompt 已提交的证据。飞书与 Telegram 的成功、失败及停止终卡沿用统一元数据链路。</p>
 <p>后续审查的两项 P2 已分别验证：取消恢复后晚到的目录拒绝会遗留本地占用；无桌面 API Key 向导丢弃了完整登录网址。前者通过确定性失败回归复现，现由显式晚到失败回调结算：明确拒绝只释放本地占用，成功等待 close，传输未知保留到进程退出，清理异常不再被吞掉。后者改为只在交互终端显示官方回环就绪网址与 SSH 转发提示，过滤其他输出；真实无账号 Web 探针验证新解析器及带启动认证的 HTML 访问成功，进程树与临时目录完整清理。</p>
+<h3>原生 Codex 子智能体专项进展 · 2026-11-14</h3>
+<ul>
+<li>已实现：显式 enabled/model/home 传递、仅 full-access 开放、独立原生登录与路径校验；固定 DSH/provider <code>0.2.2-rc.1</code>、Codex <code>0.153.4</code> 的平台制品；<code>subagent_codex</code> 一次性委派及原生停止 guard。</li>
+<li>已验证：加入原生子智能体与停止 guard 后，完整 <code>./gradlew test installDist</code> 连续两次通过。无账号真实 native smoke 经 Bridge 适配层、官方 provider、固定原生 app-server 与回环模型响应服务，实际写入临时文件，并验证原生中断后先收到匹配终态、再回收子进程；并发兄弟任务保持运行。测试不使用用户账号、外部模型或桌面状态。</li>
+<li>实际模型选择：源码 native 默认 <code>gpt-6-astra</code>；用户 DEV 原生覆盖为 <code>gpt-5.6-sol</code>，父模型仍是 <code>gpt-6.1-sol</code>。固定原生版本曾对 ChatGPT 的 <code>gpt-6.1-sol</code> 返回不支持，因此没有把父模型选择强制带入子任务。</li>
+<li><strong>真实端到端已通过：</strong>DSH 父模型 <code>gpt-6.1-sol</code> 恰好调用一次 <code>subagent_codex</code>，由原生 <code>gpt-5.6-sol</code> 完成子任务并交回结果；父会话返回精确预期标记及 <code>end_turn</code>，stderr 为 0。该项独立于上述无账号 smoke。</li>
+<li><strong>DEV 已部署：</strong>不可变快照 <code>r-4aab244b216f943c539e</code> 发布成功，状态 <code>connected=true</code>、<code>draining=false</code>；实际本机配置为 native enabled、模型 <code>gpt-5.6-sol</code>。最终 RuntimeSmoke 已对安装后的真实 wrapper 全项通过：read-only/workspace-write 拒绝越界及 symlink 写入，crash/resume/cancel 路径均通过。</li>
+</ul>
 </section>
 
 <section id="sources">
@@ -288,7 +322,7 @@ node node_modules/vitest/vitest.mjs run --config vitest.e2e.config.ts \
 <li>本项目：<a href="../AGENTS.md">AGENTS.md</a>、<a href="backend-configuration.md">后端现状</a>、<a href="session-new-resume-spec.html">既有会话控制 spec</a>，以及第 10 节列出的当前源码。</li>
 </ol>
 </section>
-<footer>2026-11-14：DEV 使用 DeepSeek Harness、danger-full-access、openai-codex/gpt-6.1-sol。认证异常分类、提交状态、卡片模型元数据、取消恢复的晚到拒绝清理及 SSH 配置网址均已修复。真实 JVM 两轮及重启续聊记录、专项与全量测试通过；无账号 Web 启动与完整认证网址探针通过。快照 r-383564f94224f3310958 已部署且机器人重新连接。原 DEV 配置和故障会话状态已备份；PROD 未改动。</footer>
+<footer>基础 ACP 阶段的历史验证与旧快照 r-383564f94224f3310958 部署记录保留于上文。原生 Codex 本轮：实现、连续两次全量构建、无账号真实 native smoke 及真实父子委派链路已通过；当前 DEV 父模型 gpt-6.1-sol，原生子模型覆盖 gpt-5.6-sol，源码 native 默认 gpt-6-astra。DEV 快照 r-4aab244b216f943c539e 已发布并连接；安装后的真实 wrapper 最终 RuntimeSmoke 权限、崩溃恢复与取消回归已通过。</footer>
 </main>
 </div>
 </body>

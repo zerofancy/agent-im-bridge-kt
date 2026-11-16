@@ -116,6 +116,8 @@ fun createAgentRunner(
     traexQueueStatus: Boolean = true,
     deepseekProvider: String = "deepseek-official",
     deepseekModel: String = "deepseek-v4-flash",
+    deepseekCodexEnabled: Boolean = false,
+    deepseekCodexModel: String = "gpt-6-astra",
 ): ManagedAgentRunner =
     when (backend.id) {
         BackendId.OPENCODE -> {
@@ -125,7 +127,14 @@ fun createAgentRunner(
             DoubaoCliRunner(backend, sandboxMode)
         }
         BackendId.DEEPSEEK -> {
-            DeepSeekHarnessRunner(backend, sandboxMode, deepseekProvider, deepseekModel)
+            DeepSeekHarnessRunner(
+                backend,
+                sandboxMode,
+                deepseekProvider,
+                deepseekModel,
+                deepseekCodexEnabled,
+                deepseekCodexModel,
+            )
         }
         else -> {
             AppServerAgentRunner(backend, queueStatus = traexQueueStatus)

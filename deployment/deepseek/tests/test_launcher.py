@@ -88,6 +88,37 @@ class LauncherAuthenticationTest(unittest.TestCase):
         self.assertEqual(Path(execute.call_args.args[1][1]).name, "oauth-login.mjs")
         self.assertEqual(execute.call_args.args[1][2:], ["--check"])
 
+    def test_native_codex_is_explicit_and_does_not_inherit_desktop_home(self):
+        incoming = {**self.environment, "CODEX_HOME": "/unrelated/desktop",
+                    "BRIDGE_DEEPSEEK_CODEX_ENABLED": "1",
+                    "BRIDGE_DEEPSEEK_CODEX_HOME": "/isolated/dev/backend/codex",
+                    "BRIDGE_DEEPSEEK_CODEX_MODEL": "gpt-6.1-sol"}
+        result = launcher.controlled_environment(incoming)
+        self.assertEqual(result["BRIDGE_DEEPSEEK_CODEX_ENABLED"], "1")
+        self.assertEqual(result["BRIDGE_DEEPSEEK_CODEX_HOME"], "/isolated/dev/backend/codex")
+        self.assertEqual(result["BRIDGE_DEEPSEEK_CODEX_MODEL"], "gpt-6.1-sol")
+        self.assertNotIn("CODEX_HOME", result)
+        for mode in ("read-only", "workspace-write"):
+            restricted = launcher.controlled_environment({**incoming, "BRIDGE_DEEPSEEK_SANDBOX_MODE": mode})
+            self.assertEqual(restricted["BRIDGE_DEEPSEEK_CODEX_ENABLED"], "0")
+            self.assertNotIn("BRIDGE_DEEPSEEK_CODEX_HOME", restricted)
+
+    def test_native_codex_rejects_missing_ambiguous_or_overlapping_settings(self):
+        enabled = {**self.environment, "BRIDGE_DEEPSEEK_CODEX_ENABLED": "1",
+                   "BRIDGE_DEEPSEEK_CODEX_HOME": "/isolated/dev/backend/codex"}
+        for invalid in (
+            {"BRIDGE_DEEPSEEK_CODEX_ENABLED": "true"},
+            {"BRIDGE_DEEPSEEK_CODEX_HOME": "relative"},
+            {"BRIDGE_DEEPSEEK_CODEX_HOME": str(Path.home() / ".codex")},
+            {"BRIDGE_DEEPSEEK_CODEX_HOME": self.environment["DSH_HOME"]},
+            {"BRIDGE_DEEPSEEK_CODEX_MODEL": "bad\nmodel"},
+        ):
+            with self.subTest(keys=list(invalid)):
+                with self.assertRaisesRegex(launcher.LaunchError, "CODEX_CONFIGURATION_INVALID"):
+                    launcher.controlled_environment({**enabled, **invalid})
+        with self.assertRaisesRegex(launcher.LaunchError, "CODEX_CONFIGURATION_INVALID"):
+            launcher.controlled_environment({**self.environment, "BRIDGE_DEEPSEEK_CODEX_ENABLED": "1"})
+
 
 if __name__ == "__main__":
     unittest.main()

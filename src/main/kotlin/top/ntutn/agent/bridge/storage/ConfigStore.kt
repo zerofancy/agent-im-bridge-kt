@@ -23,6 +23,8 @@ class BridgeConfig(
     val traexModelTiering: Boolean = true,
     val deepseekProvider: String = "deepseek-official",
     val deepseekModel: String = "deepseek-v4-flash",
+    val deepseekCodexEnabled: Boolean = false,
+    val deepseekCodexModel: String = "gpt-6-astra",
 ) {
     val platform: String
         get() =
@@ -46,11 +48,11 @@ class BridgeConfig(
             "DeepSeek provider 和 model 不能为空。"
         }
         require(
-            listOf(deepseekProvider, deepseekModel).all {
-                it.length <= 256 && it.none(Char::isISOControl)
+            listOf(deepseekProvider, deepseekModel, deepseekCodexModel).all {
+                it.isNotBlank() && it.length <= 256 && it.none(Char::isISOControl)
             }
         ) {
-            "DeepSeek provider 或 model 格式无效。"
+            "DeepSeek provider、model 或 Codex 子智能体 model 格式无效。"
         }
         if (backendId in setOf(BackendId.OPENCODE, BackendId.DOUBAO)) {
             require(sandboxMode == SandboxMode.FULL_ACCESS.cliValue) {
@@ -130,6 +132,14 @@ class ConfigStore(val path: Path) {
                         require(it.isJsonPrimitive && it.asJsonPrimitive.isString)
                         it.asString
                     } ?: "deepseek-v4-flash",
+                    json["deepseekCodexEnabled"]?.let {
+                        require(it.isJsonPrimitive && it.asJsonPrimitive.isBoolean)
+                        it.asBoolean
+                    } ?: false,
+                    json["deepseekCodexModel"]?.let {
+                        require(it.isJsonPrimitive && it.asJsonPrimitive.isString)
+                        it.asString
+                    } ?: "gpt-6-astra",
                 )
                 .also { it.validate() }
         } catch (_: Exception) {

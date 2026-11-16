@@ -1,6 +1,7 @@
 """Validate the copied distribution after Gradle's include/exclude rules have run."""
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 
@@ -16,6 +17,14 @@ def verify(distribution):
     if any(path.is_symlink() for path in base.rglob("*")):
         raise ValueError("DeepSeek distribution contains symbolic links")
     launcher.verify_runtime(base)
+    payload_spec = importlib.util.spec_from_file_location(
+        "deepseek_codex_payload_verifier", Path(__file__).parent / "deepseek/codex_payload.py"
+    )
+    payload = importlib.util.module_from_spec(payload_spec)
+    payload_spec.loader.exec_module(payload)
+    manifest = json.loads((base / "runtime/runtime-manifest.json").read_text(encoding="utf-8"))
+    if payload.verify_codex_payload(base / "runtime") != manifest.get("codexPayload"):
+        raise ValueError("DeepSeek distribution Codex native payload does not match its manifest")
 
 
 if __name__ == "__main__":

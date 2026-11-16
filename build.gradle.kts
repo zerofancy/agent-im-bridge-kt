@@ -95,6 +95,8 @@ distributions {
                     "auth-core.mjs",
                     "auth.patch.yml",
                     "oauth-login.mjs",
+                    "bridge-codex.mjs",
+                    "codex-lifecycle.mjs",
                 )
                 into("libexec/deepseek")
                 eachFile {

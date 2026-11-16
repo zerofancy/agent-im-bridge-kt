@@ -96,6 +96,7 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
                     path("deepseekHome", "backend/deepseek"),
                     deepseekNode = s.string("deepseekNode"),
                     deepseekLaunchDirectory = directory.resolve("backend/deepseek-launch"),
+                    deepseekCodexHome = path("codexHome", "backend/codex"),
                 )
             }
         }.copy(temporaryRoot = temporary)
@@ -196,6 +197,36 @@ data class RuntimeEnvironment(val root: Path, val name: String, val release: Str
                     otherRoots.none { overlap(deepseek, it) || overlap(launch, it) }
             ) {
                 "DeepSeek 状态和启动目录必须独立于工作目录、其他后端及桌面 ~/.dsh"
+            }
+            if (config.deepseekCodexEnabled) {
+                val rawHome =
+                    own.string("codexHome")?.let(Path::of) ?: directory.resolve("backend/codex")
+                require(rawHome.isAbsolute) { "DeepSeek Codex 子智能体 codexHome 必须使用绝对路径" }
+                val codex = real(rawHome)
+                val nativePeers =
+                    listOf(
+                        deepseek,
+                        launch,
+                        real(Path.of(own["workspace"].asString)),
+                        real(Path.of(System.getProperty("user.home"), ".codex")),
+                        real(Path.of(System.getProperty("user.home"), ".dsh")),
+                    ) +
+                        listOf(
+                                "doubaoHome" to "backend/doubao",
+                                "traeHome" to "backend/trae",
+                                "traeCliHome" to "backend/trae/cli",
+                                "opencodeHome" to "backend/opencode",
+                            )
+                            .map { (key, fallback) ->
+                                real(
+                                    Path.of(
+                                        own.string(key) ?: directory.resolve(fallback).toString()
+                                    )
+                                )
+                            }
+                require(nativePeers.none { overlap(codex, it) }) {
+                    "DeepSeek Codex 子智能体状态必须独立于工作目录、其他后端与桌面 ~/.codex"
+                }
             }
         }
         require(

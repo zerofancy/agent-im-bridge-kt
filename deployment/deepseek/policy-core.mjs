@@ -11,11 +11,13 @@ export function configuredPolicy(env = process.env) {
     if (!MODES.includes(mode)) {
         throw new Error('BRIDGE_DEEPSEEK_INVALID_SANDBOX_MODE');
     }
-    return Object.freeze({ mode });
+    return Object.freeze({ mode,
+        codexEnabled: env.BRIDGE_DEEPSEEK_CODEX_ENABLED === '1' && mode === 'danger-full-access' });
 }
 
-export function blockedTool(name) {
-    return typeof name !== 'string' || BLOCKED.test(name) || INTERACTIVE.has(name) || name === 'run_code';
+export function blockedTool(name, policy) {
+    return typeof name !== 'string' || BLOCKED.test(name) || INTERACTIVE.has(name) || name === 'run_code'
+        || (name === 'subagent_codex' && !(policy?.codexEnabled && policy.mode === 'danger-full-access'));
 }
 
 export function assertPolicy(ctx, agent, policy) {
@@ -68,7 +70,7 @@ export function installPolicy(ctx, policy, setters) {
         return next();
     });
     ctx.tools.guard((execution) => {
-        if (blockedTool(execution.name)) {
+        if (blockedTool(execution.name, policy)) {
             return 'This capability is disabled by the local Bridge configuration.';
         }
         try {
