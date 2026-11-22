@@ -61,6 +61,38 @@
 
 - 首次 `bridgectl dev` 在前台终端交互选择或创建测试机器人，自动准备工作目录和模型目录，并按需引导独立模型登录；不要求用户手写配置。守护重启不得触发交互授权，损坏配置不得自动覆盖。
 
+## Android 正式分发（zp.ntutn.top）
+
+- 发布需用户明确授权；仅构建不代表允许上传或提交公开分发。软件建档及 Token 签发通过服务器管理后台完成，不猜测软件内部名。
+- 从被 Git 忽略的 `android-app/local.properties` 读取 `updaterPublishBaseUrl`（当前 `https://zp.ntutn.top`）、`updaterPublishSoftware`（当前 `agent-im-bridge-kt`）和 `updaterPublishToken`。BaseUrl 是站点根地址，发布前缀拼接为 `/api/v1/publish/{software}`；不要重复拼接路径。配置文件权限保持 `0600`，修改非敏感字段时保留已有 Token。
+- Token 只在内存读取，以单个 `Authorization: Bearer` 请求头发送到配置的 HTTPS 发布服务；不输出配置全文，不放入命令参数、URL、日志、APK、BuildConfig 或仓库。预签名 URL 同样是临时凭据，不输出或提交。不要盲目跟随重定向转发凭据。
+- 发布前核对服务器当前协议：`https://zp.ntutn.top/api`。某些默认 Python User-Agent 会被网关拒绝；可使用 `Mozilla/5.0 (compatible; AgentBridgeRelease/1.0)`，区分网关非 JSON 错误和 API JSON 错误，不将 403 当作发布成功。
+- 签名使用 gradle-keyring 0.2，复用 Kica 的长期 release keystore 和别名，配置与密码初始化见 `docs/android-signing.md`。本项目系统密钥环服务名为 `Gradle Project android-app`；不把密码写入属性文件，签名构建强制禁用 configuration cache。
+
+### 构建与发布前核对
+
+1. 执行 `./gradlew -p android-app --no-configuration-cache --console=plain verifyReleaseSigning testDebugUnitTest assembleRelease bundleRelease`。从 APK 的实际 manifest 读取 applicationId、versionName、versionCode，不能只根据文件名猜测；正式升级须递增 versionCode。
+2. 待分发 APK 为 `android-app/build/outputs/apk/release/android-app-release.apk`；AAB 位于 `android-app/build/outputs/bundle/release/android-app-release.aab`，默认只分发可直接安装的 APK。保留 R8 mapping。
+3. 使用 SDK Build Tools 的 `apksigner verify --verbose --print-certs` 验证 APK。长期签名证书 SHA-256 为 `7202b06d2a5842ac07f7d246dde8850f55963ff7d004b0e3e47e8c847532538f`，必须一致；计算最终 APK 完整字节的大小和 SHA-256。
+4. 发布前调用公开接口 `GET /api/v1/updates?software={software}&os=Android&packageType=apk` 核对已有版本。首发可能返回 `404 NO_MATCHING_PACKAGE`，不要把 `SOFTWARE_NOT_FOUND`、认证失败或其他异常当作首发空记录。
+5. 检查 APK 实际 ABI。当前为通用 APK；分发 API 只支持 ARM64 / X86_64 两种架构枚举，登记 `[{"os":"Android","arch":"ARM64"},{"os":"Android","arch":"X86_64"}]`，不要传入 armeabi-v7a、x86 或自行添加其他枚举。
+
+### R2 上传与原子提交
+
+1. 每次逻辑上传、每次逻辑分发分别生成小写标准 UUID 幂等键。在首次请求前持久保存键、完整请求 JSON、产物摘要；上传授权回执以 `0600` 保存。结果未知时必须保留原键及原始请求字节，不换键、不改标题绕过冲突；新版本使用独立记录。请求接受 UTF-8 JSON，64 位大小、versionCode 和 ID 按十进制字符串处理。
+2. `POST {发布前缀}/uploads`，携带 `Idempotency-Key`，提交 `filename`、`size`、`checksumAlgorithm: "sha256"` 和实际 `checksumValue`。保存返回的 uploadId、method、headers、uploadUrl 与期限；响应为 201 或同键重放 200。
+3. 按返回的 PUT URL 和 headers 将 APK 原始字节直传 R2，通常为 `Content-Type: application/octet-stream`。先验证 URL 为 HTTPS 及可信 R2 主机；绝不携带发布 Bearer，不自动跟随重定向。
+4. `POST {发布前缀}/uploads/{uploadId}/complete`，请求体 `{}`。只有状态 `READY` 才可首次关联；202 / VERIFYING 按 Retry-After 有界退避查询 `GET .../uploads/{uploadId}`，持续等待时保留状态供后续恢复。上传响应丢失时先查询/完成校验，确认 OBJECT_NOT_FOUND 后才补传；授权过期不得盲目重用。
+5. `POST {发布前缀}/distributions`，使用独立 `Idempotency-Key`，提交 `title`、真实版本说明及 `packages`。每包含 name、`packageType: "apk"`、versionCode、versionName、targets、`source: "r2"`、uploadId；R2 包不能额外传 downloadUrl、packageSize 或 checksum 字段。首次 201、同键同体重放 200；提交成功立即公开，上传成功不等于发布成功。
+6. 保存回执中的 distributionId、packageId、downloadUrl、大小及摘要。网络超时/可重试错误按服务端 Retry-After 使用原键原请求确认；401/403、版本冲突、幂等冲突先诊断，不盲目循环或重新发布。服务器不实测全文件 checksum，READY 不代表摘要已验证。
+7. 发布后重新查询公开更新接口，确认 ARM64 / X86_64 均指向预期版本及分发；无 Token 回下载公开 APK，核对大小、SHA-256、与本地产物逐字节一致，并再次执行 apksigner 验证。向用户返回版本、分发编号和公开下载链接，不包含任何凭据。
+
+### 已完成首发与恢复记录
+
+- 首个 Android 正式分发：`1.1.0`（versionCode `2`），软件 `agent-im-bridge-kt`，distributionId `19`，packageId `25`，北京时间 2026-11-23 发布。沿用当前版本而非将“首发”擅自重置为 1.0.0 / 1。
+- 首发 APK SHA-256：`97a7e720c136ee6f3dd8e4333bea1ce72ffe59c231939b93b3fb84c4e8de8c04`；公开地址 `https://shared-files.ntutn.top/20261123/assets/5576d21a-72fa-4a92-b1e2-c0a19a83c263/agent-bridge-1.1.0-android-universal.apk`，回下载与签名均已验证。
+- 首发一次性脚本为被忽略的 `build/publishing/publish_first.py`，幂等请求、授权及回执在 `build/publishing/android-1.1.0-2/`。这些不是受版本控制的通用发布工具，clean 会删除；不要依赖其永久存在，不把授权文件提交到 Git，也不要拿硬编码首发版本的脚本发布新版本。待确认完成前不得清理恢复记录。
+
 ## 飞书接入倾向
 
 - 飞书接入优先采用“双轨”策略：事件接收可暂时保留官方 SDK，但新增加或重构的出站 OpenAPI 调用优先使用本项目自建的 HTTP 封装，逐步减少对飞书 SDK 的依赖。

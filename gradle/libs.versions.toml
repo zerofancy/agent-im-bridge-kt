@@ -17,6 +17,7 @@ multiplatform-markdown-renderer = "0.43.0"
 coil = "3.5.0"
 keep-kit = "v0.2.3"
 android-gradle-plugin = "9.3.0"
+gradle-keyring = "0.2"
 androidx-activity = "1.13.0"
 androidx-lifecycle = "2.11.0"
 androidx-compose = "1.12.1"
@@ -65,3 +66,4 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 compose = { id = "org.jetbrains.compose", version.ref = "compose" }
 keep-kit = { id = "io.github.zerofancy.compose-desktop-keep-kit", version.ref = "keep-kit" }
 android-application = { id = "com.android.application", version.ref = "android-gradle-plugin" }
+keyring = { id = "me.okonecny.gradle-keyring", version.ref = "gradle-keyring" }
