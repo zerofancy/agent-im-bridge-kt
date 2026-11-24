@@ -62,6 +62,7 @@ internal fun AuthScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
                 Text("Agent Bridge", style = MaterialTheme.typography.h4)
+                AppUpdateButton()
                 if (state.session == null) {
                     SignInForm(state, onSignIn)
                 } else {

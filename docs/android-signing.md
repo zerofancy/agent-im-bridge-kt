@@ -61,3 +61,18 @@ release 预构建依赖该验证，即使显式设置 `-PkeyringSigning=false`�
 
 AGP 模型包含签名密码，因此签名启用时强制要求关闭 configuration cache。
 不要使用 `--debug` 日志收集敏感构建信息，也不要把本机 Gradle 缓存或 keystore 作为发布产物。
+
+## 应用内更新
+
+Android 1.2.0 起使用 [KMP Updater v0.3.0](https://github.com/zerofancy/kmp-updater/tree/v0.3.0)，
+公开查询 `https://zp.ntutn.top` 中 `agent-im-bridge-kt` 的 Android / 当前架构 / apk 序列。
+本地版本取自 BuildConfig，与 APK manifest 同源；更新客户端不使用聊天登录凭据或发布 Token。
+
+启动时静默检查一次；登录页及会话的“登录状态”弹窗提供“检查更新”。发现新版本后可在应用内
+下载、查看进度、取消或重试，下载器校验服务端声明的摘要。用户点击“安装更新”后，由 SDK
+检查 APK 包名、版本及签名兼容性，再交给 Android 系统确认安装。需要未知来源授权时，界面
+提供设置入口，返回后再次点击安装。32 位设备显示不支持应用内更新，不进行宽泛版本查询。
+
+检查和下载由 ViewModel 管理，旋转屏幕保留状态；更新弹窗与安装操作仅在 Activity 前台恢复
+状态展示。应用关闭会取消任务，不提供后台下载保活。SDK 的 Material 3 主题仅用于更新弹窗。
+Android 网络依赖及测试组件统一使用 SDK 所需的 OkHttp 5，JVM 服务仍使用其原有版本。

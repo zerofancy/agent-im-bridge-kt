@@ -111,8 +111,10 @@ class AuthClientTest {
                 }
             assertEquals(307, redirect.status)
             assertEquals(1, server.requestCount)
+            // Use one route so an IPv6 connection failure cannot mask the TLS rejection.
+            val untrustedOrigin = origin.newBuilder().host("127.0.0.1").build()
             assertThrows(SSLHandshakeException::class.java) {
-                runBlocking { AuthClient().login(origin, "example-password", "012345") }
+                runBlocking { AuthClient().login(untrustedOrigin, "example-password", "012345") }
             }
             assertEquals(1, server.requestCount)
         }

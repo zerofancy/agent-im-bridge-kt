@@ -288,6 +288,7 @@ private fun SessionDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("已登录")
+                AppUpdateButton()
                 Text(auth.address)
                 Text("环境 ${session.environment}")
                 Text("会话到期 $expires")
