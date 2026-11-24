@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Legacy launcher icon, matching assets/branding/agent-bridge-app-icon.svg. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <path
+        android:fillColor="@color/launcher_background"
+        android:pathData="M264,80 H760 A184,184 0,0 1,944 264 V760 A184,184 0,0 1,760 944 H264 A184,184 0,0 1,80 760 V264 A184,184 0,0 1,264 80 Z" />
+    <path
+        android:fillColor="#A8C7B2"
+        android:pathData="M280 326 Q512 194 744 326 L744 394 Q512 262 280 394 Z" />
+    <path
+        android:fillColor="#F9FAF7"
+        android:pathData="M212 264 H268 Q316 264 316 312 V432 Q512 294 708 432 V312 Q708 264 756 264 H812 Q860 264 860 312 V766 Q860 790 841 773 L797 732 H756 Q708 732 708 684 V626 C708 522 620 450 512 450 C404 450 316 522 316 626 V684 Q316 732 268 732 H212 Q164 732 164 684 V312 Q164 264 212 264 Z" />
+</vector>
