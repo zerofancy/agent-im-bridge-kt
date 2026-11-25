@@ -21,7 +21,7 @@ PASSWORD_ITERATIONS = 600_000
 MAX_MILLIS = (1 << 63) - 1
 INVALID_CONFIG = '远程认证配置无效；请检查 remote-access.json 的格式与私有权限。'
 FIELDS = {
-    'enabled', 'port', 'passwordSalt', 'passwordHash', 'totpSecret',
+    'enabled', 'port', 'username', 'passwordSalt', 'passwordHash', 'totpSecret',
     'lastStep', 'failures', 'blockedUntil',
 }
 
@@ -61,6 +61,9 @@ def _read_config(path):
         and integer('blockedUntil', 0, MAX_MILLIS)
         and (value['failures'] >= 5) == (value['blockedUntil'] > 0)
     ):
+        raise ValueError(INVALID_CONFIG)
+    username = value['username']
+    if not isinstance(username, str) or not username.strip() or len(username.encode('utf-8')) > 256:
         raise ValueError(INVALID_CONFIG)
     secret = value['totpSecret']
     if not isinstance(secret, str) or not re.fullmatch(r'[A-Z2-7]{32}', secret):
@@ -102,12 +105,16 @@ def _setup(path, environment, previous, port, rotate_totp):
     if not 1 <= port <= 65535:
         raise ValueError('端口必须在 1 到 65535 之间。')
     password = _password()
+    username = input('远程用户名：')
+    if not username.strip() or len(username.encode('utf-8')) > 256:
+        raise ValueError('用户名不能为空白，UTF-8 编码最多 256 字节。')
     salt = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac('sha256', password, salt, PASSWORD_ITERATIONS)
     config = dict(
         previous or {},
         enabled=True,
         port=port,
+        username=username,
         passwordSalt=base64.b64encode(salt).decode('ascii'),
         passwordHash=base64.b64encode(digest).decode('ascii'),
     )

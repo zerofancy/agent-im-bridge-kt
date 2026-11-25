@@ -37,13 +37,17 @@ internal class AuthViewModel(application: Application) : AndroidViewModel(applic
     private var activeSession: ActiveSession? = null
     private var expiration: Job? = null
 
-    fun signIn(address: String, password: String, totp: String): Boolean {
+    fun signIn(address: String, username: String, password: String, totp: String): Boolean {
         if (state.value.busy || activeSession != null) {
             return false
         }
         val origin = parseServerAddress(address)
         if (origin == null) {
             showMessage("请输入 HTTPS 服务地址，可包含端口。")
+            return false
+        }
+        if (username.isBlank() || username.toByteArray().size > 256) {
+            showMessage("请输入有效用户名。")
             return false
         }
         if (password.isEmpty() || password.toByteArray().size > 1_024) {
@@ -59,7 +63,7 @@ internal class AuthViewModel(application: Application) : AndroidViewModel(applic
         mutableState.value = AuthUiState(canonicalAddress, busy = true)
         viewModelScope.launch {
             try {
-                val result = client.login(origin, password, totp)
+                val result = client.login(origin, username, password, totp)
                 val active = ActiveSession(origin, result.token)
                 activeSession = active
                 confirmSession(active, result.session)
@@ -74,7 +78,7 @@ internal class AuthViewModel(application: Application) : AndroidViewModel(applic
                 val message =
                     when (e.status) {
                         401 -> {
-                            "密码或验证码错误。"
+                            "用户名、密码或验证码错误。"
                         }
                         429 -> {
                             e.retryAfter?.let { "尝试过于频繁，请在 $it 秒后重试。" } ?: "尝试过于频繁，请稍后重试。"

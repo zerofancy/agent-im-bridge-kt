@@ -31,6 +31,7 @@ internal fun writeRemoteAuthFixture(directory: Path, port: Int = RemoteAccessSto
         json(
             "enabled" to true,
             "port" to port,
+            "username" to "zero",
             "passwordSalt" to FIXTURE_SALT,
             "passwordHash" to FIXTURE_HASH,
             "totpSecret" to FIXTURE_TOTP,
@@ -43,6 +44,39 @@ internal fun writeRemoteAuthFixture(directory: Path, port: Int = RemoteAccessSto
 
 class RemoteAuthTest {
     @TempDir lateinit var directory: Path
+
+    @Test
+    fun `username configuration is required and preserves exact value`() {
+        writeRemoteAuthFixture(directory)
+        val path = directory.resolve("remote-access.json")
+        val config = assertNotNull(JsonFiles.read(path))
+        for (value in listOf("", "   ", "x".repeat(257))) {
+            config.addProperty("username", value)
+            JsonFiles.write(path, config)
+            assertFailsWith<IllegalArgumentException> { RemoteAccessStore.load(directory) }
+        }
+        config.remove("username")
+        JsonFiles.write(path, config)
+        assertFailsWith<IllegalArgumentException> { RemoteAccessStore.load(directory) }
+        config.addProperty("username", " Zero ")
+        JsonFiles.write(path, config)
+        assertEquals(" Zero ", assertNotNull(RemoteAccessStore.load(directory)).username)
+    }
+
+    @Test
+    fun `username must match configuration exactly without consuming totp`(): Unit = runBlocking {
+        writeRemoteAuthFixture(directory)
+        val auth = loadAuth { REMOTE_FIXTURE_TIME }
+        for ((index, username) in listOf("", "Zero", " zero", "zero ", "other").withIndex()) {
+            assertEquals(
+                RemoteLogin.Invalid,
+                auth.login("user-$index", username, REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE),
+            )
+        }
+        assertIs<RemoteLogin.Success>(
+            auth.login("correct", "zero", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE)
+        )
+    }
 
     @Test
     fun `matches RFC vectors and only accepts current and previous steps`() {
@@ -71,12 +105,17 @@ class RemoteAuthTest {
             val auth = loadAuth { REMOTE_FIXTURE_TIME }
             assertEquals(
                 RemoteLogin.Invalid,
-                auth.login("wrong-password", "wrong", REMOTE_FIXTURE_CODE),
+                auth.login("wrong-password", "zero", "wrong", REMOTE_FIXTURE_CODE),
             )
             val attempts =
                 List(2) {
                         async {
-                            auth.login("same-source", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE)
+                            auth.login(
+                                "same-source",
+                                "zero",
+                                REMOTE_FIXTURE_PASSWORD,
+                                REMOTE_FIXTURE_CODE,
+                            )
                         }
                     }
                     .awaitAll()
@@ -88,7 +127,7 @@ class RemoteAuthTest {
             assertNull(reloaded.session(session.token))
             assertEquals(
                 RemoteLogin.Invalid,
-                reloaded.login("restart", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE),
+                reloaded.login("restart", "zero", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE),
             )
         }
 
@@ -100,29 +139,31 @@ class RemoteAuthTest {
         repeat(4) { index ->
             assertEquals(
                 RemoteLogin.Invalid,
-                auth.login("source-$index", REMOTE_FIXTURE_PASSWORD, "000000"),
+                auth.login("source-$index", "zero", REMOTE_FIXTURE_PASSWORD, "000000"),
             )
         }
         assertEquals(
             RemoteLogin.Limited(60),
-            auth.login("source-4", REMOTE_FIXTURE_PASSWORD, "000000"),
+            auth.login("source-4", "zero", REMOTE_FIXTURE_PASSWORD, "000000"),
         )
 
         val reloaded = loadAuth { time }
         assertEquals(
             RemoteLogin.Limited(60),
-            reloaded.login("source", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE),
+            reloaded.login("source", "zero", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE),
         )
         time += 60_000
         assertEquals(
             RemoteLogin.Limited(120),
-            reloaded.login("source", REMOTE_FIXTURE_PASSWORD, "000000"),
+            reloaded.login("source", "zero", REMOTE_FIXTURE_PASSWORD, "000000"),
         )
         time = 239_000
-        assertIs<RemoteLogin.Success>(reloaded.login("source", REMOTE_FIXTURE_PASSWORD, "162583"))
+        assertIs<RemoteLogin.Success>(
+            reloaded.login("source", "zero", REMOTE_FIXTURE_PASSWORD, "162583")
+        )
         assertEquals(
             RemoteLogin.Invalid,
-            reloaded.login("source", REMOTE_FIXTURE_PASSWORD, "000000"),
+            reloaded.login("source", "zero", REMOTE_FIXTURE_PASSWORD, "000000"),
         )
         assertEquals(1, assertNotNull(RemoteAccessStore.load(directory)).state.failures)
     }
@@ -134,7 +175,7 @@ class RemoteAuthTest {
         val auth = loadAuth { time }
         val first =
             assertIs<RemoteLogin.Success>(
-                auth.login("source", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE)
+                auth.login("source", "zero", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE)
             )
         val active = Job()
         val detached = Job()
@@ -154,7 +195,9 @@ class RemoteAuthTest {
 
         time = 60_000
         val second =
-            assertIs<RemoteLogin.Success>(auth.login("source", REMOTE_FIXTURE_PASSWORD, "359152"))
+            assertIs<RemoteLogin.Success>(
+                auth.login("source", "zero", REMOTE_FIXTURE_PASSWORD, "359152")
+            )
         val expiring = Job()
         assertNotNull(auth.attachStream(second.token, expiring))
         time = second.expiresAt
@@ -171,12 +214,12 @@ class RemoteAuthTest {
         Files.createDirectory(path)
         assertEquals(
             RemoteLogin.Unavailable,
-            auth.login("source", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE),
+            auth.login("source", "zero", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE),
         )
         Files.delete(path)
         writeRemoteAuthFixture(directory)
         assertIs<RemoteLogin.Success>(
-            auth.login("source", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE)
+            auth.login("source", "zero", REMOTE_FIXTURE_PASSWORD, REMOTE_FIXTURE_CODE)
         )
     }
 

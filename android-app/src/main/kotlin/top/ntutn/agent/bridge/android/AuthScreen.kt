@@ -14,6 +14,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.Button
+import androidx.compose.material.DropdownMenuItem
+import androidx.compose.material.ExperimentalMaterialApi
+import androidx.compose.material.ExposedDropdownMenuBox
+import androidx.compose.material.ExposedDropdownMenuDefaults
 import androidx.compose.material.LinearProgressIndicator
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.OutlinedButton
@@ -44,7 +48,7 @@ import java.util.Date
 @OptIn(ExperimentalComposeUiApi::class)
 internal fun AuthScreen(
     state: AuthUiState,
-    onSignIn: (address: String, password: String, totp: String) -> Boolean,
+    onSignIn: (address: String, username: String, password: String, totp: String) -> Boolean,
     onRefresh: () -> Unit,
     onSignOut: () -> Unit,
 ) {
@@ -79,20 +83,56 @@ internal fun AuthScreen(
     }
 }
 
+@OptIn(ExperimentalMaterialApi::class)
 @Composable
-private fun SignInForm(state: AuthUiState, onSignIn: (String, String, String) -> Boolean) {
+private fun SignInForm(state: AuthUiState, onSignIn: (String, String, String, String) -> Boolean) {
     var address by remember(state.address) { mutableStateOf(state.address) }
+    var expanded by remember { mutableStateOf(false) }
+    var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var totp by remember { mutableStateOf("") }
     Text("连接 Bridge 服务", style = MaterialTheme.typography.h6)
+    ExposedDropdownMenuBox(
+        expanded = expanded && !state.busy,
+        onExpandedChange = {
+            if (!state.busy) {
+                expanded = !expanded
+            }
+        },
+    ) {
+        OutlinedTextField(
+            value = address,
+            onValueChange = { address = it },
+            label = { Text("服务地址") },
+            singleLine = true,
+            enabled = !state.busy,
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+            modifier = Modifier.fillMaxWidth().testTag("bridge_server_address"),
+        )
+        ExposedDropdownMenu(
+            expanded = expanded && !state.busy,
+            onDismissRequest = { expanded = false },
+        ) {
+            for (option in listOf(DEFAULT_ADDRESS, "https://zp-agent-dev.ntutn.top/")) {
+                DropdownMenuItem(
+                    onClick = {
+                        address = option
+                        expanded = false
+                    }
+                ) {
+                    Text(option)
+                }
+            }
+        }
+    }
     OutlinedTextField(
-        value = address,
-        onValueChange = { address = it },
-        label = { Text("服务地址") },
+        value = username,
+        onValueChange = { username = it },
+        label = { Text("用户名") },
         singleLine = true,
         enabled = !state.busy,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-        modifier = Modifier.fillMaxWidth().testTag("bridge_server_address"),
+        modifier = Modifier.fillMaxWidth().testTag("bridge_username"),
     )
     OutlinedTextField(
         value = password,
@@ -115,12 +155,17 @@ private fun SignInForm(state: AuthUiState, onSignIn: (String, String, String) ->
     )
     Button(
         onClick = {
-            if (onSignIn(address, password, totp)) {
+            if (onSignIn(address, username, password, totp)) {
                 password = ""
                 totp = ""
             }
         },
-        enabled = !state.busy && address.isNotBlank() && password.isNotEmpty() && totp.length == 6,
+        enabled =
+            !state.busy &&
+                address.isNotBlank() &&
+                username.isNotBlank() &&
+                password.isNotEmpty() &&
+                totp.length == 6,
         modifier = Modifier.fillMaxWidth().testTag("bridge_login"),
     ) {
         Text("登录")
@@ -163,7 +208,7 @@ private fun SignInPreview() {
     MaterialTheme {
         AuthScreen(
             AuthUiState(DEFAULT_ADDRESS),
-            onSignIn = { _, _, _ -> false },
+            onSignIn = { _, _, _, _ -> false },
             onRefresh = {},
             onSignOut = {},
         )

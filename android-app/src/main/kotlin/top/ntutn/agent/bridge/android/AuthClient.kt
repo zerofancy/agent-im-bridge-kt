@@ -58,9 +58,15 @@ internal fun parseServerAddress(input: String): HttpUrl? {
 internal class AuthClient(baseClient: OkHttpClient = OkHttpClient()) {
     private val http = baseClient.bridgeClientBuilder().callTimeout(15, TimeUnit.SECONDS).build()
 
-    suspend fun login(origin: HttpUrl, password: String, totp: String): LoginResult {
+    suspend fun login(
+        origin: HttpUrl,
+        username: String,
+        password: String,
+        totp: String,
+    ): LoginResult {
         val body =
             JsonObject().apply {
+                addProperty("username", username)
                 addProperty("password", password)
                 addProperty("totp", totp)
             }

@@ -53,7 +53,7 @@ class AuthClientTest {
             server.enqueue(MockResponse().setBody("""{$sessionFields}"""))
             server.enqueue(MockResponse().setResponseCode(204))
             val origin = server.url("/")
-            val result = runBlocking { client.login(origin, "example-password", "012345") }
+            val result = runBlocking { client.login(origin, "zero", "example-password", "012345") }
             assertEquals("test-token", result.token)
             assertEquals(SessionInfo("dev", Instant.parse("2026-11-10T00:00:00Z")), result.session)
             assertEquals(result.session, runBlocking { client.session(origin, result.token) })
@@ -64,7 +64,8 @@ class AuthClientTest {
             assertEquals("/api/v1/auth/login", login.path)
             assertNull(login.getHeader("Authorization"))
             val loginBody = JsonParser.parseString(login.body.readUtf8()).asJsonObject
-            assertEquals(setOf("password", "totp"), loginBody.keySet())
+            assertEquals(setOf("username", "password", "totp"), loginBody.keySet())
+            assertEquals("zero", loginBody["username"].asString)
             assertEquals("example-password", loginBody["password"].asString)
             assertEquals("012345", loginBody["totp"].asString)
             val session = server.takeRequest()
@@ -87,7 +88,7 @@ class AuthClientTest {
             val origin = server.url("/")
             val rateLimit =
                 assertThrows(AuthHttpFailure::class.java) {
-                    runBlocking { client.login(origin, "example-password", "012345") }
+                    runBlocking { client.login(origin, "zero", "example-password", "012345") }
                 }
             assertEquals(429, rateLimit.status)
             assertEquals(17, rateLimit.retryAfter)
@@ -107,14 +108,16 @@ class AuthClientTest {
             val origin = server.url("/")
             val redirect =
                 assertThrows(AuthHttpFailure::class.java) {
-                    runBlocking { client.login(origin, "example-password", "012345") }
+                    runBlocking { client.login(origin, "zero", "example-password", "012345") }
                 }
             assertEquals(307, redirect.status)
             assertEquals(1, server.requestCount)
             // Use one route so an IPv6 connection failure cannot mask the TLS rejection.
             val untrustedOrigin = origin.newBuilder().host("127.0.0.1").build()
             assertThrows(SSLHandshakeException::class.java) {
-                runBlocking { AuthClient().login(untrustedOrigin, "example-password", "012345") }
+                runBlocking {
+                    AuthClient().login(untrustedOrigin, "zero", "example-password", "012345")
+                }
             }
             assertEquals(1, server.requestCount)
         }
@@ -124,9 +127,12 @@ class AuthClientTest {
     fun neverReplaysLoginCredentialsOnServiceUnavailable() {
         httpsServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "0"))
-            val failure = assertThrows(AuthHttpFailure::class.java) {
-                runBlocking { client.login(server.url("/"), "example-password", "012345") }
-            }
+            val failure =
+                assertThrows(AuthHttpFailure::class.java) {
+                    runBlocking {
+                        client.login(server.url("/"), "zero", "example-password", "012345")
+                    }
+                }
             assertEquals(503, failure.status)
             assertEquals(1, server.requestCount)
         }

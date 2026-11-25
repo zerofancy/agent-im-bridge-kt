@@ -83,7 +83,12 @@ class RemoteClientServerTest {
         val sessionPath = "/api/v1/auth/session"
         val logoutPath = "/api/v1/auth/logout"
         val login =
-            json("password" to REMOTE_FIXTURE_PASSWORD, "totp" to REMOTE_FIXTURE_CODE).toString()
+            json(
+                    "username" to "zero",
+                    "password" to REMOTE_FIXTURE_PASSWORD,
+                    "totp" to REMOTE_FIXTURE_CODE,
+                )
+                .toString()
         assertEquals(503, send(port, loginPath, body = login).statusCode())
         control.connected(true)
         assertEquals(200, send(localPort, "/activate", localToken, "").statusCode())
@@ -102,6 +107,18 @@ class RemoteClientServerTest {
             400,
             send(port, loginPath, body = """{"password":"x","totp":123456}""").statusCode(),
         )
+        assertEquals(
+            400,
+            send(
+                    port,
+                    loginPath,
+                    body =
+                        json("password" to REMOTE_FIXTURE_PASSWORD, "totp" to REMOTE_FIXTURE_CODE)
+                            .toString(),
+                )
+                .statusCode(),
+        )
+        assertEquals(401, send(port, loginPath, body = login.replace("zero", "Zero")).statusCode())
         val accepted = send(port, loginPath, body = login)
         assertEquals(200, accepted.statusCode())
         assertEquals("no-store", accepted.headers().firstValue("Cache-Control").orElseThrow())

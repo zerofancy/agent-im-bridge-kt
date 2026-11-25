@@ -3,6 +3,8 @@ package top.ntutn.agent.bridge.backend
 import java.util.concurrent.CompletableFuture
 import kotlin.test.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.future.await
 import top.ntutn.agent.bridge.*
 import top.ntutn.agent.bridge.storage.SessionKey
@@ -59,18 +61,18 @@ class TraexProtocolTest : CodexProtocolTest() {
     fun `queued turn reports position and stop still interrupts it`(): Unit = runBlocking {
         runner().use { r ->
             val handle = AgentRunHandle()
-            val progress = mutableListOf<String>()
-            handle.onProgress = { progress.add(it.process) }
+            val progress = MutableStateFlow<List<String>>(emptyList())
+            handle.onProgress = { event -> progress.update { it + event.process } }
             val task = async {
                 r.runControlled(handle, "wait-queue", null, temp, SandboxMode.READ_ONLY) {}
             }
             handle.turnId.await()
             withTimeout(5_000) {
-                while (progress.none { it.contains("排队中") }) {
+                while (progress.value.none { it.contains("排队中") }) {
                     delay(10)
                 }
             }
-            assertTrue(progress.any { it.contains("队列位置 3") })
+            assertTrue(progress.value.any { it.contains("队列位置 3") })
             handle.requestStop()
             assertEquals(
                 AgentResult.Kind.STOPPED,

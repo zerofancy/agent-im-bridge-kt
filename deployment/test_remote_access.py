@@ -28,7 +28,7 @@ class RemoteAccessTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         argv = ['bridgectl', 'remote', action, '--root', str(self.root), '--env', 'dev', *options]
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
-                patch('sys.argv', argv), patch('sys.stdin.isatty', return_value=tty), \
+                patch('builtins.input', return_value='zero'), patch('sys.argv', argv), patch('sys.stdin.isatty', return_value=tty), \
                 patch.object(stderr, 'isatty', return_value=tty), \
                 patch.object(self.manager.service, 'is_loaded', return_value=running), \
                 patch.object(bridgectl, 'Manager', return_value=self.manager), \
@@ -41,6 +41,7 @@ class RemoteAccessTests(unittest.TestCase):
         output, terminal = self.run_remote('setup', password=password)
         config = json.loads(self.path.read_text(encoding='utf-8'))
         self.assertTrue(config['enabled'])
+        self.assertEqual('zero', config['username'])
         self.assertEqual(1315, config['port'])
         salt = base64.b64decode(config['passwordSalt'])
         self.assertEqual(16, len(salt))

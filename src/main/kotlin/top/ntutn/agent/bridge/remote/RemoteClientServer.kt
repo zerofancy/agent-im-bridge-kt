@@ -132,6 +132,7 @@ internal class RemoteClientServer(
             val result =
                 auth.login(
                     exchange.remoteAddress.address.hostAddress,
+                    credentials.username,
                     credentials.password,
                     credentials.totp,
                 )
@@ -229,7 +230,7 @@ internal class RemoteClientServer(
     }
 }
 
-private class LoginCredentials(val password: String, val totp: String)
+private class LoginCredentials(val username: String, val password: String, val totp: String)
 
 private suspend fun loginBody(exchange: HttpExchange): LoginCredentials? {
     val mediaType = exchange.requestHeaders["Content-Type"]?.singleOrNull()?.substringBefore(';')
@@ -255,7 +256,7 @@ private suspend fun loginBody(exchange: HttpExchange): LoginCredentials? {
             while (reader.hasNext()) {
                 val name = reader.nextName()
                 if (
-                    name !in setOf("password", "totp") ||
+                    name !in setOf("username", "password", "totp") ||
                         name in fields ||
                         reader.peek() != JsonToken.STRING
                 ) {
@@ -264,17 +265,20 @@ private suspend fun loginBody(exchange: HttpExchange): LoginCredentials? {
                 fields[name] = reader.nextString()
             }
             reader.endObject()
+            val username = fields["username"] ?: return null
             val password = fields["password"] ?: return null
             val totp = fields["totp"] ?: return null
             if (
                 reader.peek() != JsonToken.END_DOCUMENT ||
+                    username.isBlank() ||
+                    username.toByteArray(Charsets.UTF_8).size > 256 ||
                     password.toByteArray(Charsets.UTF_8).size !in 1..1024 ||
                     totp.length != 6 ||
                     totp.any { it !in '0'..'9' }
             ) {
                 return null
             }
-            LoginCredentials(password, totp)
+            LoginCredentials(username, password, totp)
         }
     } catch (_: IOException) {
         null

@@ -40,7 +40,12 @@ internal class RemoteAuth(
     private val sessions = mutableMapOf<String, ActiveSession>()
     private val log = LoggerFactory.getLogger(RemoteAuth::class.java)
 
-    suspend fun login(source: String, password: String, totp: String): RemoteLogin {
+    suspend fun login(
+        source: String,
+        username: String,
+        password: String,
+        totp: String,
+    ): RemoteLogin {
         if (!validPasswordInput(password) || totp.length != 6 || totp.any { it !in '0'..'9' }) {
             return RemoteLogin.Invalid
         }
@@ -65,7 +70,7 @@ internal class RemoteAuth(
             blocked(time)?.let {
                 return@withSessions it
             }
-            if (!matches) {
+            if (!matches || username != store.username) {
                 return@withSessions RemoteLogin.Invalid
             }
             verifyTotp(totp, time)

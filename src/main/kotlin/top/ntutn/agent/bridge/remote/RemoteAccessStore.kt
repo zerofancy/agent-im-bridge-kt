@@ -34,6 +34,7 @@ private constructor(
     private val path: Path,
     private val config: JsonObject,
     val port: Int,
+    val username: String,
     val credentials: RemoteCredentials,
     initialState: RemoteTotpState,
 ) {
@@ -59,6 +60,7 @@ private constructor(
             setOf(
                 "enabled",
                 "port",
+                "username",
                 "passwordSalt",
                 "passwordHash",
                 "totpSecret",
@@ -99,6 +101,8 @@ private constructor(
                 }
 
                 require(config.keySet() == fields)
+                val username = requireNotNull(config.string("username"))
+                require(username.isNotBlank() && username.toByteArray(Charsets.UTF_8).size <= 256)
                 val port = config.integer("port")
                 val lastStep = config.integer("lastStep")
                 val failures = config.integer("failures")
@@ -119,6 +123,7 @@ private constructor(
                     path,
                     config,
                     port.toInt(),
+                    username,
                     credentials,
                     RemoteTotpState(lastStep, failures.toInt(), blockedUntil),
                 )
